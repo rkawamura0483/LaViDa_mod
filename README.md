@@ -27,7 +27,7 @@ Please download checkpoints from [Huggingface](https://huggingface.co/collection
 <repo root>
 --lavida-ckpts
    --lavida-llada-hd # jacklishufan/lavida-llada-v1.0-instruct
-   --lavida-dream-v1.0-instruct # jacklishufan/lavida-dream-hd
+   --lavida-dream-hd # jacklishufan/lavida-dream-v1.0-instruct
    --lavida-llada-hd-fim  # jacklishufan/lavida-llada-1.0-fim
    --lavida-llada-hd-reason # hbXNov/lavida-llada-reason
    --lavida-llada-lowres  # jacklishufan/lavida-llada-1.0-lowres
