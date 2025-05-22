@@ -12,8 +12,8 @@ import torch
 import json
 
 
+# pretrained = "lavida-ckpts/lavida-llada-hd-fim" # this may also work
 pretrained = "lavida-ckpts/lavida-llada-hd-fim"
-pretrained = "/data0/jacklishufan/llada/v1/vlms/llavanext-_data0_jacklishufan_siglip-so400m-patch14-384-_data0_jacklishufan_LLaDA-8B-Instruct-mlp2x_gelu-pretrain_blip558_v4-cont-mask-200k-700k-mask/checkpoint-1562/"
 model_name = "llava_llada"
 device = "cuda"
 device_map = "cuda:0"
@@ -28,8 +28,7 @@ A<|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_m
 Be<|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|>{FIM}
 Ca<|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|>{FIM}
 De<|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|><|mdm_mask|>{FIM}
-<|eot_id|>
-'''
+<|eot_id|>'''
 
 conv = copy.deepcopy(conv_templates[conv_template])
 conv.append_message(conv.roles[0], question)
@@ -63,7 +62,7 @@ image_sizes = [image.size]
 if True:
     draft_tokens = tokenizer(draft_answer,return_tensors='pt').to(input_ids.device).input_ids
     
-    cont = model.generate(
+    cont,_ = model.generate(
         input_ids,
         images=image_tensor,
         image_sizes=image_sizes,

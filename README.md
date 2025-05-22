@@ -1,12 +1,13 @@
-# LaViDa: A Large Diffusion Model for Vision-Language Understanding
+# LaViDa:A Large Diffusion Language Model for Multimodal Understanding
 
-[[Paper]](https://arxiv.org/abs/2503.12271)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train)
+[[Paper]](paper/paper.pdf)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train)
 
 
 
 
 
 ![Model Architecture](images/architecture.png)
+![Speedup](images/demo.gif)
 
 ### Installation
 
@@ -26,9 +27,9 @@ Please download checkpoints from [Huggingface](https://huggingface.co/collection
 <repo root>
 --lavida-ckpts
    --lavida-llada-hd # jacklishufan/lavida-llada-v1.0-instruct
-   --lavida-dream-hd # jacklishufan/lavida-dream-hd
+   --lavida-dream-v1.0-instruct # jacklishufan/lavida-dream-hd
    --lavida-llada-hd-fim  # jacklishufan/lavida-llada-1.0-fim
-   --lavida-llada-hd-reason # hbXNov/lavida-reason
+   --lavida-llada-hd-reason # hbXNov/lavida-llada-reason
    --lavida-llada-lowres  # jacklishufan/lavida-llada-1.0-lowres
 ```
 
@@ -40,6 +41,14 @@ python predict_fim.py
 ```
 ## Evaluation
 ### Reproduce Main Evaluation Results
+
+| Model         | MME    | MMMU | MMB  | Latency (s/image) |
+|---------------|--------|------|------|-------------------|
+| LaViDa-Dream  | **1463.5** | 42.6 | **73.8** | **1.13**              |
+| LaViDa-LLaDa  | 1365.6 | **43.3** | 70.5 | 1.32              |
+| [MMaDa](MMaDa)         | 1410.7 | 30.2 | 68.5 | 3.93             |
+
+(speed measurement conducted with generation length=32 and steps=16)
 
 The evaluation scrips are under `eval` folder. Please use the following script to reproduce the main results on MMMU.
 
@@ -60,8 +69,8 @@ bash eval/run_coco.sh lavida-ckpts/lavida-llada-hd
 
 | Model   | KV Cache | CIDEr $\uparrow$ | Latency $\downarrow$  | NFE  |
 |------------|----------|-------|---------|-----|
-| LaviDa-LLaDa  | off      | 108.5 | 3.57    | 100\%  |
-| LaviDa-LLaDa  | on      | 107.8 | 3.57    | 100\%  |
+| LaviDa-LLaDa  | off      | 110.2 | 6.65    | 100\%  |
+| LaviDa-LLaDa  | on      | 107.8 |  2,01   | 100\%  |
 | LaviDa-LLaDa  | off      | 108.5 | 3.57    | 50\%  |
 | LaviDa-LLaDa  | on       | 104.4 | 1.32    | 50\%  |
 | LLaVa-1.6-7B (Baseline)  | on       |  96.7 | 1.67     | 100\%|
@@ -116,3 +125,7 @@ scripts/train/exps/cluster/llada-hd-llada-s2
 scripts/train/exps/cluster/llada-hd-dream-s2.sh
 ```
 
+
+### Acknowledgements
+
+This repo is largely based on [LLaVa-Next](https://github.com/LLaVA-VL/LLaVA-NeXT). We use [LMMS-Eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) for evaluations. 

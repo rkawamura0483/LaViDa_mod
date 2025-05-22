@@ -51,8 +51,10 @@ def get_num_transfer_tokens_sch(mask_index, steps,schedule=None,schedule_kwargs=
         return get_num_transfer_tokens(mask_index,steps)
     if schedule_kwargs is None:
         schedule_kwargs = {}
-    t = torch.linspace(0, 1, steps+1)
+   
     mask_num = mask_index.sum(dim=1, keepdim=True)
+    steps = int(min(steps,mask_num[0]))
+    t = torch.linspace(0, 1, steps+1)
     # at least one sample per step
     if schedule =='logit_normal':
       sigmas = sigmoid_normal_cdf(t)
@@ -64,6 +66,7 @@ def get_num_transfer_tokens_sch(mask_index, steps,schedule=None,schedule_kwargs=
       sigmas = t
     sigmas = sigmas.to(mask_num.device)
     num_transfer_tokens = torch.zeros(mask_num.size(0), steps, device=mask_index.device, dtype=torch.int64)
+    
     for i in range(mask_num.size(0)):
       # print(sigmas.shape)
       sigmas_sample = (sigmas*mask_num[i]).to(torch.int64)
@@ -73,6 +76,7 @@ def get_num_transfer_tokens_sch(mask_index, steps,schedule=None,schedule_kwargs=
       # fix detal
       sigmas_sample = torch.clamp(sigmas_sample,1,None) # should only increase
       delta = sigmas_sample.sum() - mask_num[i]
+    #   breakpoint()
       assert delta>=0
       j = 0
       
@@ -183,7 +187,8 @@ def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128
 
     # print(steps,step_per_block,block_length,draft_tokens.shape[-1])
     # NFE = 0
-    
+    if verbose:
+        history = []
     for num_block in range(num_blocks):
 
         block_mask_index = (x[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:] == mask_id)
@@ -195,8 +200,8 @@ def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128
             # print(i)
             mask_index = (x == mask_id)
             # print(mask_index.sum())
-            # if mask_index.sum() == 0:
-            #     continue
+            if mask_index.sum() == 0:
+                continue
             # NFE += 2
             if cfg_scale > 0.:
                 assert NotImplementedError('cfg_scale > 0. is not supported.')
@@ -255,8 +260,12 @@ def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128
                 _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
                 transfer_index[j, select_index] = True
             x[transfer_index] = x0[transfer_index]
+            if verbose:
+                history.append(x.clone().cpu())
     # breakpoint()
     # print(f"NFE: {NFE} Num Blocks: {num_blocks}")
+    if verbose:
+        return x,history
     return x
 
 

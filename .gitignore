@@ -74,3 +74,4 @@ data/
 ckpts/
 # demo/
 logs/
+*_local.py

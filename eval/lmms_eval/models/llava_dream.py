@@ -576,8 +576,16 @@ class Llava_Dream(lmms):
                 gen_kwargs["top_p"] = None
             if "num_beams" not in gen_kwargs:
                 gen_kwargs["num_beams"] = 1
-            gen_kwargs['block_length'] = min(128,gen_kwargs["max_new_tokens"])
-            gen_kwargs['step_per_block'] = gen_kwargs['block_length']
+            schedule_kwargs = {}
+            for key in list(gen_kwargs.keys()):
+                if key.startswith('schedule__'):
+                    value = gen_kwargs.pop(key)
+                    schedule_kwargs[key.replace('schedule__','')] = value
+                    
+            if 'block_length' not in gen_kwargs:
+                gen_kwargs['block_length'] = min(128,gen_kwargs["max_new_tokens"])
+            if 'step_per_block' not in gen_kwargs:
+                gen_kwargs['step_per_block'] = gen_kwargs['block_length']
             gen_kwargs["temperature"] = 0 
 
             input_ids_list = [tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt") for prompt in question_input]
@@ -602,6 +610,8 @@ class Llava_Dream(lmms):
                 gen_kwargs.pop("image_aspect_ratio")
             # breakpoint()
             # breakpoint()
+            if len(schedule_kwargs) > 0:
+                gen_kwargs['schedule_kwargs'] = schedule_kwargs
             try:
                 with torch.inference_mode():
                     cont = self.model.generate(input_ids, 

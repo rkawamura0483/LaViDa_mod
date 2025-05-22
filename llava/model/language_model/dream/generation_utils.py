@@ -30,7 +30,7 @@ from transformers.utils import (
     is_torchdynamo_compiling,
     logging,
 )
-
+from llava.model.language_model.llada.generate import  get_num_transfer_tokens_sch
 logger = logging.get_logger(__name__)
 
 
@@ -372,6 +372,7 @@ class DreamGenerationMixin:
             inputs_embeds=inputs_embeds,
             device=device,
             prefix_lm=prefix_lm,
+            **kwargs,
         )
         return result
 
@@ -385,6 +386,10 @@ class DreamGenerationMixin:
         inputs_embeds=None,
         prefix_lm=False,
         device=None,
+        schedule_kwargs=None,
+        schedule=None,
+        step_ratio=None,
+        **kwargs,
     ) -> Union[DreamModelOutput, torch.LongTensor]:
         # init values
         output_history = generation_config.output_history
@@ -444,6 +449,12 @@ class DreamGenerationMixin:
 
         # this allows user-defined token control of the intermediate steps
         x = generation_tokens_hook_func(None, x, None)
+        if step_ratio is not None:
+            steps = int(max_new_tokens*step_ratio) 
+        if schedule is None:
+            sch = None
+        else:
+            sch = get_num_transfer_tokens_sch((x == mask_token_id),steps,schedule,schedule_kwargs)
         for i in range(steps):
             # print(i)
             # print(i)
@@ -484,7 +495,12 @@ class DreamGenerationMixin:
                     raise RuntimeError(f"Unknown alg: {alg}")
                 # confidence = torch.where(mask_index, x0_p, -np.inf)
                 num_mask_token = mask_index.sum()
-                number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else num_mask_token
+                if sch is not None:
+                    number_transfer_tokens = sch[0,i]
+                else: # vanilla
+                    number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else num_mask_token
+                #print("Number of transfer tokens: ", number_transfer_tokens)
+                # breakpoint()
                 if number_transfer_tokens > 0:
                     if alg_temp is None or alg_temp == 0:
                         _, transfer_index = torch.topk(confidence, number_transfer_tokens)

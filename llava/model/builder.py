@@ -26,7 +26,7 @@ from llava.model.language_model.llava_llada import LlavaLladaForMaskedDiffusion,
 from llava.model.language_model.llava_dream import LlavaDreamForMaskedDiffusion
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", torch_dtype="float16",attn_implementation="flash_attention_2", customized_config=None, overwrite_config=None,resize_embeddings=True, **kwargs):
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", torch_dtype="float16",attn_implementation="sdpa", customized_config=None, overwrite_config=None,resize_embeddings=True, **kwargs):
     kwargs["device_map"] = device_map
 
     if load_8bit:
@@ -196,7 +196,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             ):
                 from llava.model.language_model.llava_llama import LlavaConfig
 
-                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
+                tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
                 if customized_config is None:
                     llava_cfg = LlavaConfig.from_pretrained(model_path)
                     if "v1.5" in model_name.lower():
@@ -208,7 +208,6 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     rank0_print(f"Overwriting config with {overwrite_config}")
                     for k, v in overwrite_config.items():
                         setattr(llava_cfg, k, v)
-
                 model = LlavaLlamaForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
 
             elif "qwen" in model_name.lower() or "quyen" in model_name.lower():
