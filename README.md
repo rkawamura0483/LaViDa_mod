@@ -1,6 +1,6 @@
 # LaViDa:A Large Diffusion Language Model for Multimodal Understanding
 
-[[Paper]](paper/paper.pdf)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train)
+[[Paper]](paper/paper.pdf)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train) [[Website]](https://homepage.jackli.org/projects/lavida/)
 
 
 
