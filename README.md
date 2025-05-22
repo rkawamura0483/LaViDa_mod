@@ -70,7 +70,7 @@ bash eval/run_coco.sh lavida-ckpts/lavida-llada-hd
 | Model   | KV Cache | CIDEr $\uparrow$ | Latency $\downarrow$  | NFE  |
 |------------|----------|-------|---------|-----|
 | LaviDa-LLaDa  | off      | 110.2 | 6.65    | 100\%  |
-| LaviDa-LLaDa  | on      | 107.8 |  2,01   | 100\%  |
+| LaviDa-LLaDa  | on      | 107.8 |  2.01   | 100\%  |
 | LaviDa-LLaDa  | off      | 108.5 | 3.57    | 50\%  |
 | LaviDa-LLaDa  | on       | 104.4 | 1.32    | 50\%  |
 | LLaVa-1.6-7B (Baseline)  | on       |  96.7 | 1.67     | 100\%|
