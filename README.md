@@ -7,7 +7,7 @@
 
 
 ![Model Architecture](images/architecture.png)
-![Speedup](images/demo.gif)
+![Speedup](images/demo_hd.gif)
 
 ### Installation
 
