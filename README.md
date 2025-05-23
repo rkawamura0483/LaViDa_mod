@@ -1,6 +1,6 @@
 # LaViDa:A Large Diffusion Language Model for Multimodal Understanding
 
-[[Paper]](paper/paper.pdf)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train) [[Website]](https://homepage.jackli.org/projects/lavida/)
+[[Paper]](paper/paper.pdf)[[Arxiv]](https://arxiv.org/abs/2505.16839)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train) [[Website]](https://homepage.jackli.org/projects/lavida/)
 
 
 
@@ -46,7 +46,7 @@ python predict_fim.py
 |---------------|--------|------|------|-------------------|
 | LaViDa-Dream  | **1463.5** | 42.6 | **73.8** | **1.13**              |
 | LaViDa-LLaDa  | 1365.6 | **43.3** | 70.5 | 1.32              |
-| [MMaDa](MMaDa)         | 1410.7 | 30.2 | 68.5 | 3.93             |
+| [MMaDa](https://github.com/Gen-Verse/MMaDA)         | 1410.7 | 30.2 | 68.5 | 3.93             |
 
 (speed measurement conducted with generation length=32 and steps=16)
 
