@@ -121,7 +121,7 @@ scripts/train/exps/cluster/pretrain_dream.sh
 
 Finetune Scripts
 
-scripts/train/exps/cluster/llada-hd-llada-s2
+scripts/train/exps/cluster/llada-hd-llada-s2.sh
 scripts/train/exps/cluster/llada-hd-dream-s2.sh
 ```
 
