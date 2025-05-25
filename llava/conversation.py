@@ -397,12 +397,8 @@ conv_llava_llama_3 = Conversation(
     stop_token_ids=[128009],
 )
 
-llada_tokenizer = "/home/jacklishufan/lavida/LLaDA-8B-Instruct"
-if os.path.exists(llada_tokenizer) and not os.path.islink(llada_tokenizer):
-    print(f"The path '{llada_tokenizer}' exists and is not a dead symlink.")
-else:
-    print(f"The path '{llada_tokenizer}' does not exist or is a dead symlink.")
-    llada_tokenizer = "GSAI-ML/LLaDA-8B-Instruct"
+
+llada_tokenizer = "GSAI-ML/LLaDA-8B-Instruct"
 conv_llava_llada = Conversation(
     system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
     roles=("user", "assistant"),
