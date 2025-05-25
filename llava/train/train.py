@@ -756,6 +756,8 @@ def get_conv_owner(conv):
 seed = int(time.time())
 rng = np.random.default_rng(seed)
 
+from llava.train.infill_utils import insert_infill_substrings,count_num_words
+
 def preprocess_llada(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
@@ -832,6 +834,15 @@ def preprocess_llada(
                     content = '<image>\n'+content
             role =  roles.get(role, role)
             
+            #print(IS_INFILLE_MODEL,role)
+            if IS_INFILLE_MODEL and role == 'assistant':
+                
+                n_words = count_num_words(content)
+                if n_words > 3 and np.random.rand() < 0.8: # 80% add infill
+                    n_infill = max(5, int(n_words*0.1))
+                    n_infill = min(n_infill,10)
+                    content = insert_infill_substrings(content,N=n_infill,K=5)
+                    #print(f"INFILL:{content}")
             conv = [{"role" : role, "content" : content}]
             # First is bos token we don't need here
             encode_id = tokenizer.apply_chat_template(conv,tokenize=False)
@@ -874,6 +885,7 @@ def preprocess_llada(
     )
     
 SELECT_ONE_INDEX= os.environ.get('SELECT_ONE_INDEX', False)
+IS_INFILLE_MODEL = os.environ.get('IS_INFILLE_MODEL',False)
 def preprocess_dream(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
@@ -1246,10 +1258,11 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
 
 
 class LazySupervisedDataset(Dataset):
-    def __init__(self, data_path: str, tokenizer: transformers.PreTrainedTokenizer, data_args: DataArguments):
+    def __init__(self, data_path: str, tokenizer: transformers.PreTrainedTokenizer, data_args: DataArguments,prepend_folder: bool = True):
         super(LazySupervisedDataset, self).__init__()
         self.tokenizer = tokenizer
         self.list_data_dict = []
+        self.prepend_folder = prepend_folder
 
         # Handle multiple JSON files specified in the data_path
         if "{" in data_path and "}" in data_path:
@@ -1266,6 +1279,7 @@ class LazySupervisedDataset(Dataset):
                     rank0_print(f"Loaded {len(cur_data_dict)} samples from {full_path}")
                     self.list_data_dict.extend(cur_data_dict)
         elif data_path.endswith(".yaml"):
+            self.prepend_folder = False # we load image root from yaml and ignore args
             with open(data_path, "r") as file:
                 yaml_data = yaml.safe_load(file)
                 datasets = yaml_data.get("datasets")
@@ -1362,7 +1376,10 @@ class LazySupervisedDataset(Dataset):
         processor = self.data_args.image_processor
         # print(f"\n\nInspecting the image path, folder = {image_folder}, image={image_file}\n\n")
         try:
-            image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
+            if self.prepend_folder and not os.path.isabs(image_file):
+                image = Image.open(os.path.join(image_folder, image_file)).convert("RGB")
+            else:
+                image = Image.open(image_file).convert("RGB")
         except Exception as exn:
             print(f"Failed to open image {image_file}. Exception:", exn)
             raise exn

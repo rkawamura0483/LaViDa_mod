@@ -18,6 +18,7 @@ pip install -e .[train]
 cd eval
 pip install -e .
 cd ../
+pip install trl==0.17.0 
 ```
 
 ### Download Checkpoint
@@ -125,6 +126,19 @@ scripts/train/exps/cluster/llada-hd-llada-s2.sh
 scripts/train/exps/cluster/llada-hd-dream-s2.sh
 ```
 
+## Common Questions
+
+### Why validation acc is 0 during the training
+
+We observed a bug with deepspeed Zero-3 that it breaks inference for validation. Hence, if you want to start a training run with eval results logged to wandb, please use Zero-2.
+
+### Where is Reasoning Data used in Stage 3
+
+It can be fund in the huggingface [collection](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)
+
+### How to lanuch FIM training
+
+The scripts is in `scripts/train/exps/cluster/llada-hd-llada-s3-fim.sh`
 
 ### Acknowledgements
 

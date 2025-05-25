@@ -76,3 +76,6 @@ ckpts/
 logs/
 *_local.py
 lavida-ckpts
+outputdir
+scripts/train/exps/local/
+data

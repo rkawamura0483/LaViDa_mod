@@ -1,35 +1,39 @@
 
-DREAM_7B_INST=/path/to/Dream-v0-Instruct-7B
-VISION_MODEL_VERSION="/path/to/google/siglip-so400m-patch14-384"
-LLM_VERSION=$DREAM_7B_INST
+VISION_MODEL_VERSION="/path/to/siglip-so400m-patch14-384"
+LAVIDA_8B_INSTRUCT=lavida-ckpts/lavida-llada-hd # load pretrained ckpt
+LLM_VERSION=$LAVIDA_8B_INSTRUCT
+
 LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
+
+
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
-IMG_PATH_1M=/home/ubuntu/Open-Llava-V2
-DATA_PATH=scripts/train/stage2.yaml
+
+DATA_PATH=scripts/train/stage3_fim.yaml
 IMG_PATH=data/Open-LLaVA-Next
+
 ############### Pretrain ################
 export ALWASY_DO_2DPOOL=1 
 
 PROMPT_VERSION="qwen_1_5"
-PROMPT_VERSION="dream"
+PROMPT_VERSION="llada"
 
-MID_RUN_NAME="lavida-stage2-dream"
+MID_RUN_NAME="lavida-stage3-llada-fim"
 echo "MID_RUN_NAME: ${MID_RUN_NAME}"
 
 CKPT_PATH=$LLM_VERSION # this could also be the previous stage checkpoint
-export CUDA_VISIBLE_DEVICES=2,3,4,5,6,7,8,9
 NUM_GPUS=8
 PORT=23334
 export SELECT_ONE_INDEX=1
 export DEBUG_FIX_PADDIN=1
-BASE_RUN_NAME=/path/to/projectors
+export IS_INFILLE_MODEL=1
+
 torchrun --nproc_per_node="${NUM_GPUS}"  --master_port="${PORT}" \
     llava/train/train_mem.py \
     --deepspeed scripts/zero3.json \
     --model_name_or_path ${CKPT_PATH} \
     --version ${PROMPT_VERSION} \
     --data_path $DATA_PATH \
-    --pretrain_mm_mlp_adapter="${BASE_RUN_NAME}/mm_projector.bin" \
+    --load_vlm True \
     --image_folder $IMG_PATH \
     --mm_tunable_parts="mm_vision_tower,mm_mlp_adapter,mm_language_model" \
     --mm_vision_tower_lr=2e-6 \
@@ -44,7 +48,7 @@ torchrun --nproc_per_node="${NUM_GPUS}"  --master_port="${PORT}" \
     --mm_patch_merge_type spatial_unpad \
     --bf16 True \
     --run_name $MID_RUN_NAME \
-    --output_dir "/outputdir/${MID_RUN_NAME}" \
+    --output_dir "outputdir/${MID_RUN_NAME}" \
     --num_train_epochs 2 \
     --per_device_train_batch_size 4 \
     --per_device_eval_batch_size 1 \
@@ -62,10 +66,11 @@ torchrun --nproc_per_node="${NUM_GPUS}"  --master_port="${PORT}" \
     --model_max_length 4096 \
     --gradient_checkpointing True \
     --dataloader_num_workers 2 \
+    --max_steps 1560 \
     --lazy_preprocess True \
     --report_to wandb \
     --dataloader_drop_last True \
     --attn_implementation sdpa \
     --resume_from_checkpoint latest \
     --lmms_eval_generate_tasks=vqav2_val_lite,chartqa_lite,textvqa_val_lite,docvqa_val_lite,infovqa_val_lite \
-    --lr_scheduler_kwargs '{"min_lr_rate":0.1}'
+    --lr_scheduler_kwargs '{"min_lr_rate":0.1}' 

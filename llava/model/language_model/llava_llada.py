@@ -124,6 +124,7 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         eos_id = 126081 # hack
         mask_id = 126336
+        fim_id = 126085
         raw_inputs_ids = input_ids
         attention_mask_raw = attention_mask.clone()
         non_padding = ~(raw_inputs_ids==eos_id)
@@ -147,6 +148,7 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
         if labels is not None:
             assert labels.min() == -100
             labels_mask = ~(labels == -100) # targets mask
+            infill_token_pos = labels==fim_id
             # find index of the first non zero mask
             # labels_mask = labels_mask.cumsum(-1).eq(1)
             if self.prefix_lm:
@@ -160,8 +162,8 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
             # t = torch.rand(b, device=input_ids.device)
             masked_indices, p_mask = forward_process(bsz,seq_len,raw_inputs_ids.device,policy=policy,policy_args=policy_args)
             # torch.where()
-            final_masked_indices = masked_indices&labels_mask
-            final_masked_indices_inv = (~masked_indices)&labels_mask
+            final_masked_indices = masked_indices&labels_mask & (~infill_token_pos)
+            final_masked_indices_inv = (~masked_indices)&labels_mask & (~infill_token_pos)
             # breakpoint()
             # breakpoint()
             # boardcast goingon here
@@ -178,6 +180,7 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
             labels_inv = labels.clone()
             labels_inv[~final_masked_indices_inv] = -100
             labels[~final_masked_indices] = -100
+            labels[labels==fim_id] = -100 # kill infill token so we don't predict it
             
             inputs_embeds = torch.cat([inputs_embeds,inputs_embeds_inv])
             labels =  torch.cat([labels,labels_inv])

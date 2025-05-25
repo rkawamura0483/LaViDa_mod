@@ -9,8 +9,8 @@ LLM_VERSION_CLEAN="${LLM_VERSION//\//_}"
 
 VISION_MODEL_VERSION_CLEAN="${VISION_MODEL_VERSION//\//_}"
 
-DATA_PATH=/path/to/cluster.yaml
-IMG_PATH=/path/to/data
+DATA_PATH=scripts/train/stage2.yaml
+IMG_PATH=data/Open-LLaVA-Next
 
 ############### Pretrain ################
 export ALWASY_DO_2DPOOL=1 
