@@ -25,7 +25,7 @@ cd ../
 Please download checkpoints from [Huggingface](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)  and organize them in the following structure
 ```
 <repo root>
---lavida-ckpts
+--lavida-ckpts # create this folder via mkdir
    --lavida-llada-hd # jacklishufan/lavida-llada-v1.0-instruct
    --lavida-dream-hd # jacklishufan/lavida-dream-v1.0-instruct
    --lavida-llada-hd-fim  # jacklishufan/lavida-llada-1.0-fim
