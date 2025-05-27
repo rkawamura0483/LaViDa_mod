@@ -1,6 +1,6 @@
 # LaViDa:A Large Diffusion Language Model for Multimodal Understanding
 
-[[Paper]](paper/paper.pdf)[[Arxiv]](https://arxiv.org/abs/2505.16839)[[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)[[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train) [[Website]](https://homepage.jackli.org/projects/lavida/)
+[[Paper]](paper/paper.pdf) [[Arxiv]](https://arxiv.org/abs/2505.16839) [[Checkpoints]](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded) [[Data]](https://huggingface.co/datasets/jacklishufan/lavida-train) [[Website]](https://homepage.jackli.org/projects/lavida/)
 
 
 
@@ -138,7 +138,7 @@ We observed a bug with deepspeed Zero-3 that it breaks inference for validation.
 
 It can be fund in the huggingface [collection](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)
 
-### How to lanuch FIM training
+### How to launch FIM training
 
 The scripts is in `scripts/train/exps/cluster/llada-hd-llada-s3-fim.sh`
 
