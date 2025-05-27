@@ -116,15 +116,17 @@ open-llava-next -> put under data/Open-LLaVA-NeXT/, merge with an existing folde
 ### Launch Scripts
 
 ```
-Pretrain Scripts:
+Pretrain(Stage 1) Scripts:
 scripts/train/exps/cluster/pretrain_llada.sh
 scripts/train/exps/cluster/pretrain_dream.sh
 
-Finetune Scripts
+Finetune(Stage 2) Scripts
 
 scripts/train/exps/cluster/llada-hd-llada-s2.sh
 scripts/train/exps/cluster/llada-hd-dream-s2.sh
 ```
+
+To launch finetuning scripts, you need to change the `BASE_RUN_NAME` variable in the shell scripts to the path of stage 1 checkpoints. If you want to directly launch stage 2 training, we provide pretrained stage 1 checkpoints in the link [Stage-1-LLaDa](https://huggingface.co/jacklishufan/lavida-llada-1.0-stage1) and [Stage-1-Dream](https://huggingface.co/jacklishufan/lavida-dream-1.0-stage1)
 
 ## Common Questions
 
