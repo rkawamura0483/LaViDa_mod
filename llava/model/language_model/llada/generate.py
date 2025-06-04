@@ -115,7 +115,7 @@ def logit_normal_schedule(shift,sigmas):
 import os
 DEBUG_PRINT_OUTPUT = os.environ.get('DEBUG_PRINT_OUTPUT',False)
 @ torch.no_grad()
-def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128, temperature=0.,
+def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=128, temperature=0.,
              cfg_scale=0., remasking='low_confidence', mask_id=126336,inputs_embeds=None, position_ids=None,attention_mask=None,
               tokenizer=None,
                 verbose=False,
@@ -143,7 +143,7 @@ def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128
     # step_ratio = 0.5
     # block_length = 1024
     # steps = 1024
-    steps = min(steps,max_new_tokens)
+    steps = max_new_tokens # min(steps,max_new_tokens)
     # if step_ratio:
     #     steps = int(max_new_tokens*step_ratio)
     gen_length = max_new_tokens
@@ -178,6 +178,7 @@ def generate(model, prompt=None, steps=128, max_new_tokens=128, block_length=128
     steps = steps // num_blocks
     if step_per_block:
         steps = min(step_per_block,block_length)
+        assert step_ratio is None, 'Please do not pass both step_ratio and step_per_block'
     # step_ratio = 0.5
     # schedule = 'shift'
     # schedule_kwargs = dict(shift=3)
