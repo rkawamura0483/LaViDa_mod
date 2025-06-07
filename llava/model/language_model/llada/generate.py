@@ -200,7 +200,7 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
         for i in range(steps):
             # print(i)
             mask_index = (x == mask_id)
-            block_mask_index = mask_index[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length]
+            block_mask_index = mask_index[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length:]
             # print(mask_index.sum())
             if block_mask_index.sum() == 0:
                 continue
