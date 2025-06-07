@@ -156,7 +156,7 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
     if prefix_lm:
         past_key_values = model(None,input_embeddings=inputs_embeds,use_cache=True).attn_key_values
         # breakpoint()
-        x = torch.full((1, gen_length), mask_id, dtype=torch.long).to(model.device)
+        x = torch.full((bsz, gen_length), mask_id, dtype=torch.long).to(model.device)
         prompt = torch.full((bsz, 0), 0, dtype=torch.long).to(model.device)
         # x[:, :prompt.shape[1]] = prompt.clone()
     else:
@@ -164,7 +164,7 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
         x[:, :prompt.shape[1]] = prompt.clone()
 
     prompt_index = (x != mask_id)
-    assert prompt.shape[0] == 1
+    # assert prompt.shape[0] == 1
     if draft_tokens is not None:
         assert draft_tokens.shape[1] <= gen_length
         x[:, prompt.shape[1]:prompt.shape[1]+draft_tokens.shape[1]] = draft_tokens.clone()
@@ -200,8 +200,9 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
         for i in range(steps):
             # print(i)
             mask_index = (x == mask_id)
+            block_mask_index = mask_index[:, prompt.shape[1] + num_block * block_length: prompt.shape[1] + (num_block + 1) * block_length]
             # print(mask_index.sum())
-            if mask_index.sum() == 0:
+            if block_mask_index.sum() == 0:
                 continue
             # NFE += 2
             if cfg_scale > 0.:
@@ -258,7 +259,10 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
 
             transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
             for j in range(confidence.shape[0]):
-                _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                try:
+                    _, select_index = torch.topk(confidence[j], k=num_transfer_tokens[j, i])
+                except:
+                    breakpoint()
                 transfer_index[j, select_index] = True
             x[transfer_index] = x0[transfer_index]
             if verbose:
