@@ -605,7 +605,7 @@ class Llava_Llada(lmms):
             
             if 'block_length' not in gen_kwargs:
                 gen_kwargs['block_length'] = min(128,gen_kwargs["max_new_tokens"])
-            if 'step_per_block' not in gen_kwargs:
+            if 'step_per_block' not in gen_kwargs and 'step_ratio' not in gen_kwargs:
                 gen_kwargs['step_per_block'] = gen_kwargs['block_length']
             gen_kwargs["temperature"] = 0 
 
