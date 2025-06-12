@@ -464,7 +464,8 @@ class Llava_Llada(lmms):
             print(f"DEBUG_LOAD_TRAINER:{DEBUG_LOAD_TRAINER} {_res}")
             print("Something is broken if above line does not show all keys matched!!!")
             del ckpt1
-        
+        delta_t = 0
+        num_generated = 0
         for chunk in chunks:
             batched_contexts, all_gen_kwargs, batched_doc_to_visual, batched_doc_id, batched_task, batched_split = zip(*chunk)
             task = batched_task[0]
@@ -480,8 +481,7 @@ class Llava_Llada(lmms):
 
             question_input = []
             # import ipdb; ipdb.set_trace()
-            delta_t = 0
-            num_generated = 0
+
             for visual, context in zip(batched_visuals, batched_contexts):
                 t0 = time.time()
                 if origin_image_aspect_ratio is not None and self._config.image_aspect_ratio != origin_image_aspect_ratio:
