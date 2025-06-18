@@ -21,6 +21,22 @@ cd ../
 pip install trl==0.17.0 
 ```
 
+### Transformers-Compatible Checkpoint
+For easy reproducibility, inference, and testing, we provide a Transformers-compatible checkpoint that does not require the source code to run.
+Please download checkpoints from [Huggingface](huggingface.co/KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers)
+
+```
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
+
+tokenizer = AutoTokenizer.from_pretrained('./lavida-llada-v1.0-instruct/')
+model = AutoModelForCausalLM.from_pretrained('./lavida-llada-v1.0-instruct/', torch_dtype=torch.bfloat16)
+image_processor = model.get_vision_tower().image_processor
+
+model.resize_token_embeddings(len(tokenizer))
+model.tie_weights()
+```
+
 ### Download Checkpoint
 
 Please download checkpoints from [Huggingface](https://huggingface.co/collections/jacklishufan/lavida-10-682ecf5a5fa8c5df85c61ded)  and organize them in the following structure
