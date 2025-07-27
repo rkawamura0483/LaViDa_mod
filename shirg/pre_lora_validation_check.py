@@ -130,6 +130,11 @@ def test_token_extraction():
             delay_load=False  # Load immediately for testing
         )
         
+        # Ensure the model is loaded
+        if not tower.is_loaded:
+            print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
+            tower.load_model()
+        
         # Create dummy image batch
         dummy_images = torch.randn(2, 3, 384, 384)
         if torch.cuda.is_available():
@@ -182,6 +187,11 @@ def test_shirg_selection():
             vision_tower_cfg=None,
             delay_load=False  # Load immediately for testing
         )
+        
+        # Ensure the model is loaded
+        if not tower.is_loaded:
+            print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
+            tower.load_model()
         
         # Create test data with corrected dimensions
         batch_size = 2
@@ -256,6 +266,11 @@ def test_shirg_integration():
             delay_load=False  # Load immediately for testing
         )
         
+        # Ensure the model is loaded
+        if not tower.is_loaded:
+            print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
+            tower.load_model()
+        
         # Create test images
         test_images = torch.randn(2, 3, 384, 384)
         if torch.cuda.is_available():
@@ -323,6 +338,11 @@ def test_memory_efficiency():
             vision_tower_cfg=None,
             delay_load=False  # Load immediately for testing
         )
+        
+        # Ensure the model is loaded
+        if not tower.is_loaded:
+            print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
+            tower.load_model()
         
         # Load model memory
         model_memory = torch.cuda.memory_allocated() - initial_memory
