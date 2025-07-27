@@ -887,18 +887,22 @@ class ComprehensiveValidator:
     
     def _compute_information_preservation(self, original_images, extracted_tokens):
         """Compute how well tokens preserve original image information"""
-        # SHIRG-FIX: 2025-07-27 - Corrected information preservation calculation
-        # ISSUE: Variance ratio gives very low scores (0.003) due to different scales
-        # SOLUTION: Use cosine similarity and feature magnitude preservation
-        # LAVIDA IMPACT: Better metric for evaluating token quality
-        # SHIRG IMPACT: Validates high-resolution tokens retain visual information
+        # SHIRG-FIX: 2025-07-27 - Corrected device mismatch in information preservation calculation
+        # ISSUE: image_std on CPU, token_std on CUDA causing device mismatch error
+        # SOLUTION: Ensure all tensors are on the same device before computation
+        # LAVIDA IMPACT: Fixes validation error preventing LoRA training
+        # SHIRG IMPACT: Enables proper token quality evaluation
         
         with torch.no_grad():
+            # Ensure all tensors are on the same device
+            device = extracted_tokens.device
+            original_images = original_images.to(device)
+            
             # Flatten original images for comparison
             batch_size = original_images.shape[0]
             flattened_images = original_images.view(batch_size, -1)  # [B, H*W*C]
             
-            # Get image statistics
+            # Get image statistics (ensure on correct device)
             image_mean = flattened_images.mean(dim=1)  # [B]
             image_std = flattened_images.std(dim=1)    # [B]
             
