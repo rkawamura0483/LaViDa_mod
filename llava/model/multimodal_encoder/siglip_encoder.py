@@ -629,6 +629,14 @@ class SigLipVisionTower(nn.Module):
         """
         import torch.nn.functional as F
         
+        # SHIRG-DEBUG: Add dimension tracing
+        rank0_print(f"SHIRG-DEBUG: forward_with_high_res called")
+        rank0_print(f"SHIRG-DEBUG: images type: {type(images)}")
+        if hasattr(images, 'shape'):
+            rank0_print(f"SHIRG-DEBUG: images shape: {images.shape}")
+        rank0_print(f"SHIRG-DEBUG: return_high_res: {return_high_res}")
+        rank0_print(f"SHIRG-DEBUG: target_resolution: {target_resolution}")
+        
         if not return_high_res:
             # Standard LaViDa path
             return self.forward(images)
@@ -668,18 +676,25 @@ class SigLipVisionTower(nn.Module):
             return standard_features, high_res_features
         else:
             # Batch processing
+            rank0_print(f"SHIRG-DEBUG: Using batch processing path")
+            
             # Standard resolution features
+            rank0_print(f"SHIRG-DEBUG: Extracting standard features...")
             standard_outs = self.vision_tower(
                 images.to(device=self.device, dtype=self.dtype), 
                 output_hidden_states=True
             )
             standard_features = standard_outs.hidden_states[-1].to(images.dtype)
+            rank0_print(f"SHIRG-DEBUG: Standard features shape: {standard_features.shape}")
             
             # High resolution features  
+            rank0_print(f"SHIRG-DEBUG: Extracting high-resolution features...")
             high_res_features = self._extract_high_res_tokens(
                 images, target_resolution
             ).to(images.dtype)
+            rank0_print(f"SHIRG-DEBUG: High-res features shape: {high_res_features.shape}")
             
+            rank0_print(f"SHIRG-DEBUG: Returning (standard_features, high_res_features)")
             return standard_features, high_res_features
 
     def _extract_high_res_tokens(self, images, target_resolution=(768, 768), force_token_count=None):
@@ -702,6 +717,12 @@ class SigLipVisionTower(nn.Module):
         """
         import torch.nn.functional as F
         
+        # SHIRG-DEBUG: Add dimension tracing
+        rank0_print(f"SHIRG-DEBUG: _extract_high_res_tokens called")
+        rank0_print(f"SHIRG-DEBUG: input images shape: {images.shape}")
+        rank0_print(f"SHIRG-DEBUG: target_resolution: {target_resolution}")
+        rank0_print(f"SHIRG-DEBUG: force_token_count: {force_token_count}")
+        
         # Handle single image vs batch
         if images.dim() == 3:  # Single image [C, H, W]
             images = images.unsqueeze(0)
@@ -710,6 +731,7 @@ class SigLipVisionTower(nn.Module):
             single_image = False
         
         batch_size = images.shape[0]
+        rank0_print(f"SHIRG-DEBUG: batch_size: {batch_size}, single_image: {single_image}")
         
         # Resize to high resolution
         high_res_images = F.interpolate(
@@ -718,6 +740,7 @@ class SigLipVisionTower(nn.Module):
             mode='bilinear', 
             align_corners=False
         )
+        rank0_print(f"SHIRG-DEBUG: high_res_images shape after interpolation: {high_res_images.shape}")
         
         # SHIRG-FIX: 2025-07-27 - Use simpler approach for high-resolution extraction
         # ISSUE: Cannot use full encoder since last layer was deleted for LaViDa compatibility
@@ -727,12 +750,14 @@ class SigLipVisionTower(nn.Module):
         # Extract features using current vision tower (with reduced layers)
         with torch.no_grad():
             # Use the existing vision tower but at higher resolution
+            rank0_print(f"SHIRG-DEBUG: Calling vision_tower with high_res_images...")
             high_res_outputs = self.vision_tower(high_res_images.to(
                 device=self.device, dtype=self.dtype
             ), output_hidden_states=True)
             
             # Use the last hidden state from the reduced encoder
             high_res_tokens = high_res_outputs.hidden_states[-1]
+            rank0_print(f"SHIRG-DEBUG: Raw high_res_tokens shape: {high_res_tokens.shape}")
             
             # Calculate actual token count
             H, W = target_resolution
