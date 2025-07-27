@@ -640,8 +640,6 @@ class SigLipVisionTower(nn.Module):
                 # Apply post_layernorm and normalization for consistency
                 normalized_features = self.vision_tower.vision_model.post_layernorm(raw_features)
                 image_feature = F.normalize(normalized_features, p=2, dim=-1).to(image.dtype)
-                if image_feature.shape[-2] != 729:
-                    rank0_print(f"SHIRG Warning: Expected 729 tokens, got {image_feature.shape[-2]}")
                 image_features.append(image_feature)
         else:
             image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
@@ -649,8 +647,6 @@ class SigLipVisionTower(nn.Module):
             # Apply post_layernorm and normalization for consistency
             normalized_features = self.vision_tower.vision_model.post_layernorm(raw_features)
             image_features = F.normalize(normalized_features, p=2, dim=-1).to(images.dtype)
-            if image_features.shape[-2] != 729:
-                rank0_print(f"SHIRG Warning: Expected 729 tokens, got {image_features.shape[-2]}")
 
         return image_features
 

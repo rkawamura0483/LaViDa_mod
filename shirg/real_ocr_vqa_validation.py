@@ -86,92 +86,90 @@ class RealOCRVQAValidator:
             raise
     
     def _get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images - try download first, fallback to synthetic"""
-        
-        # Real OCR/VQA samples with publicly available images
-        real_samples = [
-            {
-                "name": "chartqa_revenue_analysis",
-                "url": "https://raw.githubusercontent.com/princeton-nlp/RULER/main/data/synthetic_tasks/niah_single_2/imgs/chart_1.png",
-                "question": "What was the revenue in Q3 compared to Q2?",
-                "type": "ChartQA",
-                "challenge": "Numerical comparison in bar charts"
-            },
-            {
-                "name": "document_financial_table", 
-                "url": "https://huggingface.co/datasets/microsoft/sroie/resolve/main/train/X51005255530.jpg",
-                "question": "What is the total amount shown in this receipt?",
-                "type": "SROIE",
-                "challenge": "Receipt OCR with numerical extraction"
-            },
-            {
-                "name": "scientific_diagram",
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d/images/1015.png", 
-                "question": "What is the main process illustrated in this diagram?",
-                "type": "AI2D",
-                "challenge": "Scientific process understanding"
-            },
-            {
-                "name": "text_document",
-                "url": "https://datasets-server.huggingface.co/assets/nielsr/funsd/--/funsd/train/0/image/image.jpg",
-                "question": "What is the document type and date?",
-                "type": "FUNSD", 
-                "challenge": "Document structure and header extraction"
-            },
-            {
-                "name": "complex_chart",
-                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/val/png/two_col_100.png",
-                "question": "What is the trend shown in this chart over time?",
-                "type": "ChartQA",
-                "challenge": "Time series analysis"
-            }
-        ]
+        """Get real OCR/VQA images from local data directory"""
         
         ocr_vqa_samples = {}
         
-        for sample in real_samples:
-            try:
-                print(f"📥 Downloading {sample['name']}...")
-                
-                # Download image
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'
-                }
-                
-                response = requests.get(sample['url'], headers=headers, timeout=15)
-                
-                if response.status_code == 200:
-                    # Load and process image
-                    image = Image.open(BytesIO(response.content))
-                    
-                    if image.mode != 'RGB':
-                        image = image.convert('RGB')
-                    
-                    # Resize for SHIRG processing
+        # First, load images from local data directory
+        data_dir = Path("./data/real_images")
+        
+        # Load ChartQA samples
+        chartqa_dir = data_dir / "chartqa"
+        if chartqa_dir.exists():
+            print(f"📁 Loading local ChartQA images from {chartqa_dir}")
+            chartqa_questions = [
+                "What was the revenue growth rate between Q2 and Q3 2024?",
+                "What is the highest value shown in this chart?",
+                "What trend is visible in the data over time?"
+            ]
+            
+            for idx, img_path in enumerate(sorted(chartqa_dir.glob("*.jpg"))[:3]):
+                try:
+                    image = Image.open(img_path).convert('RGB')
                     image = self._resize_for_shirg(image)
                     
-                    ocr_vqa_samples[sample['name']] = {
+                    sample_name = f"chartqa_{img_path.stem}"
+                    ocr_vqa_samples[sample_name] = {
                         'image': image,
-                        'question': sample['question'],
-                        'type': sample['type'],
-                        'challenge': sample['challenge'],
-                        'url': sample['url']
+                        'question': chartqa_questions[idx % len(chartqa_questions)],
+                        'type': 'ChartQA-like',
+                        'challenge': 'Chart analysis and numerical extraction',
+                        'source': 'local'
                     }
-                    
-                    print(f"✅ Successfully loaded {sample['name']}")
-                    
-                else:
-                    print(f"❌ Failed to download {sample['name']}: HTTP {response.status_code}")
-                    
-            except Exception as e:
-                print(f"❌ Error with {sample['name']}: {e}")
-                continue
+                    print(f"✅ Loaded {sample_name}")
+                except Exception as e:
+                    print(f"❌ Error loading {img_path}: {e}")
         
-        # If we didn't get enough real images, supplement with high-quality synthetic ones
-        if len(ocr_vqa_samples) < 3:
-            print("⚠️ Adding synthetic OCR/VQA images to reach minimum of 5 samples")
-            synthetic_samples = self._create_synthetic_ocr_vqa_samples()
-            ocr_vqa_samples.update(synthetic_samples)
+        # If not enough local images, create high-quality synthetic OCR/VQA samples
+        if len(ocr_vqa_samples) < 5:
+            print(f"📊 Found {len(ocr_vqa_samples)} local images, creating additional synthetic samples...")
+            
+            # Create realistic synthetic OCR/VQA images for comprehensive testing
+            synthetic_samples = [
+                {
+                    "name": "synthetic_revenue_chart",
+                    "type": "ChartQA-like",
+                    "question": "What was the revenue growth rate between Q2 and Q3 2024?",
+                    "challenge": "Multi-series bar chart with percentage calculations"
+                },
+                {
+                    "name": "synthetic_financial_doc",
+                    "type": "DocVQA-like", 
+                    "question": "What is the net profit margin shown in the financial summary?",
+                    "challenge": "Dense numerical data extraction"
+                },
+                {
+                    "name": "synthetic_infographic",
+                    "type": "InfographicsVQA-like",
+                    "question": "What are the three main components shown in the diagram?",
+                    "challenge": "Complex layout with mixed text and graphics"
+                },
+                {
+                    "name": "synthetic_table_analysis",
+                    "type": "TabMWP-like",
+                    "question": "What is the average value across all categories?",
+                    "challenge": "Tabular data with calculations"
+                },
+                {
+                    "name": "synthetic_technical_diagram",
+                    "type": "AI2D-like",
+                    "question": "What is the data flow between the main components?",
+                    "challenge": "Technical diagram with labels and connections"
+                }
+            ]
+            
+            # Create only as many synthetic samples as needed
+            needed = max(0, 5 - len(ocr_vqa_samples))
+            for sample_info in synthetic_samples[:needed]:
+                image = self._create_high_quality_synthetic_image(sample_info)
+                ocr_vqa_samples[sample_info['name']] = {
+                    'image': image,
+                    'question': sample_info['question'],
+                    'type': sample_info['type'],
+                    'challenge': sample_info['challenge'],
+                    'source': 'synthetic'
+                }
+                print(f"✅ Created {sample_info['name']}")
         
         print(f"📋 Total samples for validation: {len(ocr_vqa_samples)}")
         return ocr_vqa_samples
@@ -587,6 +585,23 @@ class RealOCRVQAValidator:
         
         return synthetic_samples
     
+    def _create_high_quality_synthetic_image(self, sample_info):
+        """Create high-quality synthetic image based on sample type"""
+        
+        if "chart" in sample_info['name']:
+            return self._create_complex_revenue_chart()
+        elif "financial_doc" in sample_info['name']:
+            return self._create_financial_summary()
+        elif "infographic" in sample_info['name']:
+            return self._create_infographic()
+        elif "table" in sample_info['name']:
+            return self._create_table_analysis()
+        elif "technical" in sample_info['name']:
+            return self._create_technical_diagram()
+        else:
+            # Default to creating a chart
+            return self._create_complex_revenue_chart()
+    
     def _create_complex_revenue_chart(self):
         """Create complex revenue chart for testing"""
         img = Image.new('RGB', (672, 672), 'white')
@@ -725,6 +740,140 @@ class RealOCRVQAValidator:
         for insight in insights:
             draw.text((50, y), insight, fill='black', font=text_font)
             y += 25
+        
+        return img
+    
+    def _create_infographic(self):
+        """Create infographic with mixed text and graphics"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 28)
+            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
+            text_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
+        except:
+            title_font = ImageFont.load_default()
+            header_font = ImageFont.load_default()
+            text_font = ImageFont.load_default()
+        
+        # Title
+        draw.text((50, 20), "Data Processing Pipeline", fill='black', font=title_font)
+        
+        # Three main components
+        components = [
+            ("Data Collection", 100, 100, "• APIs\n• Databases\n• Files"),
+            ("Processing", 250, 100, "• Clean\n• Transform\n• Validate"),
+            ("Analytics", 400, 100, "• ML Models\n• Statistics\n• Reporting")
+        ]
+        
+        for comp_name, x, y, details in components:
+            # Component box
+            draw.rectangle([x, y, x+150, y+120], outline='blue', width=2, fill='lightblue')
+            draw.text((x+10, y+10), comp_name, fill='black', font=header_font)
+            draw.text((x+10, y+40), details, fill='black', font=text_font)
+            
+            # Arrows between components
+            if x < 400:
+                draw.line([x+150, y+60, x+200, y+60], fill='red', width=3)
+                draw.polygon([(x+195, y+55), (x+205, y+60), (x+195, y+65)], fill='red')
+        
+        return img
+    
+    def _create_table_analysis(self):
+        """Create table with calculations"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
+            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 14)
+            text_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
+        except:
+            title_font = ImageFont.load_default()
+            header_font = ImageFont.load_default()
+            text_font = ImageFont.load_default()
+        
+        # Title
+        draw.text((50, 20), "Product Performance Analysis", fill='black', font=title_font)
+        
+        # Table
+        headers = ["Product", "Q1 Sales", "Q2 Sales", "Q3 Sales", "Average"]
+        data = [
+            ["Widget A", "1,250", "1,380", "1,520", "1,383"],
+            ["Widget B", "980", "1,120", "1,240", "1,113"],
+            ["Widget C", "2,100", "2,280", "2,450", "2,277"],
+            ["Widget D", "650", "720", "810", "727"],
+            ["Total", "4,980", "5,500", "6,020", "5,500"]
+        ]
+        
+        x, y = 50, 100
+        col_width = 120
+        row_height = 40
+        
+        # Headers
+        for i, header in enumerate(headers):
+            draw.rectangle([x + i*col_width, y, x + (i+1)*col_width, y + row_height], 
+                          outline='black', width=2, fill='lightgray')
+            draw.text((x + i*col_width + 10, y + 12), header, fill='black', font=header_font)
+        
+        # Data rows
+        for row_idx, row in enumerate(data):
+            y += row_height
+            for col_idx, cell in enumerate(row):
+                fill_color = 'lightyellow' if row_idx == len(data)-1 else 'white'
+                draw.rectangle([x + col_idx*col_width, y, x + (col_idx+1)*col_width, y + row_height],
+                             outline='black', width=1, fill=fill_color)
+                draw.text((x + col_idx*col_width + 10, y + 12), cell, fill='black', font=text_font)
+        
+        return img
+    
+    def _create_technical_diagram(self):
+        """Create technical system diagram"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
+            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
+            small_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
+        except:
+            title_font = ImageFont.load_default()
+            label_font = ImageFont.load_default()
+            small_font = ImageFont.load_default()
+        
+        # Title
+        draw.text((200, 20), "System Architecture", fill='black', font=title_font)
+        
+        # Components
+        components = [
+            ("Load Balancer", 250, 100, 150, 60),
+            ("Web Server 1", 100, 200, 120, 50),
+            ("Web Server 2", 280, 200, 120, 50),
+            ("Web Server 3", 460, 200, 120, 50),
+            ("Database", 180, 320, 100, 50),
+            ("Cache", 400, 320, 100, 50),
+            ("Storage", 290, 420, 100, 50)
+        ]
+        
+        for name, x, y, w, h in components:
+            draw.rectangle([x, y, x+w, y+h], outline='black', width=2, fill='lightcyan')
+            draw.text((x+10, y+h//2-5), name, fill='black', font=label_font)
+        
+        # Connections
+        connections = [
+            ((325, 160), (160, 200)),
+            ((325, 160), (340, 200)),
+            ((325, 160), (520, 200)),
+            ((160, 250), (230, 320)),
+            ((340, 250), (230, 320)),
+            ((520, 250), (450, 320)),
+            ((230, 370), (340, 420)),
+            ((450, 370), (340, 420))
+        ]
+        
+        for (x1, y1), (x2, y2) in connections:
+            draw.line([x1, y1, x2, y2], fill='red', width=2)
         
         return img
 
