@@ -878,9 +878,31 @@ class SigLipVisionTower(nn.Module):
             
             batch_size, total_tokens, embed_dim = highres_tokens.shape
             
+            # GRADIENT-FIX: 2025-07-27 - Memory-efficient gradient computation
             # Clear GPU cache before intensive operations
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                
+            # Process in chunks to avoid memory overflow during gradient computation
+            if batch_size > 2:
+                # Split large batches to prevent OOM
+                chunk_size = 2
+                chunk_results = []
+                
+                for i in range(0, batch_size, chunk_size):
+                    end_idx = min(i + chunk_size, batch_size)
+                    chunk_tokens = highres_tokens[i:end_idx]
+                    chunk_text = text_embeddings[i:end_idx] if text_embeddings is not None else None
+                    
+                    # Process chunk with reduced operations
+                    chunk_result = self._process_token_chunk_for_selection(
+                        chunk_tokens, target_count, chunk_text
+                    )
+                    chunk_results.append(chunk_result)
+                
+                # Combine results
+                final_tokens = torch.cat(chunk_results, dim=0)
+                return final_tokens
             
             if target_count >= total_tokens:
                 # Add simple summary token if no selection needed
@@ -994,6 +1016,58 @@ class SigLipVisionTower(nn.Module):
         rank0_print(f"SHIRG-v3 Attention: Selected {target_count} tokens + 1 summary from {total_tokens} high-res tokens")
         return final_tokens
     
+    def _process_token_chunk_for_selection(self, chunk_tokens, target_count, chunk_text=None):
+        """
+        Process a chunk of tokens for memory-efficient selection
+        
+        MEMORY-FIX: 2025-07-27 - Chunked processing to prevent CUDA OOM
+        """
+        batch_size, total_tokens, embed_dim = chunk_tokens.shape
+        
+        if target_count >= total_tokens:
+            # Add simple summary token if no selection needed
+            summary_token = torch.mean(chunk_tokens, dim=1, keepdim=True)
+            return torch.cat([chunk_tokens, summary_token], dim=1)
+        
+        # Simplified selection for memory efficiency
+        # Step 1: Get importance scores (lightweight)
+        attention_scores = self._compute_attention_importance(chunk_tokens)
+        
+        # Step 2: Text relevance (if provided)
+        if chunk_text is not None:
+            text_relevance = self._compute_text_relevance(chunk_tokens, chunk_text)
+            importance_scores = 0.7 * attention_scores + 0.3 * text_relevance
+        else:
+            importance_scores = attention_scores
+        
+        # Step 3: Simple top-k selection (no complex coverage for memory efficiency)
+        _, selected_indices = torch.topk(importance_scores, k=target_count, dim=-1)
+        
+        # Step 4: Extract selected tokens
+        selected_tokens = torch.gather(
+            chunk_tokens, 1,
+            selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
+        )
+        
+        # Step 5: Create simple summary token
+        summary_tokens = []
+        for b in range(batch_size):
+            dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=chunk_tokens.device)
+            dropped_mask[selected_indices[b]] = False
+            
+            if dropped_mask.sum() > 0:
+                dropped_tokens = chunk_tokens[b][dropped_mask]
+                summary_token = torch.mean(dropped_tokens, dim=0, keepdim=True)
+            else:
+                summary_token = torch.mean(chunk_tokens[b], dim=0, keepdim=True)
+            
+            summary_tokens.append(summary_token)
+        
+        summary_token = torch.stack(summary_tokens, dim=0)
+        
+        # Combine selected tokens with summary
+        return torch.cat([selected_tokens, summary_token], dim=1)
+    
     def _compute_attention_importance(self, tokens):
         """
         Compute attention-based token importance scores (FastV-inspired)
@@ -1037,7 +1111,10 @@ class SigLipVisionTower(nn.Module):
             if num_tokens > 1024:
                 # For large token counts, use sampling-based approximation
                 sample_size = min(512, num_tokens // 4)
-                sample_indices = torch.randperm(num_tokens, device=tokens.device)[:sample_size]
+                # REPRODUCIBILITY-FIX: 2025-07-27 - Use deterministic sampling for reproducible results
+                # Create deterministic indices based on token positions instead of random sampling
+                stride = max(1, num_tokens // sample_size)
+                sample_indices = torch.arange(0, num_tokens, stride, device=tokens.device)[:sample_size]
                 sample_tokens = normalized_tokens[:, sample_indices]  # [B, sample_size, D]
                 
                 # Compute attention between sample and all tokens
