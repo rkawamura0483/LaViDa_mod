@@ -936,24 +936,24 @@ class SigLipVisionTower(nn.Module):
         """
         batch_size, num_tokens, embed_dim = tokens.shape
         
-        # Method 1: Self-attention importance (primary approach)
-        # Compute self-attention to identify important tokens
+        # Method 1: Self-attention importance (simplified and robust)
+        # SHIRG-FIX: 2025-07-27 - Simplified attention to avoid dimension issues
         with torch.no_grad():
-            # Simple single-head attention for efficiency
-            head_dim = embed_dim // 8  # Use smaller head for efficiency
-            scale = head_dim ** -0.5
+            # Use cosine similarity as proxy for attention (more stable)
+            # Normalize tokens for cosine similarity
+            normalized_tokens = F.normalize(tokens, p=2, dim=-1)  # [B, N, D]
             
-            # Create Q, K matrices (simplified)
-            q = tokens[:, :, :head_dim] * scale  # [B, N, head_dim]
-            k = tokens[:, :, :head_dim]  # [B, N, head_dim]
+            # Compute pairwise similarities (simplified attention)
+            similarity_matrix = torch.bmm(normalized_tokens, normalized_tokens.transpose(-2, -1))  # [B, N, N]
             
-            # Compute attention scores
-            attention_matrix = torch.bmm(q, k.transpose(-2, -1))  # [B, N, N]
-            attention_weights = F.softmax(attention_matrix, dim=-1)
+            # Importance = how much other tokens are similar to each token
+            # Sum of similarities received from other tokens
+            importance_scores = similarity_matrix.sum(dim=-1)  # [B, N]
             
-            # Importance = average attention received from all other tokens
-            # This captures how much other tokens "attend to" each token
-            importance_scores = attention_weights.mean(dim=1)  # [B, N]
+            # Normalize to [0, 1] range
+            importance_min = importance_scores.min(dim=1, keepdim=True)[0]
+            importance_max = importance_scores.max(dim=1, keepdim=True)[0]
+            importance_scores = (importance_scores - importance_min) / (importance_max - importance_min + 1e-8)
         
         # Method 2: Feature magnitude boost (secondary component)
         # Tokens with higher feature magnitudes are often more important
