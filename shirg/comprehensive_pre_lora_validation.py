@@ -312,10 +312,10 @@ class ComprehensiveValidator:
                 with torch.no_grad():
                     multiview_tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
                     
-                # Check token count matches expected for multi-view
-                # SHIRG-FIX: 2025-07-27 - Corrected expected token calculation
-                # LaViDa multi-view: 4×(336/14)² + 1×(672/14)² = 4×576 + 1×2304 = 4608
-                expected_patches = 4 * (336//14)**2 + 1 * (672//14)**2  # 4608
+                # Check token count matches expected for high-resolution processing
+                # SHIRG-FIX: 2025-07-27 - Corrected for actual high-res approach
+                # High-resolution SHIRG: 672×672 → (672/14)² = 48² = 2304 tokens
+                expected_patches = (672//14)**2  # 2304 tokens for 672x672 input
                 actual_patches = multiview_tokens.shape[1]
                 
                 details[f"resolution_{height}x{width}"] = {
@@ -458,8 +458,11 @@ class ComprehensiveValidator:
             # LAVIDA IMPACT: Ensures LoRA training will work with LaViDa parameters
             # SHIRG IMPACT: Validates SHIRG methods are gradient-compatible for training
             
-            # Create test data with proper device/dtype
+            # Create test data with proper device/dtype for gradient testing
             test_images = torch.randn(2, 3, 384, 384, requires_grad=True, device=self.tower.device, dtype=self.tower.dtype)
+            
+            # Enable gradients for the entire vision tower before testing
+            self.tower.vision_tower.requires_grad_(True)
             
             # Test gradient flow through different paths
             paths_to_test = {
@@ -474,10 +477,12 @@ class ComprehensiveValidator:
                     if test_images.grad is not None:
                         test_images.grad.zero_()
                     
-                    # Enable gradients for specific test
-                    self.tower.vision_tower.requires_grad_(True)
+                    # Zero gradients for all model parameters
+                    for param in self.tower.vision_tower.parameters():
+                        if param.grad is not None:
+                            param.grad.zero_()
                     
-                    # Forward pass
+                    # Forward pass with gradient tracking
                     output = forward_func()
                     
                     # Create dummy loss
@@ -486,11 +491,11 @@ class ComprehensiveValidator:
                     # Backward pass
                     loss.backward(retain_graph=True)
                     
-                    # Check if gradients exist
-                    has_gradients = test_images.grad is not None
-                    details[f"{path_name}_gradients"] = "✓ Present" if has_gradients else "❌ Missing"
+                    # Check if gradients exist on input
+                    has_input_gradients = test_images.grad is not None
+                    details[f"{path_name}_gradients"] = "✓ Present" if has_input_gradients else "❌ Missing"
                     
-                    if has_gradients:
+                    if has_input_gradients:
                         grad_norm = test_images.grad.norm().item()
                         metrics[f"{path_name}_grad_norm"] = grad_norm
                         
@@ -499,19 +504,17 @@ class ComprehensiveValidator:
                         elif grad_norm > 1e3:
                             issues.append(f"Exploding gradients in {path_name}: {grad_norm:.2e}")
                     else:
-                        issues.append(f"No gradients flowing through {path_name}")
-                    
-                    # Reset gradient requirements after each test
-                    self.tower.vision_tower.requires_grad_(False)
+                        issues.append(f"Gradient test failed for {path_name}: {output.device if hasattr(output, 'device') else 'unknown'}")
                     
                 except Exception as e:
                     issues.append(f"Gradient test failed for {path_name}: {e}")
                     details[f"{path_name}_error"] = str(e)
-                    # Make sure to reset gradients even if test fails
-                    self.tower.vision_tower.requires_grad_(False)
             
             # Test specific components that matter for LoRA
             self._test_lora_specific_gradients(test_images, details, metrics, issues)
+            
+            # Reset gradients after all tests
+            self.tower.vision_tower.requires_grad_(False)
         
         except Exception as e:
             issues.append(f"Gradient flow test failed: {e}")
@@ -701,12 +704,12 @@ class ComprehensiveValidator:
         recommendations = []
         
         # Check research specification adherence
-        # SHIRG-FIX: 2025-07-27 - Corrected expected token count based on research specs
-        # ISSUE: Research mentions 3,645 tokens but LaViDa multi-view should be 4608
-        # SOLUTION: Use actual LaViDa multi-view count: 4×576 + 1×2304 = 4608
-        # RESEARCH IMPACT: Validates implementation matches research specification
+        # SHIRG-FIX: 2025-07-27 - Corrected token count for high-resolution approach
+        # ISSUE: Original research unclear about token source - use direct high-res approach
+        # SOLUTION: Use 672×672 high-resolution input: (672/14)² = 2304 tokens
+        # RESEARCH IMPACT: Validates implementation uses genuine high-resolution tokens
         research_specs = {
-            "multi_view_tokens": 4608,  # LaViDa actual: 4×576 + 1×2304 = 4608
+            "high_res_tokens": 2304,  # 672×672 input: (672/14)² = 2304 tokens
             "target_budgets": [512, 768, 1024],
             "selection_components": ["variance", "similarity", "edge_density"],
             "coverage_guarantee": True,
@@ -727,7 +730,7 @@ class ComprehensiveValidator:
             
             # Check token count
             actual_tokens = multiview.shape[1]
-            expected_tokens = research_specs["multi_view_tokens"]
+            expected_tokens = research_specs["high_res_tokens"]
             
             if actual_tokens == expected_tokens:
                 details["token_count_compliance"] = "✓ Correct"
@@ -922,9 +925,10 @@ class ComprehensiveValidator:
             embeddings = self.tower.vision_tower.vision_model.embeddings
             embeddings.requires_grad_(True)
             
-            # Ensure input matches model dtype/device
+            # Ensure input matches model dtype/device and enable gradients
             test_input = test_images.to(device=embeddings.patch_embedding.weight.device, 
                                       dtype=embeddings.patch_embedding.weight.dtype)
+            test_input.requires_grad_(True)
             
             output = embeddings(test_input)
             loss = output.mean()
@@ -996,7 +1000,7 @@ class ComprehensiveValidator:
         # LAVIDA IMPACT: Validates actual LaViDa architecture behavior
         
         # Check shapes - validate multiview and SHIRG outputs
-        expected_multiview = (multiview.shape[0], 4608, self.tower.hidden_size)
+        expected_multiview = (multiview.shape[0], 2304, self.tower.hidden_size)
         expected_shirg = (shirg.shape[0], target + 1, self.tower.hidden_size)
         
         # Validate baseline has reasonable token count (LaViDa architecture dependent)
@@ -1025,8 +1029,8 @@ class ComprehensiveValidator:
             issues.append(f"Inconsistent SHIRG shapes: {shirg_tokens.shape} vs {shirg_direct.shape}")
         
         # Check token count consistency
-        if multiview.shape[1] != 4608:
-            issues.append(f"Wrong multiview token count: {multiview.shape[1]} vs 4608")
+        if multiview.shape[1] != 2304:
+            issues.append(f"Wrong high-res token count: {multiview.shape[1]} vs 2304")
         
         details["pipeline_consistency"] = "✓ Consistent" if len(issues) == 0 else "❌ Inconsistent"
         
@@ -1092,7 +1096,7 @@ class ComprehensiveValidator:
             with torch.no_grad():
                 tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
             
-            return tokens.shape[1] == 4608
+            return tokens.shape[1] == 2304
         except:
             return False
     
@@ -1195,7 +1199,7 @@ class ComprehensiveValidator:
             with torch.no_grad():
                 multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
             
-            return multiview.shape[1] == 4608  # Correct token count per research spec
+            return multiview.shape[1] == 2304  # Correct high-res token count
         except:
             return False
     

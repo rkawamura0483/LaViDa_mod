@@ -2,7 +2,7 @@
 NEVER RUN CODE LOCALLY. I ONLY RUN IT IN COLAB. DO NOT TRY TO TEST LOCALLY
 
 ## Project Overview
-This repository contains a **forked and modified version of LaViDa** with **SHIRG (Static-Hierarchical Relevance Gate)** research integration. The coder has full edit access to both the LaViDa codebase and the SHIRG implementation.
+This repository contains a **forked and modified version of LaViDa** with **SHIRG (Static-Hierarchical Relevance Gate)** research integration. The coder has full edit access to both the LaViDa codebase and the SHIRG implementation. The LaViDa codebase is kept the same as original except for siglip_encoder. Please check original_siglip_encoder.py for original implementation.
 
 ## General Rules
 - **Primary Research Focus**: Read `shirg/SHIRG_RESEARCH_IDEA.md` to understand the SHIRG research objective
