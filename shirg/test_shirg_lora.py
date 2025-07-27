@@ -49,8 +49,8 @@ def test_shirg_implementation():
             logger.info(f"✅ Baseline forward: {baseline_output.shape}")
             
             # Test high-resolution token extraction
-            if hasattr(vision_tower, 'get_multiview_tokens_for_shirg'):
-                highres_output = vision_tower.get_multiview_tokens_for_shirg(test_images)
+            if hasattr(vision_tower, 'get_highres_tokens_for_shirg'):
+                highres_output = vision_tower.get_highres_tokens_for_shirg(test_images)
                 logger.info(f"✅ High-res extraction: {highres_output.shape}")
                 
                 # Test SHIRG selection
@@ -67,7 +67,7 @@ def test_shirg_implementation():
                 else:
                     logger.warning("⚠️ shirg_token_selection method not found")
             else:
-                logger.warning("⚠️ get_multiview_tokens_for_shirg method not found")
+                logger.warning("⚠️ get_highres_tokens_for_shirg method not found")
         
         return True
         

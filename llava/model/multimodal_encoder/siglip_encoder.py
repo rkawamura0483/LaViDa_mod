@@ -609,16 +609,16 @@ class SigLipVisionTower(nn.Module):
 
         self.vision_tower = SigLipVisionModel.from_pretrained(self.vision_tower_name, device_map=device_map)
 
-        # SHIRG-FIX: 2025-07-27 - ACTUAL SHIRG: Keep LaViDa architecture, access pre-pooling tokens
-        # ISSUE: SHIRG is about TOKEN SELECTION from 3,645 tokens, not layer differences!
-        # SOLUTION: Keep LaViDa's layer deletion, but access multi-view tokens before pooling
+        # SHIRG-FIX: 2025-07-27 - CORRECTED: Keep LaViDa architecture, add high-res capability
+        # ISSUE: LaViDa uses single 384×384 images → only 729 tokens (no multi-view)
+        # SOLUTION: Keep LaViDa's layer deletion, add high-res single-image processing
         # LAVIDA IMPACT: Maintains exact LaViDa architecture (26 layers, 729 tokens)
-        # SHIRG IMPACT: Gets 3,645 multi-view tokens for selection, then selects best subset
+        # SHIRG IMPACT: Gets 2,304 high-res tokens from single images for selection
         
         # Keep original LaViDa approach - delete last layer
         del self.vision_tower.vision_model.encoder.layers[-1:]
         
-        rank0_print("SHIRG: LaViDa architecture preserved - SHIRG will select from 3,645 multi-view tokens")
+        rank0_print("SHIRG: LaViDa architecture preserved - SHIRG will select from 2,304 high-res tokens")
         
         self.vision_tower.vision_model.head = nn.Identity()
         self.vision_tower.requires_grad_(False)
@@ -658,11 +658,11 @@ class SigLipVisionTower(nn.Module):
         """
         Forward pass with SHIRG-v2 token selection (ACTUAL research implementation)
         
-        SHIRG-FIX: 2025-07-27 - Corrected SHIRG with proper token dimensions
-        ISSUE: SHIRG should work with 4608 multi-view tokens, not 3645
-        SOLUTION: Extract 4608 multi-view tokens, apply SHIRG-v2 selection
-        LAVIDA IMPACT: Maintains compatibility - output can replace pooled tokens
-        SHIRG IMPACT: Implements actual research objective with correct token pool
+        SHIRG-FIX: 2025-07-27 - Corrected SHIRG for actual LaViDa architecture
+        ISSUE: LaViDa uses single images, not multi-view (729 tokens, not 3645)
+        SOLUTION: Use high-resolution single images (672×672 → 2304 tokens)
+        LAVIDA IMPACT: Maintains compatibility - output can replace baseline tokens
+        SHIRG IMPACT: Implements corrected research objective with realistic token pool
         
         Args:
             images: Input images [B, C, H, W]
@@ -673,39 +673,39 @@ class SigLipVisionTower(nn.Module):
             selected_tokens: [B, target_tokens+1, D] SHIRG-selected tokens + summary
         """
         
-        # Step 1: Get multi-view tokens (4608 tokens from 4×336² + 1×672²)
-        multiview_tokens = self.get_multiview_tokens_for_shirg(images)
+        # Step 1: Get high-resolution tokens (2304 tokens from 672×672)
+        highres_tokens = self.get_highres_tokens_for_shirg(images)
         
         # Step 2: Apply SHIRG-v2 selection algorithm
         selected_tokens = self.shirg_token_selection(
-            multiview_tokens, target_tokens, text_embeddings
+            highres_tokens, target_tokens, text_embeddings
         )
         
         return selected_tokens.to(images.dtype if hasattr(images, 'dtype') else torch.float32)
 
-    def get_multiview_tokens_for_shirg(self, images):
+    def get_highres_tokens_for_shirg(self, images):
         """
-        Get high-resolution tokens for SHIRG selection by using larger input resolution
+        Get high-resolution tokens for SHIRG selection from single images
         
-        SHIRG-FIX: 2025-07-27 - Simplified to use actual high-resolution processing
-        ISSUE: Original research claim about 3,645 tokens unclear - use direct high-res approach
-        SOLUTION: Process images at higher resolution to get more tokens before pooling
+        SHIRG-FIX: 2025-07-27 - CORRECTED for actual LaViDa architecture
+        ISSUE: LaViDa uses single 384×384 images, not multi-view processing
+        SOLUTION: Process single images at 672×672 resolution → 2,304 tokens
         LAVIDA IMPACT: Uses same SigLIP architecture, just with higher resolution input
-        SHIRG IMPACT: Gets genuine high-resolution tokens for better OCR/VQA performance
+        SHIRG IMPACT: Gets 3.2× more tokens (2304 vs 729) for better OCR/VQA performance
         
         Args:
             images: Input images [B, C, H, W]
             
         Returns:
-            High-resolution tokens [B, N, D] where N depends on input resolution
+            High-resolution tokens [B, 2304, D] from 672×672 processing
         """
         import torch.nn.functional as F
         
         if images.dim() == 3:
             images = images.unsqueeze(0)
         
-        # Use high resolution for more tokens: 672x672 → (672/14)² = 2,304 tokens
-        # This gives us high-resolution tokens that SigLIP would normally pool down
+        # CORRECTED: Use 672×672 single images → 2,304 tokens (not multi-view)
+        # This gives us 3.2× more detail than LaViDa's baseline 729 tokens
         high_res_size = 672
         high_res_images = F.interpolate(
             images, size=(high_res_size, high_res_size), mode='bilinear', align_corners=False
@@ -741,36 +741,36 @@ class SigLipVisionTower(nn.Module):
         # Apply L2 normalization to match expected token magnitudes
         high_res_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
         
-        expected_patches = (high_res_size // 14) ** 2  # 2,304 for 672x672
+        expected_patches = (high_res_size // 14) ** 2  # 2,304 for 672×672
         if high_res_tokens.shape[1] != expected_patches:
-            rank0_print(f"SHIRG Warning: Expected {expected_patches} tokens for {high_res_size}x{high_res_size}, got {high_res_tokens.shape[1]}")
+            rank0_print(f"SHIRG Warning: Expected {expected_patches} tokens for {high_res_size}×{high_res_size}, got {high_res_tokens.shape[1]}")
         
-        rank0_print(f"SHIRG: Extracted {high_res_tokens.shape[1]} high-resolution tokens for selection")
+        rank0_print(f"SHIRG: Extracted {high_res_tokens.shape[1]} high-res tokens (vs 729 baseline) for selection")
         return high_res_tokens
     
-    def shirg_token_selection(self, multiview_tokens, target_count=980, text_embeddings=None):
+    def shirg_token_selection(self, highres_tokens, target_count=768, text_embeddings=None):
         """
         SHIRG-v2 token selection with coverage guarantee and edge density boost
         
-        SHIRG-FIX: 2025-07-27 - Complete SHIRG-v2 algorithm implementation
-        ISSUE: Original missing hierarchical clustering and coverage guarantee from research
-        SOLUTION: Full SHIRG-v2 with coverage-aware selection and edge boost
-        RESEARCH IMPACT: Implements the actual research contribution as specified
+        SHIRG-FIX: 2025-07-27 - CORRECTED for actual LaViDa architecture
+        ISSUE: Original assumed multi-view tokens, but LaViDa uses single images
+        SOLUTION: SHIRG-v2 selection from 2,304 high-res single-image tokens
+        RESEARCH IMPACT: Implements corrected research objective
         
         Args:
-            multiview_tokens: [B, N, D] pool of high-resolution tokens (e.g., 2304 for 672x672)
+            highres_tokens: [B, 2304, D] high-resolution tokens from 672×672 images
             target_count: Number of tokens to select (512, 768, 1024)  
             text_embeddings: [B, L, D] text embeddings for similarity scoring (optional)
             
         Returns:
             selected_tokens: [B, target_count+1, D] selected tokens + summary token
         """
-        batch_size, total_tokens, embed_dim = multiview_tokens.shape
+        batch_size, total_tokens, embed_dim = highres_tokens.shape
         
         if target_count >= total_tokens:
             # Add dummy summary token if no selection needed
-            summary_token = torch.mean(multiview_tokens, dim=1, keepdim=True)
-            return torch.cat([multiview_tokens, summary_token], dim=1)
+            summary_token = torch.mean(highres_tokens, dim=1, keepdim=True)
+            return torch.cat([highres_tokens, summary_token], dim=1)
         
         # SHIRG-FIX: 2025-07-27 - Preserve gradients for LoRA training compatibility
         # ISSUE: torch.no_grad() prevents gradient flow during training
@@ -779,7 +779,7 @@ class SigLipVisionTower(nn.Module):
         # SHIRG IMPACT: Allows gradient-based optimization of selection parameters
         
         # Only disable gradients if input doesn't require them (inference mode)
-        if not multiview_tokens.requires_grad:
+        if not highres_tokens.requires_grad:
             context_manager = torch.no_grad()
         else:
             # Use a dummy context manager that does nothing
@@ -791,7 +791,7 @@ class SigLipVisionTower(nn.Module):
             alpha, beta = 0.25, 0.15  # Research-specified weights
             
             # Component 1: Token variance (information content)
-            variance_scores = torch.var(multiview_tokens, dim=-1)  # [B, N]
+            variance_scores = torch.var(highres_tokens, dim=-1)  # [B, N]
             variance_scores = (variance_scores - variance_scores.min(dim=1, keepdim=True)[0]) / \
                              (variance_scores.max(dim=1, keepdim=True)[0] - variance_scores.min(dim=1, keepdim=True)[0] + 1e-8)
             
@@ -799,7 +799,7 @@ class SigLipVisionTower(nn.Module):
             similarity_scores = torch.zeros_like(variance_scores)
             if text_embeddings is not None:
                 # Normalize embeddings for better similarity computation
-                normed_tokens = F.normalize(multiview_tokens, p=2, dim=-1)
+                normed_tokens = F.normalize(highres_tokens, p=2, dim=-1)
                 normed_text = F.normalize(text_embeddings, p=2, dim=-1)
                 
                 # Compute max similarity with text tokens
@@ -807,7 +807,7 @@ class SigLipVisionTower(nn.Module):
                 similarity_scores = torch.max(similarity_matrix, dim=-1)[0]  # [B, N]
             
             # Component 3: Edge density boost (for thin text detection)
-            edge_scores = self._compute_edge_density_boost(multiview_tokens)  # [B, N]
+            edge_scores = self._compute_edge_density_boost(highres_tokens)  # [B, N]
             
             # SHIRG-v2 combined saliency score
             saliency_scores = (
@@ -818,7 +818,7 @@ class SigLipVisionTower(nn.Module):
             
             # Step 2: Hierarchical clustering for coverage guarantee
             coverage_indices = self._get_coverage_guaranteed_tokens(
-                multiview_tokens, saliency_scores, min_regions=target_count // 4
+                highres_tokens, saliency_scores, min_regions=target_count // 4
             )
             
             # Step 3: Global ranking for remaining budget
@@ -851,7 +851,7 @@ class SigLipVisionTower(nn.Module):
             
             # Step 4: Extract selected tokens
             selected_tokens = torch.gather(
-                multiview_tokens, 1,
+                highres_tokens, 1,
                 selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
             )
             
@@ -859,14 +859,14 @@ class SigLipVisionTower(nn.Module):
             summary_tokens = []
             for b in range(batch_size):
                 # Create mask for this batch
-                batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=multiview_tokens.device)
+                batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
                 batch_dropped_mask[selected_indices[b]] = False
                 
                 if batch_dropped_mask.sum() > 0:
-                    batch_dropped_tokens = multiview_tokens[b:b+1, batch_dropped_mask]
+                    batch_dropped_tokens = highres_tokens[b:b+1, batch_dropped_mask]
                     batch_summary = torch.mean(batch_dropped_tokens, dim=1, keepdim=True)
                 else:
-                    batch_summary = torch.mean(multiview_tokens[b:b+1], dim=1, keepdim=True)
+                    batch_summary = torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True)
                 
                 summary_tokens.append(batch_summary)
             
@@ -876,7 +876,7 @@ class SigLipVisionTower(nn.Module):
             # Combine selected tokens with summary
             final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
         
-        rank0_print(f"SHIRG-v2: Selected {target_count} tokens + 1 summary from {total_tokens} multi-view tokens")
+        rank0_print(f"SHIRG-v2: Selected {target_count} tokens + 1 summary from {total_tokens} high-res tokens")
         return final_tokens
     
     def _compute_edge_density_boost(self, tokens):
@@ -972,10 +972,10 @@ class SigLipVisionTower(nn.Module):
         """
         Compare LaViDa baseline (729 tokens) vs SHIRG-v2 selection (target_tokens from 2304)
         
-        SHIRG-FIX: 2025-07-27 - Corrected comparison with high-resolution approach
-        ISSUE: Need to compare LaViDa's 729 standard tokens vs SHIRG's high-res selection
-        SOLUTION: Baseline uses 729 tokens at 384×384, SHIRG selects from 2304 tokens at 672×672
-        RESEARCH IMPACT: Enables evaluation of high-resolution token selection benefit
+        SHIRG-FIX: 2025-07-27 - CORRECTED comparison for actual LaViDa architecture
+        ISSUE: Original assumed multi-view processing that doesn't exist in LaViDa
+        SOLUTION: Baseline uses 729 tokens from 384×384, SHIRG selects from 2304 tokens from 672×672
+        RESEARCH IMPACT: Enables evaluation of high-resolution vs standard resolution processing
         
         Args:
             images: Input images [B, C, H, W]
@@ -987,10 +987,10 @@ class SigLipVisionTower(nn.Module):
             shirg_tokens: [B, target_tokens+1, D] SHIRG selected tokens + summary (from 672×672)
         """
         
-        # Baseline: Standard LaViDa tokens (729 from single 384x384 resolution)
+        # Baseline: Standard LaViDa tokens (729 from 384×384 resolution)
         baseline_tokens = self.forward(images)
         
-        # SHIRG: Selected tokens from high-resolution pool (2304 -> target_tokens+1)
+        # SHIRG: Selected tokens from high-resolution pool (2304 → target_tokens+1)
         shirg_tokens = self.forward_with_shirg(images, target_tokens, text_embeddings)
         
         return baseline_tokens, shirg_tokens

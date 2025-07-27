@@ -200,7 +200,7 @@ class ComprehensiveValidator:
             # Check SHIRG methods
             shirg_methods = [
                 'forward_with_shirg',
-                'get_multiview_tokens_for_shirg',
+                'get_highres_tokens_for_shirg',
                 'shirg_token_selection',
                 'compare_baseline_vs_shirg',
                 '_compute_edge_density_boost',
@@ -265,7 +265,7 @@ class ComprehensiveValidator:
                         baseline_tokens = self.tower.forward(test_tensor)
                         
                         # Test high-resolution extraction
-                        highres_tokens = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                        highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
                         
                         # Test SHIRG selection
                         shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
@@ -328,20 +328,20 @@ class ComprehensiveValidator:
                     baseline_tokens = self.tower.forward(test_images)
                     
                     # Test multi-view extraction
-                    multiview_tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
+                    highres_tokens = self.tower.get_highres_tokens_for_shirg(test_images)
                     
                     # Test SHIRG selection
-                    shirg_tokens = self.tower.shirg_token_selection(multiview_tokens, 768)
+                    shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
                 
                 # Semantic quality checks
                 self._validate_token_semantics(test_name, {
                     "baseline": baseline_tokens,
-                    "multiview": multiview_tokens, 
+                    "multiview": highres_tokens, 
                     "shirg": shirg_tokens
                 }, details, metrics, issues)
             
             # Check token diversity
-            diversity_score = self._compute_token_diversity(multiview_tokens)
+            diversity_score = self._compute_token_diversity(highres_tokens)
             metrics["token_diversity"] = diversity_score
             
             if diversity_score < 0.1:
@@ -385,13 +385,13 @@ class ComprehensiveValidator:
                     test_images = test_images.cuda()
                 
                 with torch.no_grad():
-                    multiview_tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
+                    highres_tokens = self.tower.get_highres_tokens_for_shirg(test_images)
                     
                 # Check token count matches expected for high-resolution processing
                 # SHIRG-FIX: 2025-07-27 - Corrected for actual high-res approach
                 # High-resolution SHIRG: 672×672 → (672/14)² = 48² = 2304 tokens
                 expected_patches = (672//14)**2  # 2304 tokens for 672x672 input
-                actual_patches = multiview_tokens.shape[1]
+                actual_patches = highres_tokens.shape[1]
                 
                 details[f"resolution_{height}x{width}"] = {
                     "expected_tokens": expected_patches,
@@ -403,7 +403,7 @@ class ComprehensiveValidator:
                     issues.append(f"Token count mismatch at {height}x{width}: {actual_patches} vs {expected_patches}")
                 
                 # Check for information preservation
-                info_preservation = self._compute_information_preservation(test_images, multiview_tokens)
+                info_preservation = self._compute_information_preservation(test_images, highres_tokens)
                 metrics[f"info_preservation_{height}x{width}"] = info_preservation
                 
                 if info_preservation < 0.4:
@@ -448,8 +448,8 @@ class ComprehensiveValidator:
             
             # Warm-up
             with torch.no_grad():
-                multiview_tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
-                _ = self.tower.shirg_token_selection(multiview_tokens, 768)
+                highres_tokens = self.tower.get_highres_tokens_for_shirg(test_images)
+                _ = self.tower.shirg_token_selection(highres_tokens, 768)
             
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -461,7 +461,7 @@ class ComprehensiveValidator:
             for _ in range(num_trials):
                 start_time = time.time()
                 with torch.no_grad():
-                    selected_tokens = self.tower.shirg_token_selection(multiview_tokens, 768)
+                    selected_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
                 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -497,7 +497,7 @@ class ComprehensiveValidator:
             for target_count in target_counts:
                 start_time = time.time()
                 with torch.no_grad():
-                    selected = self.tower.shirg_token_selection(multiview_tokens, target_count)
+                    selected = self.tower.shirg_token_selection(highres_tokens, target_count)
                 
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
@@ -544,7 +544,7 @@ class ComprehensiveValidator:
             with torch.no_grad():
                 # Get tokens
                 baseline_tokens = self.tower.forward(test_tensor)
-                highres_tokens = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
                 shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
             
             # Create visualizations
@@ -596,7 +596,7 @@ class ComprehensiveValidator:
                 
                 with torch.no_grad():
                     baseline_tokens = self.tower.forward(test_tensor)
-                    highres_tokens = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                    highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
                     shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
                 
                 # Advanced semantic analysis
@@ -661,7 +661,7 @@ class ComprehensiveValidator:
             # Test gradient flow through different paths
             paths_to_test = {
                 "baseline_forward": lambda: self.tower.forward(test_images),
-                "multiview_extraction": lambda: self.tower.get_multiview_tokens_for_shirg(test_images),
+                "multiview_extraction": lambda: self.tower.get_highres_tokens_for_shirg(test_images),
                 "forward_with_shirg": lambda: self.tower.forward_with_shirg(test_images, 768)
             }
             
@@ -758,7 +758,7 @@ class ComprehensiveValidator:
                         
                         with torch.no_grad():
                             baseline = self.tower.forward(test_images)
-                            multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                            highres = self.tower.get_highres_tokens_for_shirg(test_images)
                             shirg = self.tower.shirg_token_selection(multiview, target_count)
                         
                         del test_images, baseline, multiview, shirg
@@ -820,7 +820,7 @@ class ComprehensiveValidator:
                 with torch.no_grad():
                     # Test basic operations
                     baseline = self.tower.forward(test_images)
-                    multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                    highres = self.tower.get_highres_tokens_for_shirg(test_images)
                     
                     # Test with different target counts
                     if case_name == "small_target":
@@ -877,7 +877,7 @@ class ComprehensiveValidator:
                 )
                 
                 # 3. Multi-step process
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 selected = self.tower.shirg_token_selection(multiview, 1024, test_text_embeddings)
             
             # Validate pipeline consistency
@@ -931,7 +931,7 @@ class ComprehensiveValidator:
                 test_images = test_images.cuda()
             
             with torch.no_grad():
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
             
             # Check token count
             actual_tokens = multiview.shape[1]
@@ -1497,7 +1497,7 @@ class ComprehensiveValidator:
                     with torch.no_grad():
                         # Get baseline and SHIRG tokens
                         baseline_tokens = self.tower.forward(test_tensor)
-                        highres_tokens = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                        highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
                         shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
                         
                         # OCR-specific analysis
@@ -2478,7 +2478,7 @@ class ComprehensiveValidator:
             
             with torch.no_grad():
                 baseline = self.tower.forward(test_images)
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 shirg = self.tower.shirg_token_selection(multiview, 1024)
             
             peak_memory = torch.cuda.max_memory_allocated()
@@ -2503,7 +2503,7 @@ class ComprehensiveValidator:
         # LAVIDA IMPACT: Validates actual LaViDa architecture behavior
         
         # Check shapes - validate multiview and SHIRG outputs
-        expected_multiview = (multiview.shape[0], 2304, self.tower.hidden_size)
+        expected_highres = (multiview.shape[0], 2304, self.tower.hidden_size)
         expected_shirg = (shirg.shape[0], target + 1, self.tower.hidden_size)
         
         # Validate baseline has reasonable token count (LaViDa architecture dependent)
@@ -2554,11 +2554,11 @@ class ComprehensiveValidator:
             # Run twice
             with torch.no_grad():
                 result1 = self.tower.shirg_token_selection(
-                    self.tower.get_multiview_tokens_for_shirg(test_images), 768
+                    self.tower.get_highres_tokens_for_shirg(test_images), 768
                 )
                 
                 result2 = self.tower.shirg_token_selection(
-                    self.tower.get_multiview_tokens_for_shirg(test_images), 768
+                    self.tower.get_highres_tokens_for_shirg(test_images), 768
                 )
             
             # Check if results are identical
@@ -2580,7 +2580,7 @@ class ComprehensiveValidator:
             return False
         
         required_methods = [
-            'forward_with_shirg', 'get_multiview_tokens_for_shirg', 
+            'forward_with_shirg', 'get_highres_tokens_for_shirg', 
             'shirg_token_selection', 'compare_baseline_vs_shirg'
         ]
         
@@ -2597,7 +2597,7 @@ class ComprehensiveValidator:
                 test_images = test_images.cuda()
             
             with torch.no_grad():
-                tokens = self.tower.get_multiview_tokens_for_shirg(test_images)
+                tokens = self.tower.get_highres_tokens_for_shirg(test_images)
             
             return tokens.shape[1] == 2304
         except:
@@ -2614,7 +2614,7 @@ class ComprehensiveValidator:
                 test_images = test_images.cuda()
             
             with torch.no_grad():
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 
                 start_time = time.time()
                 _ = self.tower.shirg_token_selection(multiview, 768)
@@ -2678,7 +2678,7 @@ class ComprehensiveValidator:
                 test_images = test_images.cuda()
             
             with torch.no_grad():
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 
                 # Test small target
                 small = self.tower.shirg_token_selection(multiview, 64)
@@ -2700,7 +2700,7 @@ class ComprehensiveValidator:
                 test_images = test_images.cuda()
             
             with torch.no_grad():
-                multiview = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
             
             return multiview.shape[1] == 2304  # Correct high-res token count
         except:
@@ -2723,7 +2723,7 @@ class ComprehensiveValidator:
             
             with torch.no_grad():
                 baseline = self.tower.forward(test_tensor)
-                highres = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                highres = self.tower.get_highres_tokens_for_shirg(test_tensor)
                 shirg = self.tower.shirg_token_selection(highres, 768)
             
             return baseline.shape[1] > 0 and highres.shape[1] > 0 and shirg.shape[1] > 0
@@ -2743,7 +2743,7 @@ class ComprehensiveValidator:
             
             with torch.no_grad():
                 baseline = self.tower.forward(test_images)
-                highres = self.tower.get_multiview_tokens_for_shirg(test_images)
+                highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 shirg = self.tower.shirg_token_selection(highres, 768)
             
             # Check if SHIRG tokens maintain reasonable diversity

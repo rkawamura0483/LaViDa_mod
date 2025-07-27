@@ -4,7 +4,7 @@ SHIRG LoRA Training Implementation
 Mixed-ratio LoRA adaptation of mm_projector for high-resolution token processing
 
 SHIRG-FIX: 2025-07-27 - Complete LoRA training pipeline for SHIRG-v2
-ISSUE: Need lightweight projector adaptation for 3,645 → 2,304 high-res tokens
+ISSUE: Need lightweight projector adaptation for 2,304 high-res tokens vs 729 baseline
 SOLUTION: Mixed-ratio LoRA training following proven HiRes-LLaVA methodology
 LAVIDA IMPACT: Maintains LaViDa performance while enabling high-res processing
 SHIRG IMPACT: Enables production-ready SHIRG with 512-1024 token flexibility
@@ -245,7 +245,7 @@ class SHIRGLoRATrainer:
             # Apply SHIRG-v2 selection from high-resolution tokens
             try:
                 # Get high-resolution tokens (2304 from 672×672)
-                high_res_tokens = vision_tower.get_multiview_tokens_for_shirg(images)
+                high_res_tokens = vision_tower.get_highres_tokens_for_shirg(images)
                 
                 # Apply SHIRG selection
                 text_embeddings = batch_data.get('text_embeddings', None)

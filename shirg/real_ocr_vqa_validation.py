@@ -209,7 +209,7 @@ class RealOCRVQAValidator:
             with torch.no_grad():
                 # Get tokens
                 baseline_tokens = self.tower.forward(test_tensor)
-                highres_tokens = self.tower.get_multiview_tokens_for_shirg(test_tensor)
+                highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
                 shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
                 
             # Analyze token selection quality

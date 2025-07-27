@@ -97,7 +97,7 @@ def validate_siglip_modifications():
         # Check for SHIRG methods
         shirg_methods = [
             'forward_with_shirg',
-            'get_multiview_tokens_for_shirg', 
+            'get_highres_tokens_for_shirg', 
             'shirg_token_selection',
             'compare_baseline_vs_shirg'
         ]
@@ -152,18 +152,18 @@ def test_token_extraction():
             print(f"  ❌ Standard forward shape mismatch: {standard_features.shape} vs {expected_shape}")
             return False
         
-        # Test 2: Multi-view token extraction (should give 4608 tokens)
+        # Test 2: High-resolution token extraction (should give 2304 tokens)
         print("  Testing multi-view token extraction...")
         with torch.no_grad():
-            multiview_tokens = tower.get_multiview_tokens_for_shirg(dummy_images)
+            highres_tokens = tower.get_highres_tokens_for_shirg(dummy_images)
             
-        expected_mv_shape = (2, 4608, tower.hidden_size)  # Corrected: 4×576 + 1×2304 = 4608
-        if multiview_tokens.shape == expected_mv_shape:
-            print(f"  ✓ Multi-view extraction: {multiview_tokens.shape}")
-        elif multiview_tokens.shape[1] >= 4000:  # Allow some flexibility
-            print(f"  ⚠️ Multi-view shape close: {multiview_tokens.shape} (expected {expected_mv_shape})")
+        expected_hr_shape = (2, 2304, tower.hidden_size)  # Corrected: 672×672 → 2304 tokens
+        if highres_tokens.shape == expected_hr_shape:
+            print(f"  ✓ Multi-view extraction: {highres_tokens.shape}")
+        elif highres_tokens.shape[1] >= 2000:  # Allow some flexibility
+            print(f"  ⚠️ High-res shape close: {highres_tokens.shape} (expected {expected_hr_shape})")
         else:
-            print(f"  ❌ Multi-view shape wrong: {multiview_tokens.shape} vs {expected_mv_shape}")
+            print(f"  ❌ High-res shape wrong: {highres_tokens.shape} vs {expected_hr_shape}")
             return False
             
         return True
@@ -195,16 +195,16 @@ def test_shirg_selection():
         
         # Create test data with corrected dimensions
         batch_size = 2
-        total_tokens = 4608  # Corrected: LaViDa multi-view gives 4608 tokens
+        total_tokens = 2304  # Corrected: LaViDa high-res gives 2304 tokens
         embed_dim = tower.hidden_size
         target_tokens = 768
         
         # Generate dummy multiview tokens
-        multiview_tokens = torch.randn(batch_size, total_tokens, embed_dim)
+        highres_tokens = torch.randn(batch_size, total_tokens, embed_dim)
         text_embeddings = torch.randn(batch_size, 20, embed_dim)  # 20 text tokens
         
         if torch.cuda.is_available():
-            multiview_tokens = multiview_tokens.cuda()
+            highres_tokens = highres_tokens.cuda()
             text_embeddings = text_embeddings.cuda()
         
         # Test SHIRG selection
@@ -213,7 +213,7 @@ def test_shirg_selection():
         
         with torch.no_grad():
             selected_tokens = tower.shirg_token_selection(
-                multiview_tokens, target_tokens, text_embeddings
+                highres_tokens, target_tokens, text_embeddings
             )
         
         selection_time = (time.time() - start_time) * 1000  # Convert to ms
@@ -237,7 +237,7 @@ def test_shirg_selection():
         test_counts = [512, 768, 1024]
         for count in test_counts:
             with torch.no_grad():
-                selected = tower.shirg_token_selection(multiview_tokens, count, text_embeddings)
+                selected = tower.shirg_token_selection(highres_tokens, count, text_embeddings)
             if selected.shape[1] == count + 1:  # +1 for summary token
                 print(f"  ✓ Target {count} tokens: {selected.shape}")
             else:
@@ -445,10 +445,10 @@ def validate_research_alignment():
     
     print("  Checking SHIRG research specifications:")
     
-    # Check 1: Multi-view token extraction (4×336² + 1×672²)
-    view_configs = [(336, 336, 4), (672, 672, 1)]
-    expected_tokens = sum(count * (h//14) * (w//14) for h, w, count in view_configs)
-    print(f"  ✓ Expected multi-view tokens: {expected_tokens} (4×576 + 1×2304 = 4608)")
+    # Check 1: High-resolution token extraction (672×672 → 2304 tokens)
+    high_res_config = (672, 672)  # Single high-resolution image
+    expected_tokens = (high_res_config[0]//14) * (high_res_config[1]//14)
+    print(f"  ✓ Expected high-res tokens: {expected_tokens} (672×672 → 48×48 = 2304)")
     
     # Check 2: Target token budgets
     target_budgets = [512, 768, 1024]
@@ -531,9 +531,9 @@ def generate_fix_recommendations(results: Dict[str, bool]):
     
     if not results.get("Token Extraction", True):
         print("\n📝 Token Extraction Issues:")
-        print("1. Check multi-view processing logic in get_multiview_tokens_for_shirg()")
-        print("2. Verify view configurations match LaViDa spec: 4×336² + 1×672²")
-        print("3. Expected token count: 4608 (not 3645) - check math: 4×576 + 1×2304")
+        print("1. Check multi-view processing logic in get_highres_tokens_for_shirg()")
+        print("2. Verify high-res configuration: single 672×672 images")
+        print("3. Expected token count: 2304 (672×672 → 48×48 patches)")
     
     if not results.get("SHIRG Selection", True):
         print("\n📝 SHIRG Selection Issues:")
