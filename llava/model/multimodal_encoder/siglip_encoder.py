@@ -826,7 +826,7 @@ class SigLipVisionTower(nn.Module):
             
             if remaining_budget > 0:
                 # Create mask excluding coverage tokens
-                mask = torch.ones(total_tokens, dtype=torch.bool, device=multiview_tokens.device)
+                mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
                 mask[coverage_indices] = False
                 
                 # Select top-k from remaining tokens for each batch

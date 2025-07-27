@@ -336,7 +336,7 @@ class ComprehensiveValidator:
                 # Semantic quality checks
                 self._validate_token_semantics(test_name, {
                     "baseline": baseline_tokens,
-                    "multiview": highres_tokens, 
+                    "highres": highres_tokens, 
                     "shirg": shirg_tokens
                 }, details, metrics, issues)
             
@@ -661,7 +661,7 @@ class ComprehensiveValidator:
             # Test gradient flow through different paths
             paths_to_test = {
                 "baseline_forward": lambda: self.tower.forward(test_images),
-                "multiview_extraction": lambda: self.tower.get_highres_tokens_for_shirg(test_images),
+                "highres_extraction": lambda: self.tower.get_highres_tokens_for_shirg(test_images),
                 "forward_with_shirg": lambda: self.tower.forward_with_shirg(test_images, 768)
             }
             
@@ -759,9 +759,9 @@ class ComprehensiveValidator:
                         with torch.no_grad():
                             baseline = self.tower.forward(test_images)
                             highres = self.tower.get_highres_tokens_for_shirg(test_images)
-                            shirg = self.tower.shirg_token_selection(multiview, target_count)
+                            shirg = self.tower.shirg_token_selection(highres, target_count)
                         
-                        del test_images, baseline, multiview, shirg
+                        del test_images, baseline, highres, shirg
                     
                     torch.cuda.empty_cache()
                     post_test_memory = torch.cuda.memory_allocated()
@@ -830,10 +830,10 @@ class ComprehensiveValidator:
                     else:
                         target = 768
                     
-                    shirg = self.tower.shirg_token_selection(multiview, target)
+                    shirg = self.tower.shirg_token_selection(highres, target)
                     
                     # Validate outputs
-                    self._validate_edge_case_output(case_name, baseline, multiview, shirg, target, details, issues)
+                    self._validate_edge_case_output(case_name, baseline, highres, shirg, target, details, issues)
                 
                 details[f"{case_name}_status"] = "✓ Passed"
                 
@@ -878,11 +878,11 @@ class ComprehensiveValidator:
                 
                 # 3. Multi-step process
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
-                selected = self.tower.shirg_token_selection(multiview, 1024, test_text_embeddings)
+                selected = self.tower.shirg_token_selection(highres, 1024, test_text_embeddings)
             
             # Validate pipeline consistency
             pipeline_checks = self._validate_pipeline_consistency(
-                baseline_tokens, shirg_tokens, shirg_direct, multiview, selected
+                baseline_tokens, shirg_tokens, shirg_direct, highres, selected
             )
             
             details.update(pipeline_checks["details"])
@@ -934,7 +934,7 @@ class ComprehensiveValidator:
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
             
             # Check token count
-            actual_tokens = multiview.shape[1]
+            actual_tokens = highres.shape[1]
             expected_tokens = research_specs["high_res_tokens"]
             
             if actual_tokens == expected_tokens:
@@ -946,7 +946,7 @@ class ComprehensiveValidator:
             # Test all target budgets
             for target in research_specs["target_budgets"]:
                 with torch.no_grad():
-                    selected = self.tower.shirg_token_selection(multiview, target)
+                    selected = self.tower.shirg_token_selection(highres, target)
                 
                 expected_shape = (2, target + 1, self.tower.hidden_size)
                 if selected.shape == expected_shape:
@@ -2479,7 +2479,7 @@ class ComprehensiveValidator:
             with torch.no_grad():
                 baseline = self.tower.forward(test_images)
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
-                shirg = self.tower.shirg_token_selection(multiview, 1024)
+                shirg = self.tower.shirg_token_selection(highres, 1024)
             
             peak_memory = torch.cuda.max_memory_allocated()
             peak_gb = peak_memory / 1e9
@@ -2495,34 +2495,34 @@ class ComprehensiveValidator:
         
         return {"details": details, "metrics": metrics, "issues": issues}
     
-    def _validate_edge_case_output(self, case_name, baseline, multiview, shirg, target, details, issues):
+    def _validate_edge_case_output(self, case_name, baseline, highres, shirg, target, details, issues):
         """Validate outputs for edge cases"""
         # SHIRG-FIX: 2025-07-27 - Corrected expected baseline token count
         # ISSUE: LaViDa with deleted layer gives fewer than 729 tokens
         # SOLUTION: Check actual baseline shape instead of assuming 729
         # LAVIDA IMPACT: Validates actual LaViDa architecture behavior
         
-        # Check shapes - validate multiview and SHIRG outputs
-        expected_highres = (multiview.shape[0], 2304, self.tower.hidden_size)
+        # Check shapes - validate highres and SHIRG outputs
+        expected_highres = (highres.shape[0], 2304, self.tower.hidden_size)
         expected_shirg = (shirg.shape[0], target + 1, self.tower.hidden_size)
         
         # Validate baseline has reasonable token count (LaViDa architecture dependent)
         if baseline.shape[1] < 500 or baseline.shape[1] > 1000:
             issues.append(f"{case_name}: Unusual baseline token count {baseline.shape[1]}")
-        if multiview.shape[1:] != expected_multiview[1:]:
-            issues.append(f"{case_name}: Wrong multiview shape {multiview.shape}")
+        if highres.shape[1:] != expected_highres[1:]:
+            issues.append(f"{case_name}: Wrong highres shape {highres.shape}")
         if shirg.shape[1:] != expected_shirg[1:]:
             issues.append(f"{case_name}: Wrong SHIRG shape {shirg.shape}")
         
         # Check for valid values
         if torch.isnan(baseline).any() or torch.isinf(baseline).any():
             issues.append(f"{case_name}: Invalid baseline values")
-        if torch.isnan(multiview).any() or torch.isinf(multiview).any():
-            issues.append(f"{case_name}: Invalid multiview values")
+        if torch.isnan(highres).any() or torch.isinf(highres).any():
+            issues.append(f"{case_name}: Invalid highres values")
         if torch.isnan(shirg).any() or torch.isinf(shirg).any():
             issues.append(f"{case_name}: Invalid SHIRG values")
     
-    def _validate_pipeline_consistency(self, baseline_tokens, shirg_tokens, shirg_direct, multiview, selected):
+    def _validate_pipeline_consistency(self, baseline_tokens, shirg_tokens, shirg_direct, highres, selected):
         """Validate pipeline consistency"""
         details = {}
         issues = []
@@ -2532,8 +2532,8 @@ class ComprehensiveValidator:
             issues.append(f"Inconsistent SHIRG shapes: {shirg_tokens.shape} vs {shirg_direct.shape}")
         
         # Check token count consistency
-        if multiview.shape[1] != 2304:
-            issues.append(f"Wrong high-res token count: {multiview.shape[1]} vs 2304")
+        if highres.shape[1] != 2304:
+            issues.append(f"Wrong high-res token count: {highres.shape[1]} vs 2304")
         
         details["pipeline_consistency"] = "✓ Consistent" if len(issues) == 0 else "❌ Inconsistent"
         
@@ -2617,7 +2617,7 @@ class ComprehensiveValidator:
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 
                 start_time = time.time()
-                _ = self.tower.shirg_token_selection(multiview, 768)
+                _ = self.tower.shirg_token_selection(highres, 768)
                 elapsed = (time.time() - start_time) * 1000
             
             return elapsed < 50  # Allow some margin over 30ms target
@@ -2681,9 +2681,9 @@ class ComprehensiveValidator:
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
                 
                 # Test small target
-                small = self.tower.shirg_token_selection(multiview, 64)
+                small = self.tower.shirg_token_selection(highres, 64)
                 # Test large target
-                large = self.tower.shirg_token_selection(multiview, 2000)
+                large = self.tower.shirg_token_selection(highres, 2000)
             
             return small.shape[1] == 65 and large.shape[1] == 2001
         except:
@@ -2702,7 +2702,7 @@ class ComprehensiveValidator:
             with torch.no_grad():
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
             
-            return multiview.shape[1] == 2304  # Correct high-res token count
+            return highres.shape[1] == 2304  # Correct high-res token count
         except:
             return False
     
