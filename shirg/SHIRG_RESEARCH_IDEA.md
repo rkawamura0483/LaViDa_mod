@@ -47,46 +47,42 @@ Benchmarks such as ChartQA and DocVQA require locating 4‑6 pt text or thin tic
 
 ---
 
-## 4 Proposed Method: **SHIRG‑v2 (Coverage‑Aware)**
+## 4 Proposed Method: **SHIRG‑v3 (Attention‑Based)**
 
 ### 4.1 Key Features
 
 1. **High‑resolution processing:** Extract 2,304 tokens from 672×672 images (48×48 patches) instead of 729 from 384×384.
-2. **Coverage constraint:** After hierarchical clustering, **reserve ≥ 1 token per connected component** → no region is entirely dropped.
-3. **Edge‑aware saliency:** Augment variance + similarity score with a lightweight **edge‑density boost** to rescue low‑energy small text.
-4. **Adapter robustness:** Train a **mixed‑ratio LoRA projector** so the same tiny adapter works for 512–1024 kept tokens; no re‑training when you slide the pruning knob.
+2. **Attention‑based selection:** Use vision transformer attention patterns to identify semantically important tokens (FastV‑inspired approach).
+3. **Multi‑component scoring:** Combine attention importance (60%), feature magnitude (25%), and spatial gradients (15%) for robust OCR/VQA performance.
+4. **Spatial coverage guarantee:** Ensure tokens are selected from diverse spatial regions to prevent information loss.
+5. **Attention‑weighted summary:** Create enhanced summary tokens using attention weights rather than simple averaging.
 
 ### 4.2 Algorithm
 
 1. **Extract high‑resolution tokens:** Process 672×672 images through SigLIP → **2,304 patch embeddings** (48×48 grid).
-2. **Compute saliency score**
-   $s_i = \alpha\;{\rm Var}(v_i) + (1-\alpha)\max_j \cos(v_i,t_j) + \beta\,{\rm Edge}(v_i)$
-   with default $(\alpha,\beta)=(0.25,0.15)$.
-3. **Hierarchical clustering** on 48×48 2‑D spatial grid.
-4. **Coverage guarantee**: keep **top‑1 token per cluster** *before* global ranking.
-5. **Global ranking & budget**: select highest‑$s_i$ tokens until budget $K\in\{512,768,1024\}$.
-6. **Summary token** for dropped patches (mean‑pooled).
-7. **Static export**: selected tokens + summary + text → cached once.
+2. **Compute attention‑based importance scores:**
+   - Self‑attention importance via cosine similarity matrix
+   - Feature magnitude scoring for activation strength
+   - Spatial gradient detection for text/edge preservation
+   - Combined score: $s_i = 0.6 \cdot A_i + 0.25 \cdot M_i + 0.15 \cdot G_i$
+3. **Spatial coverage enforcement:** Select tokens from different spatial regions to ensure diverse representation.
+4. **Top‑k selection:** Choose highest‑scoring tokens up to budget $K\in\{512,768,1024\}$.
+5. **Attention‑weighted summary:** Create summary token using attention weights from dropped regions.
+6. **Static export**: selected tokens + summary + text → cached once.
 
 ### 4.3 Implementation Details
 
-```python
-def get_highres_tokens_for_shirg(self, images):
-    """Extract high-resolution tokens from single images"""
-    # Upscale to high resolution: 672×672
-    high_res_images = F.interpolate(images, size=(672, 672), mode='bilinear')
-    
-    # Process through SigLIP: 672×672 → 48×48 = 2,304 tokens
-    outputs = self.vision_tower(high_res_images, output_hidden_states=True)
-    high_res_tokens = outputs.hidden_states[-1]  # [B, 2304, D]
-    
-    return high_res_tokens
+The SHIRG-v3 implementation consists of three main components:
 
-def shirg_token_selection(self, tokens, target_count=768):
-    """Select tokens from 2,304 high-res pool → target_count"""
-    # Apply SHIRG-v2 selection algorithm
-    # Returns selected tokens + summary token
-```
+1. **High-resolution token extraction:** Processes 672×672 images through SigLIP to generate 2,304 patch embeddings
+2. **Attention-based importance scoring:** Uses self-attention patterns, feature magnitudes, and spatial gradients to rank tokens
+3. **Intelligent token selection:** Combines top-k selection with spatial coverage guarantees and attention-weighted summary generation
+
+Key technical aspects:
+- Multi-component scoring with weighted combination of attention patterns
+- Spatial coverage enforcement to prevent information loss
+- Optimized caching and memory management for <30ms performance target
+- Gradient-preserving implementation for LoRA training compatibility
 
 ### 4.4 Adapter (LoRA) Training
 
@@ -216,9 +212,9 @@ training:
 
 ## 9 Conclusion
 
-SHIRG‑v2 reconciles **high‑resolution vision** with **diffusion KV‑cache efficiency** by processing 672×672 images (2,304 tokens) and selecting optimal subsets through coverage‑aware hierarchical clustering. With a single 0.5%‑parameter LoRA, LaViDa can achieve 3.2× more visual detail while maintaining cache compatibility, pushing diffusion VLMs into fine‑grained OCR/VQA performance previously dominated by autoregressive models—while staying ~1.7× faster.
+SHIRG‑v3 reconciles **high‑resolution vision** with **diffusion KV‑cache efficiency** by processing 672×672 images (2,304 tokens) and selecting optimal subsets through attention‑based importance scoring. With a single 0.5%‑parameter LoRA, LaViDa can achieve 3.2× more visual detail while maintaining cache compatibility, pushing diffusion VLMs into fine‑grained OCR/VQA performance previously dominated by autoregressive models—while staying ~1.7× faster.
 
-**Implementation Status**: SHIRG-v2 methodology defined with high‑resolution processing, coverage‑aware token selection, edge‑density boost, and mixed‑ratio LoRA training. Ready to proceed with implementation phase.
+**Implementation Status**: SHIRG-v3 attention‑based methodology **IMPLEMENTED** with high‑resolution processing (2,304 tokens), attention‑based importance scoring, spatial coverage guarantee, and optimized performance (<30ms target). Ready for LoRA training and evaluation phase.
 
 ---
 
