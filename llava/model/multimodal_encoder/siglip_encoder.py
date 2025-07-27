@@ -858,33 +858,48 @@ class SigLipVisionTower(nn.Module):
             # Step 3: Semantic region coverage (ensure spatial diversity)
             coverage_tokens = self._ensure_spatial_coverage(
                 highres_tokens, importance_scores, min_regions=target_count // 6
-            )
+            )  # [B, num_coverage_tokens]
             
             # Step 4: Select remaining tokens by importance ranking
-            remaining_budget = target_count - len(coverage_tokens)
+            num_coverage_tokens = coverage_tokens.size(1) if coverage_tokens.size(1) > 0 else 0
+            remaining_budget = target_count - num_coverage_tokens
             
-            if remaining_budget > 0:
-                # Create mask excluding coverage tokens
-                mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
-                mask[coverage_tokens] = False
-                
-                # Select top-k from remaining tokens
-                masked_scores = importance_scores.clone()
-                masked_scores[:, ~mask] = float('-inf')
-                
-                _, additional_indices = torch.topk(masked_scores, k=remaining_budget, dim=-1)
-                
-                # Combine coverage and additional indices
+            if remaining_budget > 0 and num_coverage_tokens > 0:
+                # Create batched masks excluding coverage tokens
                 selected_indices_list = []
+                
                 for b in range(batch_size):
-                    batch_coverage = coverage_tokens
-                    batch_additional = additional_indices[b]
+                    # Create mask for this batch
+                    mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
+                    batch_coverage = coverage_tokens[b]  # [num_coverage_tokens]
+                    
+                    # Exclude coverage tokens from selection
+                    mask[batch_coverage] = False
+                    
+                    # Select top-k from remaining tokens for this batch
+                    batch_scores = importance_scores[b].clone()  # [N]
+                    batch_scores[~mask] = float('-inf')
+                    
+                    _, batch_additional = torch.topk(batch_scores, k=remaining_budget, dim=-1)
+                    
+                    # Combine coverage and additional indices for this batch
                     batch_selected = torch.cat([batch_coverage, batch_additional])
                     selected_indices_list.append(batch_selected)
                 
-                selected_indices = torch.stack(selected_indices_list, dim=0)
+                selected_indices = torch.stack(selected_indices_list, dim=0)  # [B, target_count]
+            elif num_coverage_tokens > 0:
+                # Only use coverage tokens (no additional selection needed)
+                if num_coverage_tokens >= target_count:
+                    # Truncate coverage tokens to target count
+                    selected_indices = coverage_tokens[:, :target_count]
+                else:
+                    # Pad coverage tokens to reach target count by repeating last token
+                    padding_needed = target_count - num_coverage_tokens
+                    padding = coverage_tokens[:, -1:].expand(-1, padding_needed)
+                    selected_indices = torch.cat([coverage_tokens, padding], dim=1)
             else:
-                selected_indices = coverage_tokens.unsqueeze(0).expand(batch_size, -1)
+                # Fallback: no coverage tokens, select top-k globally
+                _, selected_indices = torch.topk(importance_scores, k=target_count, dim=-1)
             
             # Step 5: Extract selected tokens
             selected_tokens = torch.gather(
@@ -1032,36 +1047,68 @@ class SigLipVisionTower(nn.Module):
         batch_size, num_tokens, embed_dim = tokens.shape
         grid_size = int(num_tokens ** 0.5)
         
+        # SHIRG-FIX: 2025-07-27 - Maintain batch dimensions for proper tensor operations
+        # ISSUE: Function only processed first batch, causing dimension mismatch
+        # SOLUTION: Process all batches and return properly shaped tensor
+        # RESEARCH IMPACT: Ensures spatial coverage works for batched inference
+        
         # Simple spatial coverage: divide into regions and select best from each
         region_size = max(1, grid_size // int(min_regions ** 0.5))
-        selected_indices = []
         
-        # Use first batch for simplicity (assumes similar structure across batches)
-        scores = importance_scores[0]  # [N]
+        # Process all batches to maintain dimension consistency
+        batch_selected_indices = []
         
-        for i in range(0, grid_size, region_size):
-            for j in range(0, grid_size, region_size):
-                # Define region bounds
-                i_end = min(i + region_size, grid_size)
-                j_end = min(j + region_size, grid_size)
-                
-                # Get token indices in this region
-                region_indices = []
-                for row in range(i, i_end):
-                    for col in range(j, j_end):
-                        token_idx = row * grid_size + col
-                        if token_idx < num_tokens:
-                            region_indices.append(token_idx)
-                
-                if region_indices:
-                    # Select best token from this region
-                    region_indices = torch.tensor(region_indices, device=tokens.device)
-                    region_scores = scores[region_indices]
-                    best_local_idx = torch.argmax(region_scores)
-                    best_global_idx = region_indices[best_local_idx]
-                    selected_indices.append(best_global_idx.item())
+        for batch_idx in range(batch_size):
+            selected_indices = []
+            scores = importance_scores[batch_idx]  # [N] - single batch scores
+            
+            for i in range(0, grid_size, region_size):
+                for j in range(0, grid_size, region_size):
+                    # Define region bounds
+                    i_end = min(i + region_size, grid_size)
+                    j_end = min(j + region_size, grid_size)
+                    
+                    # Get token indices in this region
+                    region_indices = []
+                    for row in range(i, i_end):
+                        for col in range(j, j_end):
+                            token_idx = row * grid_size + col
+                            if token_idx < num_tokens:
+                                region_indices.append(token_idx)
+                    
+                    if region_indices:
+                        # Select best token from this region
+                        region_indices = torch.tensor(region_indices, device=tokens.device)
+                        region_scores = scores[region_indices]
+                        best_local_idx = torch.argmax(region_scores)
+                        best_global_idx = region_indices[best_local_idx]
+                        selected_indices.append(best_global_idx.item())
+            
+            # Limit to requested number of regions and pad if necessary
+            selected_indices = selected_indices[:min_regions]
+            batch_selected_indices.append(selected_indices)
         
-        return torch.tensor(selected_indices[:min_regions], device=tokens.device)
+        # Convert to tensor with proper batch dimension [B, num_coverage_tokens]
+        # Pad shorter sequences to make tensor rectangular
+        max_coverage = max(len(indices) for indices in batch_selected_indices) if batch_selected_indices else 0
+        max_coverage = min(max_coverage, min_regions)  # Respect min_regions limit
+        
+        if max_coverage == 0:
+            # Fallback: return empty tensor with proper shape
+            return torch.empty((batch_size, 0), dtype=torch.long, device=tokens.device)
+        
+        padded_indices = []
+        for indices in batch_selected_indices:
+            # Truncate or pad to max_coverage
+            if len(indices) >= max_coverage:
+                padded_indices.append(indices[:max_coverage])
+            else:
+                # Pad with last valid index or 0 if empty
+                last_idx = indices[-1] if indices else 0
+                padded = indices + [last_idx] * (max_coverage - len(indices))
+                padded_indices.append(padded)
+        
+        return torch.tensor(padded_indices, dtype=torch.long, device=tokens.device)  # [B, max_coverage]
     
     def _compute_edge_density_boost(self, tokens):
         """
