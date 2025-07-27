@@ -830,7 +830,6 @@ class SigLipVisionTower(nn.Module):
         """
         try:
             batch_size, total_tokens, embed_dim = highres_tokens.shape
-            rank0_print(f"SHIRG DEBUG: Input shape: {highres_tokens.shape}, target: {target_count}")
             
             if target_count >= total_tokens:
                 # Add simple summary token if no selection needed
@@ -847,22 +846,15 @@ class SigLipVisionTower(nn.Module):
             with context_manager:
                 # SHIRG-v3 ATTENTION-BASED SELECTION (FastV-inspired)
                 # Step 1: Get attention-based importance scores
-                rank0_print(f"SHIRG DEBUG: Computing attention importance...")
                 attention_scores = self._compute_attention_importance(highres_tokens)  # [B, N]
-                rank0_print(f"SHIRG DEBUG: Attention scores shape: {attention_scores.shape}")
                 
                 # Step 2: Text relevance boost (if text embeddings provided)
                 if text_embeddings is not None:
-                    rank0_print(f"SHIRG DEBUG: Text embeddings shape: {text_embeddings.shape}")
                     text_relevance = self._compute_text_relevance(highres_tokens, text_embeddings)  # [B, N]
-                    rank0_print(f"SHIRG DEBUG: Text relevance shape: {text_relevance.shape}")
                     # Combine attention and text relevance
                     importance_scores = 0.7 * attention_scores + 0.3 * text_relevance
                 else:
-                    rank0_print(f"SHIRG DEBUG: No text embeddings provided")
                     importance_scores = attention_scores
-                
-                rank0_print(f"SHIRG DEBUG: Final importance scores shape: {importance_scores.shape}")
                 
                 # Step 3: Semantic region coverage (ensure spatial diversity)
                 coverage_tokens = self._ensure_spatial_coverage(
@@ -942,13 +934,6 @@ class SigLipVisionTower(nn.Module):
                 final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
         
         except Exception as e:
-            rank0_print(f"SHIRG DEBUG ERROR in shirg_token_selection: {e}")
-            rank0_print(f"SHIRG DEBUG: highres_tokens shape: {highres_tokens.shape if hasattr(highres_tokens, 'shape') else 'No shape attr'}")
-            if text_embeddings is not None:
-                rank0_print(f"SHIRG DEBUG: text_embeddings shape: {text_embeddings.shape if hasattr(text_embeddings, 'shape') else 'No shape attr'}")
-            import traceback
-            rank0_print(f"SHIRG DEBUG: Full traceback: {traceback.format_exc()}")
-            
             # Fallback: simple selection
             batch_size, total_tokens, embed_dim = highres_tokens.shape
             _, selected_indices = torch.topk(torch.randn(batch_size, total_tokens, device=highres_tokens.device), k=target_count, dim=-1)
@@ -976,9 +961,7 @@ class SigLipVisionTower(nn.Module):
         """
         try:
             batch_size, num_tokens, embed_dim = tokens.shape
-            rank0_print(f"SHIRG DEBUG: _compute_attention_importance input shape: {tokens.shape}")
         except Exception as e:
-            rank0_print(f"SHIRG DEBUG ERROR: Failed to get token shape: {e}")
             return torch.ones(1, 1, device=tokens.device if hasattr(tokens, 'device') else 'cpu', dtype=tokens.dtype if hasattr(tokens, 'dtype') else torch.float32)
         
         # Method 1: Self-attention importance (simplified and robust)
@@ -1046,9 +1029,7 @@ class SigLipVisionTower(nn.Module):
         try:
             batch_size, num_tokens, embed_dim = tokens.shape
             grid_size = int(num_tokens ** 0.5)
-            rank0_print(f"SHIRG DEBUG: _compute_spatial_gradients input shape: {tokens.shape}, grid_size: {grid_size}")
         except Exception as e:
-            rank0_print(f"SHIRG DEBUG ERROR: Failed to get spatial gradient setup: {e}")
             return torch.ones(1, 1, device=tokens.device if hasattr(tokens, 'device') else 'cpu', dtype=tokens.dtype if hasattr(tokens, 'dtype') else torch.float32)
         
         # SHIRG-FIX: 2025-07-27 - Fix tensor shape mismatch in gradient computation
@@ -1058,18 +1039,14 @@ class SigLipVisionTower(nn.Module):
         # Reshape to spatial grid
         try:
             spatial_tokens = tokens.view(batch_size, grid_size, grid_size, embed_dim)
-            rank0_print(f"SHIRG DEBUG: spatial_tokens shape after reshape: {spatial_tokens.shape}")
         except Exception as e:
-            rank0_print(f"SHIRG DEBUG ERROR: Failed to reshape to spatial grid: {e}")
             return torch.ones(batch_size, num_tokens, device=tokens.device, dtype=tokens.dtype) * 0.5
         
         # Compute gradients in x and y directions
         try:
             grad_x = torch.diff(spatial_tokens, dim=2)  # [B, H, W-1, D]
             grad_y = torch.diff(spatial_tokens, dim=1)  # [B, H-1, W, D]
-            rank0_print(f"SHIRG DEBUG: grad_x shape: {grad_x.shape}, grad_y shape: {grad_y.shape}")
         except Exception as e:
-            rank0_print(f"SHIRG DEBUG ERROR: Failed to compute gradients: {e}")
             return torch.ones(batch_size, num_tokens, device=tokens.device, dtype=tokens.dtype) * 0.5
         
         # Pad to restore original spatial dimensions
