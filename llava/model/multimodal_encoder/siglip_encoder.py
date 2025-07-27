@@ -664,21 +664,34 @@ class SigLipVisionTower(nn.Module):
         # LAVIDA IMPACT: Maintains exact LaViDa behavior and performance
         # SHIRG IMPACT: Provides baseline for comparison with SHIRG selection
         
-        if type(images) is list:
-            image_features = []
-            for image in images:
-                image_forward_out = self.vision_tower(image.to(device=self.device, dtype=self.dtype).unsqueeze(0), output_hidden_states=True)
-                raw_features = image_forward_out.hidden_states[-1]  # Last available layer
+        # GRADIENT-FIX: 2025-07-27 - Ensure gradient flow in forward pass for LoRA compatibility
+        # Enable gradient computation to ensure features are differentiable
+        with torch.set_grad_enabled(True):
+            if type(images) is list:
+                image_features = []
+                for image in images:
+                    # Ensure input retains gradients
+                    input_image = image.to(device=self.device, dtype=self.dtype).unsqueeze(0)
+                    if input_image.requires_grad:
+                        input_image.retain_grad()
+                    
+                    image_forward_out = self.vision_tower(input_image, output_hidden_states=True)
+                    raw_features = image_forward_out.hidden_states[-1]  # Last available layer
+                    # Apply post_layernorm and normalization for consistency
+                    normalized_features = self.vision_tower.vision_model.post_layernorm(raw_features)
+                    image_feature = F.normalize(normalized_features, p=2, dim=-1).to(image.dtype)
+                    image_features.append(image_feature)
+            else:
+                # Ensure input retains gradients
+                input_images = images.to(device=self.device, dtype=self.dtype)
+                if input_images.requires_grad:
+                    input_images.retain_grad()
+                
+                image_forward_outs = self.vision_tower(input_images, output_hidden_states=True)
+                raw_features = image_forward_outs.hidden_states[-1]  # Last available layer
                 # Apply post_layernorm and normalization for consistency
                 normalized_features = self.vision_tower.vision_model.post_layernorm(raw_features)
-                image_feature = F.normalize(normalized_features, p=2, dim=-1).to(image.dtype)
-                image_features.append(image_feature)
-        else:
-            image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
-            raw_features = image_forward_outs.hidden_states[-1]  # Last available layer
-            # Apply post_layernorm and normalization for consistency
-            normalized_features = self.vision_tower.vision_model.post_layernorm(raw_features)
-            image_features = F.normalize(normalized_features, p=2, dim=-1).to(images.dtype)
+                image_features = F.normalize(normalized_features, p=2, dim=-1).to(images.dtype)
 
         return image_features
 
@@ -762,14 +775,21 @@ class SigLipVisionTower(nn.Module):
         self._ensure_highres_cache_ready()
         
         # GRADIENT-FIX: 2025-07-27 - Always preserve gradients for LoRA training compatibility
-        # ISSUE: Conditional no_grad was blocking gradients during validation
-        # SOLUTION: Always allow gradients to flow through high-resolution extraction
+        # ISSUE: Vision tower parameters are frozen but we need gradient flow through features
+        # SOLUTION: Enable gradient computation on input while keeping parameters frozen
         # LAVIDA IMPACT: Enables gradient flow for mm_projector LoRA training
         # SHIRG IMPACT: Maintains training compatibility
-        outputs = self.vision_tower(
-            high_res_images.to(device=self.device, dtype=self.dtype),
-            output_hidden_states=True
-        )
+        
+        # Temporarily enable gradients on input for forward pass
+        with torch.set_grad_enabled(True):
+            # Ensure input requires gradients for gradient flow
+            if high_res_images.requires_grad:
+                high_res_images.retain_grad()
+            
+            outputs = self.vision_tower(
+                high_res_images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True
+            )
         
         # Get tokens after encoder but before pooling head
         raw_tokens = outputs.hidden_states[-1]  # [B, N_patches, D]
