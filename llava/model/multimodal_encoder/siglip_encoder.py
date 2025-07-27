@@ -929,13 +929,14 @@ class SigLipVisionTower(nn.Module):
                         
                         # Softmax attention weights for proper averaging
                         attention_weights = F.softmax(dropped_attention * 5.0, dim=0)  # Temperature scaling
-                        weighted_summary = torch.sum(dropped_tokens * attention_weights.unsqueeze(-1), dim=0, keepdim=True)
-                        summary_tokens.append(weighted_summary)
+                        weighted_summary = torch.sum(dropped_tokens * attention_weights.unsqueeze(-1), dim=0)  # [D]
+                        summary_tokens.append(weighted_summary.unsqueeze(0))  # [1, D]
                     else:
                         # Fallback: global summary
-                        summary_tokens.append(torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True))
+                        global_summary = torch.mean(highres_tokens[b], dim=0)  # [D]
+                        summary_tokens.append(global_summary.unsqueeze(0))  # [1, D]
                 
-                summary_token = torch.cat(summary_tokens, dim=0)  # [B, 1, D]
+                summary_token = torch.stack(summary_tokens, dim=0)  # [B, 1, D]
                 
                 # Combine selected tokens with summary
                 final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
