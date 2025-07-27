@@ -779,7 +779,8 @@ class SigLipVisionTower(nn.Module):
                 )
                 enhanced_summary_tokens.append(batch_summary)
             
-            summary_token = torch.cat(enhanced_summary_tokens, dim=0)
+            summary_token = torch.cat(enhanced_summary_tokens, dim=0)  # [B, D]
+            summary_token = summary_token.unsqueeze(1)  # [B, 1, D]
             return torch.cat([highres_tokens, summary_token], dim=1)
         
         # SHIRG-FIX: 2025-07-27 - Preserve gradients for LoRA training compatibility
@@ -889,7 +890,14 @@ class SigLipVisionTower(nn.Module):
                 summary_tokens.append(batch_summary)
             
             # Combine all summary tokens
-            summary_token = torch.cat(summary_tokens, dim=0)
+            summary_token = torch.cat(summary_tokens, dim=0)  # [B, D]
+            
+            # SHIRG-FIX: 2025-07-27 - Fix dimension mismatch for concatenation
+            # ISSUE: summary_token is 2D [B, D] but selected_tokens is 3D [B, target_count, D]
+            # SOLUTION: Unsqueeze summary_token to make it 3D [B, 1, D]
+            # LAVIDA IMPACT: Maintains correct token dimensionality for downstream processing
+            # SHIRG IMPACT: Ensures summary token can be properly concatenated with selected tokens
+            summary_token = summary_token.unsqueeze(1)  # [B, 1, D]
             
             # Combine selected tokens with summary
             final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
