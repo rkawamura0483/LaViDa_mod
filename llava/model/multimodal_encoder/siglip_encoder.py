@@ -979,6 +979,10 @@ class SigLipVisionTower(nn.Module):
         batch_size, num_tokens, embed_dim = tokens.shape
         grid_size = int(num_tokens ** 0.5)
         
+        # SHIRG-FIX: 2025-07-27 - Fix tensor shape mismatch in gradient computation
+        # ISSUE: torch.diff reduces dimensions, causing shape mismatch when combining gradients
+        # SOLUTION: Proper padding to maintain consistent shapes
+        
         # Reshape to spatial grid
         spatial_tokens = tokens.view(batch_size, grid_size, grid_size, embed_dim)
         
@@ -986,16 +990,21 @@ class SigLipVisionTower(nn.Module):
         grad_x = torch.diff(spatial_tokens, dim=2)  # [B, H, W-1, D]
         grad_y = torch.diff(spatial_tokens, dim=1)  # [B, H-1, W, D]
         
-        # Pad to maintain shape and compute magnitude
-        grad_x_padded = F.pad(grad_x, (0, 0, 0, 1))  # Pad width
-        grad_y_padded = F.pad(grad_y, (0, 0, 1, 0))  # Pad height
+        # Pad to restore original spatial dimensions
+        grad_x_padded = F.pad(grad_x, (0, 0, 0, 1, 0, 0))  # Pad width: [B, H, W, D]
+        grad_y_padded = F.pad(grad_y, (0, 0, 0, 0, 0, 1))  # Pad height: [B, H, W, D]
         
-        gradient_magnitude = torch.norm(grad_x_padded, dim=-1) + torch.norm(grad_y_padded, dim=-1)
+        # Compute gradient magnitudes separately then combine
+        grad_x_magnitude = torch.norm(grad_x_padded, dim=-1)  # [B, H, W]
+        grad_y_magnitude = torch.norm(grad_y_padded, dim=-1)  # [B, H, W]
+        
+        # Combine gradient magnitudes
+        gradient_magnitude = grad_x_magnitude + grad_y_magnitude  # [B, H, W]
         
         # Flatten back to token sequence
-        gradient_scores = gradient_magnitude.view(batch_size, -1)
+        gradient_scores = gradient_magnitude.view(batch_size, -1)  # [B, N]
         
-        # Normalize
+        # Normalize to [0, 1] range
         grad_min = gradient_scores.min(dim=1, keepdim=True)[0]
         grad_max = gradient_scores.max(dim=1, keepdim=True)[0]
         gradient_scores = (gradient_scores - grad_min) / (grad_max - grad_min + 1e-8)

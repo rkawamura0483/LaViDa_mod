@@ -53,11 +53,14 @@ class RealOCRVQAValidator:
             result = self._validate_single_image(sample_name, sample_data)
             results[sample_name] = result
             
-            # Print key metrics
-            print(f"   ✅ SHIRG Selection: {result['shirg_tokens_selected']} tokens")
-            print(f"   📈 OCR Quality: {result['ocr_preservation']:.3f}")
-            print(f"   🎯 Text Edge Preservation: {result['edge_preservation']:.3f}")
-            print(f"   📋 Visualization: {result['visualization_path']}")
+            # Print key metrics (with error handling)
+            if 'error' in result:
+                print(f"   ❌ Error: {result['error']}")
+            else:
+                print(f"   ✅ SHIRG Selection: {result['shirg_tokens_selected']} tokens")
+                print(f"   📈 OCR Quality: {result['ocr_preservation']:.3f}")
+                print(f"   🎯 Text Edge Preservation: {result['edge_preservation']:.3f}")
+                print(f"   📋 Visualization: {result['visualization_path']}")
         
         # Generate summary report
         self._generate_summary_report(results)
