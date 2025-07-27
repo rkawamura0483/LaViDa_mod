@@ -82,12 +82,17 @@ def validate_siglip_modifications():
     try:
         from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
         
-        # Create test vision tower
+        # Create test vision tower with immediate loading
         tower = SigLipVisionTower(
             vision_tower="google/siglip-so400m-patch14-384",
             vision_tower_cfg=None,
-            delay_load=True
+            delay_load=False  # Load immediately for testing
         )
+        
+        # Ensure the model is loaded
+        if not tower.is_loaded:
+            print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
+            tower.load_model()
         
         # Check for SHIRG methods
         shirg_methods = [
@@ -118,11 +123,11 @@ def test_token_extraction():
     try:
         from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
         
-        # Create vision tower
+        # Create vision tower with immediate loading
         tower = SigLipVisionTower(
             vision_tower="google/siglip-so400m-patch14-384", 
             vision_tower_cfg=None,
-            delay_load=True
+            delay_load=False  # Load immediately for testing
         )
         
         # Create dummy image batch
@@ -175,7 +180,7 @@ def test_shirg_selection():
         tower = SigLipVisionTower(
             vision_tower="google/siglip-so400m-patch14-384",
             vision_tower_cfg=None,
-            delay_load=True
+            delay_load=False  # Load immediately for testing
         )
         
         # Create test data with corrected dimensions
@@ -248,7 +253,7 @@ def test_shirg_integration():
         tower = SigLipVisionTower(
             vision_tower="google/siglip-so400m-patch14-384",
             vision_tower_cfg=None, 
-            delay_load=True
+            delay_load=False  # Load immediately for testing
         )
         
         # Create test images
@@ -316,7 +321,7 @@ def test_memory_efficiency():
         tower = SigLipVisionTower(
             vision_tower="google/siglip-so400m-patch14-384",
             vision_tower_cfg=None,
-            delay_load=True
+            delay_load=False  # Load immediately for testing
         )
         
         # Load model memory

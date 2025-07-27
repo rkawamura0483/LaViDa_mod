@@ -795,41 +795,61 @@ class SigLipVisionTower(nn.Module):
             )
             
             # Step 2: Hierarchical clustering for coverage guarantee
-            coverage_tokens = self._get_coverage_guaranteed_tokens(
+            coverage_indices = self._get_coverage_guaranteed_tokens(
                 multiview_tokens, saliency_scores, min_regions=target_count // 4
             )
             
             # Step 3: Global ranking for remaining budget
-            remaining_budget = target_count - len(coverage_tokens)
-            selected_indices = coverage_tokens.clone()
+            remaining_budget = target_count - len(coverage_indices)
             
             if remaining_budget > 0:
                 # Create mask excluding coverage tokens
                 mask = torch.ones(total_tokens, dtype=torch.bool, device=multiview_tokens.device)
-                mask[coverage_tokens] = False
+                mask[coverage_indices] = False
                 
-                # Select top-k from remaining tokens
+                # Select top-k from remaining tokens for each batch
                 masked_scores = saliency_scores.clone()
                 masked_scores[:, ~mask] = float('-inf')
                 
                 _, additional_indices = torch.topk(masked_scores, k=remaining_budget, dim=-1)
-                selected_indices = torch.cat([selected_indices, additional_indices.squeeze(0)])
+                
+                # Combine coverage and additional indices for each batch item
+                selected_indices_list = []
+                for b in range(batch_size):
+                    batch_coverage = coverage_indices  # Same coverage for all batches
+                    batch_additional = additional_indices[b]  # Per-batch additional
+                    batch_selected = torch.cat([batch_coverage, batch_additional])
+                    selected_indices_list.append(batch_selected)
+                
+                # Stack to create [batch_size, target_count] tensor
+                selected_indices = torch.stack(selected_indices_list, dim=0)
+            else:
+                # Only coverage tokens, expand for batch
+                selected_indices = coverage_indices.unsqueeze(0).expand(batch_size, -1)
             
             # Step 4: Extract selected tokens
             selected_tokens = torch.gather(
                 multiview_tokens, 1,
-                selected_indices.unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, embed_dim)
+                selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
             )
             
             # Step 5: Create summary token for dropped regions
-            dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=multiview_tokens.device)
-            dropped_mask[selected_indices] = False
+            summary_tokens = []
+            for b in range(batch_size):
+                # Create mask for this batch
+                batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=multiview_tokens.device)
+                batch_dropped_mask[selected_indices[b]] = False
+                
+                if batch_dropped_mask.sum() > 0:
+                    batch_dropped_tokens = multiview_tokens[b:b+1, batch_dropped_mask]
+                    batch_summary = torch.mean(batch_dropped_tokens, dim=1, keepdim=True)
+                else:
+                    batch_summary = torch.mean(multiview_tokens[b:b+1], dim=1, keepdim=True)
+                
+                summary_tokens.append(batch_summary)
             
-            if dropped_mask.sum() > 0:
-                dropped_tokens = multiview_tokens[:, dropped_mask]
-                summary_token = torch.mean(dropped_tokens, dim=1, keepdim=True)
-            else:
-                summary_token = torch.mean(multiview_tokens, dim=1, keepdim=True)
+            # Combine all summary tokens
+            summary_token = torch.cat(summary_tokens, dim=0)
             
             # Combine selected tokens with summary
             final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
