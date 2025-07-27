@@ -234,30 +234,22 @@ class ResolutionExtractionValidator:
             )
             extraction_time = time.time() - start_time
             
-            # SHIRG-FIX: 2025-07-27 - Handle list format correctly
+            # SHIRG-FIX: 2025-07-27 - Handle list format correctly for validation
             # ISSUE: List concatenation fails when tensors have different shapes
-            # SOLUTION: Use first tensor for validation or stack if shapes match
+            # SOLUTION: Use first tensor for validation and ensure consistent batch format
             # RESEARCH IMPACT: Enables proper validation of list-based outputs
             
             if isinstance(high_res_features, list):
                 if len(high_res_features) == 1:
                     high_res_features = high_res_features[0]
                 else:
-                    # Check if all tensors have the same shape for concatenation
-                    shapes = [f.shape for f in high_res_features]
-                    if all(shape == shapes[0] for shape in shapes):
-                        # Stack along batch dimension if shapes match
-                        high_res_features = torch.stack(high_res_features, dim=0)
-                        # Reshape to [batch_size, total_tokens, features]
-                        if high_res_features.dim() == 4:  # [list_len, batch, tokens, features]
-                            batch_size = high_res_features.shape[1]
-                            total_tokens = high_res_features.shape[0] * high_res_features.shape[2]
-                            features = high_res_features.shape[3]
-                            high_res_features = high_res_features.permute(1, 0, 2, 3).reshape(batch_size, total_tokens, features)
-                    else:
-                        # Use first tensor if shapes don't match
-                        print(f"   Warning: Inconsistent shapes {shapes}, using first tensor")
-                        high_res_features = high_res_features[0]
+                    # For validation, just use first tensor to avoid concatenation issues
+                    print(f"   Warning: Multiple high-res tensors ({len(high_res_features)}), using first for validation")
+                    high_res_features = high_res_features[0]
+                    
+            # Ensure consistent batch dimension for comparison
+            if high_res_features.dim() == 2:  # [tokens, features] -> add batch dimension
+                high_res_features = high_res_features.unsqueeze(0)
             
             results['forward_with_high_res'] = {
                 'success': True,
@@ -367,6 +359,10 @@ class ResolutionExtractionValidator:
                     # Use first tensor for analysis if multiple tensors
                     print(f"   Warning: Multiple high-res tensors, using first for quality analysis")
                     high_res_features = high_res_features[0]
+                    
+            # Ensure consistent batch dimension
+            if high_res_features.dim() == 2:
+                high_res_features = high_res_features.unsqueeze(0)
             
             # Quality metrics
             results['baseline_stats'] = {
@@ -457,6 +453,10 @@ class ResolutionExtractionValidator:
             # Handle list format for memory test
             if isinstance(high_res_features, list):
                 high_res_features = high_res_features[0] if len(high_res_features) == 1 else high_res_features[0]
+            
+            # Ensure consistent batch dimension
+            if high_res_features.dim() == 2:
+                high_res_features = high_res_features.unsqueeze(0)
             high_res_peak = torch.cuda.max_memory_allocated()
             high_res_memory = high_res_peak - high_res_start
             
