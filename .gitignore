@@ -70,7 +70,6 @@ build/
 playground/*.json
 mlx_configs/
 data_processing/
-data/
 ckpts/
 # demo/
 logs/
@@ -78,4 +77,3 @@ logs/
 lavida-ckpts
 outputdir
 scripts/train/exps/local/
-data
