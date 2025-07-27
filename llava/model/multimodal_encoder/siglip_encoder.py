@@ -170,7 +170,48 @@ class SigLipVisionEmbeddings(nn.Module):
         patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid]
         embeddings = patch_embeds.flatten(2).transpose(1, 2)
 
-        embeddings = embeddings + self.position_embedding(self.position_ids)
+        # SHIRG-FIX: 2025-07-27 - Handle variable resolution position embeddings
+        # ISSUE: Position embeddings are fixed to 729 positions but high-res gives 2916 tokens
+        # SOLUTION: Interpolate position embeddings to match actual token count
+        # LAVIDA IMPACT: Maintains compatibility while enabling high-resolution processing
+        # SHIRG IMPACT: Enables position-aware high-resolution token extraction
+        
+        batch_size, num_tokens, embed_dim = embeddings.shape
+        
+        if num_tokens == self.num_positions:
+            # Standard case: use original position embeddings
+            embeddings = embeddings + self.position_embedding(self.position_ids)
+        else:
+            # High-resolution case: interpolate position embeddings
+            import torch.nn.functional as F
+            
+            # Get original position embeddings [729, embed_dim]
+            orig_pos_embeds = self.position_embedding.weight  # [729, embed_dim]
+            
+            # Reshape to 2D grid: 729 = 27×27
+            grid_size = int(self.num_positions ** 0.5)  # 27
+            orig_pos_embeds_2d = orig_pos_embeds.view(grid_size, grid_size, embed_dim)  # [27, 27, embed_dim]
+            
+            # Calculate target grid size: e.g., 2916 = 54×54
+            target_grid_size = int(num_tokens ** 0.5)
+            
+            # Permute for interpolation: [embed_dim, 27, 27]
+            orig_pos_embeds_2d = orig_pos_embeds_2d.permute(2, 0, 1).unsqueeze(0)  # [1, embed_dim, 27, 27]
+            
+            # Interpolate to target size: [1, embed_dim, target_grid_size, target_grid_size]
+            interp_pos_embeds_2d = F.interpolate(
+                orig_pos_embeds_2d, 
+                size=(target_grid_size, target_grid_size), 
+                mode='bilinear', 
+                align_corners=False
+            )
+            
+            # Reshape back to token sequence: [1, embed_dim, target_grid_size, target_grid_size] -> [num_tokens, embed_dim]
+            interp_pos_embeds = interp_pos_embeds_2d.squeeze(0).permute(1, 2, 0).view(num_tokens, embed_dim)
+            
+            # Add interpolated position embeddings
+            embeddings = embeddings + interp_pos_embeds.unsqueeze(0).expand(batch_size, -1, -1)
+            
         return embeddings
 
 
@@ -596,15 +637,15 @@ class SigLipVisionTower(nn.Module):
                 # SOLUTION: Use flexible shape validation for both 729 and high-res modes
                 # LAVIDA IMPACT: Maintains backward compatibility while enabling high-res processing
                 # SHIRG IMPACT: Allows extraction of genuine high-resolution tokens (3,645+)
-                if image_feature.shape[-2] not in [729, 3645]:  # Support both standard and high-res
-                    rank0_print(f"SHIRG Warning: Unexpected token count {image_feature.shape[-2]}, expected 729 or 3645")
+                if image_feature.shape[-2] not in [729, 2304, 2916, 3645]:  # Support standard and various high-res
+                    rank0_print(f"SHIRG Warning: Unexpected token count {image_feature.shape[-2]}, expected 729, 2304, 2916, or 3645")
                 image_features.append(image_feature)
         else:
             image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
             image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
             # SHIRG-FIX: Same flexible validation for batch processing
-            if image_features.shape[-2] not in [729, 3645]:
-                rank0_print(f"SHIRG Warning: Unexpected token count {image_features.shape[-2]}, expected 729 or 3645")
+            if image_features.shape[-2] not in [729, 2304, 2916, 3645]:
+                rank0_print(f"SHIRG Warning: Unexpected token count {image_features.shape[-2]}, expected 729, 2304, 2916, or 3645")
 
         return image_features
 
