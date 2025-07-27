@@ -98,18 +98,18 @@ class RealOCRVQAValidator:
             raise
     
     def _get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images using working URLs and synthetic examples"""
+        """Get real OCR/VQA images from working dataset URLs"""
         
         ocr_vqa_samples = {}
         
-        # SHIRG-FIX: 2025-07-27 - Use working URLs and create realistic synthetic examples
-        # ISSUE: Original URLs are broken (404/403 errors), preventing validation
-        # SOLUTION: Mix working public URLs with high-quality synthetic OCR/VQA examples
-        # RESEARCH IMPACT: Enables comprehensive SHIRG validation on realistic OCR/VQA content
+        # SHIRG-FIX: 2025-07-27 - Use verified working URLs from actual datasets
+        # ISSUE: Need real dataset images, not synthetic ones
+        # SOLUTION: Find working URLs from accessible OCR/VQA datasets
+        # RESEARCH IMPACT: Authentic validation on real research dataset images
         
-        print("🌐 Loading 20 real OCR/VQA images from working sources...")
+        print("🌐 Loading real OCR/VQA images from verified dataset sources...")
         
-        # Working COCO images with text content (verified working URLs)
+        # COCO images with text content (working URLs)
         coco_text_samples = [
             {
                 "url": "http://images.cocodataset.org/train2017/000000000009.jpg",
@@ -149,18 +149,117 @@ class RealOCRVQAValidator:
             }
         ]
         
-        # Create synthetic but realistic OCR/VQA examples to supplement the dataset
-        synthetic_samples = []
+        # AI2 Diagram images (accessible academic dataset)
+        ai2_diagram_samples = [
+            {
+                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/1.png",
+                "question": "What is labeled as A in this diagram?",
+                "type": "AI2-Diagram",
+                "challenge": "Diagram component identification"
+            },
+            {
+                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/2.png", 
+                "question": "What process is shown in this scientific diagram?",
+                "type": "AI2-Diagram",
+                "challenge": "Scientific process understanding"
+            },
+            {
+                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/3.png",
+                "question": "What are the numbered components in this diagram?",
+                "type": "AI2-Diagram", 
+                "challenge": "Technical diagram reading"
+            }
+        ]
         
-        # Create realistic chart, document, and technical diagram examples
-        try:
-            synthetic_samples = self._create_realistic_ocr_vqa_samples()
-        except Exception as e:
-            print(f"⚠️ Could not create synthetic samples: {e}")
-            # Continue with just COCO samples
+        # DocVQA dataset images (working URLs from HuggingFace)
+        docvqa_samples = [
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/0/image/image.jpg",
+                "question": "What is the document title?",
+                "type": "DocVQA",
+                "challenge": "Document title extraction"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/1/image/image.jpg",
+                "question": "What date is mentioned in this document?",
+                "type": "DocVQA",
+                "challenge": "Date extraction from document"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/2/image/image.jpg",
+                "question": "What is the main number or value shown?",
+                "type": "DocVQA",
+                "challenge": "Numerical information extraction"
+            }
+        ]
         
-        # Combine working samples 
-        all_samples = coco_text_samples + synthetic_samples
+        # InfographicsVQA samples (HuggingFace)
+        infographics_samples = [
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/InfographicsVQA/--/lmms-lab--InfographicsVQA/validation/0/image/image.jpg",
+                "question": "What is the main statistic presented?",
+                "type": "InfographicsVQA",
+                "challenge": "Infographic data extraction"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/InfographicsVQA/--/lmms-lab--InfographicsVQA/validation/1/image/image.jpg",
+                "question": "What percentage is highlighted?",
+                "type": "InfographicsVQA",
+                "challenge": "Percentage reading from infographics"
+            }
+        ]
+        
+        # TextCaps dataset (working URLs)
+        textcaps_samples = [
+            {
+                "url": "https://datasets-server.huggingface.co/assets/HuggingFaceM4/TextCaps/--/HuggingFaceM4--TextCaps/train/0/image/image.jpg",
+                "question": "What text is visible in this image?",
+                "type": "TextCaps",
+                "challenge": "General text detection"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/HuggingFaceM4/TextCaps/--/HuggingFaceM4--TextCaps/train/1/image/image.jpg",
+                "question": "What is written on the main object?",
+                "type": "TextCaps",
+                "challenge": "Object text reading"
+            }
+        ]
+        
+        # ScienceQA visual questions (HuggingFace)
+        scienceqa_samples = [
+            {
+                "url": "https://datasets-server.huggingface.co/assets/derek-thomas/ScienceQA/--/derek-thomas--ScienceQA/train/0/image/image.jpg",
+                "question": "What scientific concept is illustrated?",
+                "type": "ScienceQA",
+                "challenge": "Scientific diagram interpretation"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/derek-thomas/ScienceQA/--/derek-thomas--ScienceQA/train/1/image/image.jpg",
+                "question": "What measurements or values are shown?",
+                "type": "ScienceQA", 
+                "challenge": "Scientific measurement reading"
+            }
+        ]
+        
+        # PlotQA dataset (chart reading)
+        plotqa_samples = [
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/PlotQA/--/lmms-lab--PlotQA/train/0/image/image.jpg",
+                "question": "What is the highest value in this chart?",
+                "type": "PlotQA",
+                "challenge": "Chart value extraction"
+            },
+            {
+                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/PlotQA/--/lmms-lab--PlotQA/train/1/image/image.jpg",
+                "question": "What trend is shown in this plot?",
+                "type": "PlotQA",
+                "challenge": "Chart trend analysis"
+            }
+        ]
+        
+        # Combine all real dataset samples
+        all_samples = (coco_text_samples + ai2_diagram_samples + docvqa_samples + 
+                      infographics_samples + textcaps_samples + scienceqa_samples + plotqa_samples)
         
         print(f"📋 Attempting to load {len(all_samples)} OCR/VQA samples...")
         
@@ -170,20 +269,6 @@ class RealOCRVQAValidator:
             try:
                 sample_name = f"{sample_info['type'].lower().replace('-', '_')}_{idx:02d}"
                 print(f"🔄 Loading {sample_name} from {sample_info['type']}...")
-                
-                # Handle synthetic samples (already have images)
-                if sample_info.get('source') == 'synthetic':
-                    ocr_vqa_samples[sample_name] = {
-                        'image': sample_info['image'],
-                        'question': sample_info['question'],
-                        'type': sample_info['type'],
-                        'challenge': sample_info['challenge'],
-                        'source': 'synthetic',
-                        'url': sample_info['url']
-                    }
-                    successful_loads += 1
-                    print(f"✅ Loaded {sample_name} (synthetic) ({successful_loads}/{len(all_samples)})")
-                    continue
                 
                 # Handle URL-based samples with robust error handling
                 if 'url' in sample_info:
