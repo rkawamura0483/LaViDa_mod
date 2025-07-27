@@ -186,7 +186,7 @@ class SigLipVisionEmbeddings(nn.Module):
             # High-resolution case: ultra-optimized cached position embeddings
             target_grid_size = int(num_tokens ** 0.5)
             
-            # ULTRA-OPTIMIZATION: Device-aware cache check with early exit
+            # DEVICE-FIX: Simple device-aware cache check
             cache_key = f"pos_embeds_{target_grid_size}_{embeddings.device}"
             
             if (hasattr(self, '_cached_pos_embeds_dict') and 
@@ -194,9 +194,14 @@ class SigLipVisionEmbeddings(nn.Module):
                 # Fast path: use pre-computed cached embeddings
                 cached_pos_embeds = self._cached_pos_embeds_dict[cache_key]
                 
-                # Pre-allocate and use in-place addition for speed
+                # Ensure cached embeddings are on correct device
+                if cached_pos_embeds.device != embeddings.device:
+                    cached_pos_embeds = cached_pos_embeds.to(embeddings.device)
+                    self._cached_pos_embeds_dict[cache_key] = cached_pos_embeds
+                
+                # Add position embeddings
                 pos_embeds_expanded = cached_pos_embeds.unsqueeze(0).expand(batch_size, -1, -1)
-                embeddings.add_(pos_embeds_expanded)
+                embeddings = embeddings + pos_embeds_expanded
             else:
                 # Cache miss: compute once and cache with device awareness
                 import torch.nn.functional as F
@@ -232,9 +237,9 @@ class SigLipVisionEmbeddings(nn.Module):
                     # Cache on correct device
                     self._cached_pos_embeds_dict[cache_key] = interp_pos_embeds.clone()
                 
-                # Add position embeddings with pre-allocated expansion
+                # Add position embeddings
                 pos_embeds_expanded = interp_pos_embeds.unsqueeze(0).expand(batch_size, -1, -1)
-                embeddings.add_(pos_embeds_expanded)
+                embeddings = embeddings + pos_embeds_expanded
             
         return embeddings
 
@@ -645,6 +650,10 @@ class SigLipVisionTower(nn.Module):
         
         self.vision_tower.vision_model.head = nn.Identity()
         self.vision_tower.requires_grad_(False)
+        
+        # DEVICE-FIX: Move model to GPU if available
+        if torch.cuda.is_available():
+            self.vision_tower = self.vision_tower.cuda()
 
         self.is_loaded = True
 
@@ -729,64 +738,51 @@ class SigLipVisionTower(nn.Module):
         
         batch_size = images.shape[0]
         
-        # ULTRA-OPTIMIZATION 1: Ensure GPU-first processing
-        if torch.cuda.is_available():
-            # Move to GPU immediately and set optimal dtype
-            if not images.is_cuda:
-                images = images.cuda(non_blocking=True)
-            
-            # Use mixed precision for speed if model supports it
-            target_dtype = self.dtype
-            if target_dtype in [torch.float16, torch.bfloat16]:
-                images = images.to(dtype=target_dtype, non_blocking=True)
+        # DEVICE-FIX: Ensure proper device and dtype alignment
+        # Move input to same device and dtype as model
+        target_device = self.device
+        target_dtype = self.dtype
+        
+        if images.device != target_device or images.dtype != target_dtype:
+            images = images.to(device=target_device, dtype=target_dtype, non_blocking=True)
         
         # ULTRA-OPTIMIZATION 2: Use tensor cores optimized interpolation
         high_res_size = 672
         
-        # Pre-allocate output tensor for better memory efficiency
-        high_res_images = torch.empty(
-            (batch_size, images.shape[1], high_res_size, high_res_size),
-            dtype=images.dtype, device=images.device
+        # OPTIMIZATION: Direct interpolation without pre-allocation to avoid device issues
+        high_res_images = F.interpolate(
+            images, 
+            size=(high_res_size, high_res_size), 
+            mode='bilinear', 
+            align_corners=False, 
+            antialias=False  # Disable antialiasing for speed
         )
-        
-        # Use optimized interpolation with specific settings for tensor cores
-        with torch.cuda.amp.autocast(enabled=(self.dtype in [torch.float16, torch.bfloat16])):
-            # Custom interpolation settings for maximum speed
-            high_res_images = F.interpolate(
-                images, 
-                size=(high_res_size, high_res_size), 
-                mode='bilinear', 
-                align_corners=False, 
-                antialias=False  # Disable antialiasing for speed
-            )
         
         # ULTRA-OPTIMIZATION 3: Cached position embeddings with device awareness
         self._ensure_highres_cache_ready()
         
-        # ULTRA-OPTIMIZATION 4: Streamlined vision tower forward pass
-        # Use torch.jit.script if available for compiled speed
-        context_manager = torch.no_grad() if not high_res_images.requires_grad else torch.enable_grad()
-        
-        with context_manager:
-            # Ensure optimal memory layout
-            high_res_images = high_res_images.contiguous()
-            
-            # Direct call to avoid overhead
+        # DEVICE-FIX: Ensure inputs are on correct device before vision tower call
+        # Only use no_grad during inference, not during validation/training
+        if not high_res_images.requires_grad:
+            # Inference mode - use no_grad for efficiency
+            with torch.no_grad():
+                outputs = self.vision_tower(
+                    high_res_images.to(device=self.device, dtype=self.dtype),
+                    output_hidden_states=True
+                )
+        else:
+            # Training/validation mode - preserve gradients
             outputs = self.vision_tower(
-                high_res_images,
+                high_res_images.to(device=self.device, dtype=self.dtype),
                 output_hidden_states=True
             )
         
-        # ULTRA-OPTIMIZATION 5: Fused post-processing
+        # Get tokens after encoder but before pooling head
         raw_tokens = outputs.hidden_states[-1]  # [B, N_patches, D]
         
-        # Single-pass normalization using in-place operations where possible
-        with torch.cuda.amp.autocast(enabled=(self.dtype in [torch.float16, torch.bfloat16])):
-            # Apply post_layernorm
-            normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
-            
-            # Apply L2 normalization efficiently
-            high_res_tokens = F.normalize(normalized_tokens, p=2, dim=-1, eps=1e-8)
+        # Apply post_layernorm and normalization for consistency
+        normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
+        high_res_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
         
         # ULTRA-OPTIMIZATION 6: Fast validation check
         expected_patches = 2304  # Pre-computed: (672 // 14) ** 2
