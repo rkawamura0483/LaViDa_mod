@@ -711,25 +711,39 @@ class SigLipVisionTower(nn.Module):
             images, size=(high_res_size, high_res_size), mode='bilinear', align_corners=False
         )
         
-        with torch.no_grad():
-            # Extract high-resolution tokens using the vision transformer
+        # SHIRG-FIX: 2025-07-27 - Enable gradients for high-resolution token extraction
+        # ISSUE: torch.no_grad() prevents gradient flow for LoRA training
+        # SOLUTION: Allow gradients when needed, use no_grad only for inference
+        # LAVIDA IMPACT: Maintains gradient flow for LoRA compatibility
+        # SHIRG IMPACT: Enables gradient-based token selection training
+        
+        # Only use no_grad during inference, not during validation/training
+        if not high_res_images.requires_grad:
+            # Inference mode - use no_grad for efficiency
+            with torch.no_grad():
+                outputs = self.vision_tower(
+                    high_res_images.to(device=self.device, dtype=self.dtype),
+                    output_hidden_states=True
+                )
+        else:
+            # Training/validation mode - preserve gradients
             outputs = self.vision_tower(
                 high_res_images.to(device=self.device, dtype=self.dtype),
                 output_hidden_states=True
             )
-            
-            # Get tokens after encoder but before pooling head
-            raw_tokens = outputs.hidden_states[-1]  # [B, N_patches, D]
-            
-            # Apply post_layernorm for consistency with standard processing
-            normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
-            
-            # Apply L2 normalization to match expected token magnitudes
-            high_res_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
-            
-            expected_patches = (high_res_size // 14) ** 2  # 2,304 for 672x672
-            if high_res_tokens.shape[1] != expected_patches:
-                rank0_print(f"SHIRG Warning: Expected {expected_patches} tokens for {high_res_size}x{high_res_size}, got {high_res_tokens.shape[1]}")
+        
+        # Get tokens after encoder but before pooling head
+        raw_tokens = outputs.hidden_states[-1]  # [B, N_patches, D]
+        
+        # Apply post_layernorm for consistency with standard processing
+        normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
+        
+        # Apply L2 normalization to match expected token magnitudes
+        high_res_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
+        
+        expected_patches = (high_res_size // 14) ** 2  # 2,304 for 672x672
+        if high_res_tokens.shape[1] != expected_patches:
+            rank0_print(f"SHIRG Warning: Expected {expected_patches} tokens for {high_res_size}x{high_res_size}, got {high_res_tokens.shape[1]}")
         
         rank0_print(f"SHIRG: Extracted {high_res_tokens.shape[1]} high-resolution tokens for selection")
         return high_res_tokens
@@ -758,7 +772,21 @@ class SigLipVisionTower(nn.Module):
             summary_token = torch.mean(multiview_tokens, dim=1, keepdim=True)
             return torch.cat([multiview_tokens, summary_token], dim=1)
         
-        with torch.no_grad():
+        # SHIRG-FIX: 2025-07-27 - Preserve gradients for LoRA training compatibility
+        # ISSUE: torch.no_grad() prevents gradient flow during training
+        # SOLUTION: Only use no_grad for inference, preserve gradients for training
+        # LAVIDA IMPACT: Enables LoRA training on SHIRG-enhanced model
+        # SHIRG IMPACT: Allows gradient-based optimization of selection parameters
+        
+        # Only disable gradients if input doesn't require them (inference mode)
+        if not multiview_tokens.requires_grad:
+            context_manager = torch.no_grad()
+        else:
+            # Use a dummy context manager that does nothing
+            from contextlib import nullcontext
+            context_manager = nullcontext()
+            
+        with context_manager:
             # Step 1: Compute saliency scores with SHIRG-v2 formula
             alpha, beta = 0.25, 0.15  # Research-specified weights
             
