@@ -98,9 +98,9 @@ class RealOCRVQAValidator:
         if chartqa_dir.exists():
             print(f"📁 Loading local ChartQA images from {chartqa_dir}")
             chartqa_questions = [
-                "What was the revenue growth rate between Q2 and Q3 2024?",
-                "What is the highest value shown in this chart?",
-                "What trend is visible in the data over time?"
+                "What is the highest commodity price index value shown in this chart?",
+                "Which commodity has the highest price index in the chart?",
+                "What percentage of population does Mauritania have in armed forces?"
             ]
             
             for idx, img_path in enumerate(sorted(chartqa_dir.glob("*.jpg"))[:3]):
