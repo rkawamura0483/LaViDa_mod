@@ -866,19 +866,19 @@ class ComprehensiveValidator:
             
             # Test complete pipeline
             with torch.no_grad():
-                # 1. Baseline comparison
+                # 1. Baseline comparison with consistent target count
                 baseline_tokens, shirg_tokens = self.tower.compare_baseline_vs_shirg(
                     test_images, target_tokens=768, text_embeddings=test_text_embeddings
                 )
                 
-                # 2. Direct SHIRG forward
+                # 2. Direct SHIRG forward with SAME target count for comparison
                 shirg_direct = self.tower.forward_with_shirg(
-                    test_images, target_tokens=512, text_embeddings=test_text_embeddings
+                    test_images, target_tokens=768, text_embeddings=test_text_embeddings
                 )
                 
-                # 3. Multi-step process
+                # 3. Multi-step process with same target count
                 highres = self.tower.get_highres_tokens_for_shirg(test_images)
-                selected = self.tower.shirg_token_selection(highres, 1024, test_text_embeddings)
+                selected = self.tower.shirg_token_selection(highres, 768, test_text_embeddings)
             
             # Validate pipeline consistency
             pipeline_checks = self._validate_pipeline_consistency(
@@ -887,6 +887,24 @@ class ComprehensiveValidator:
             
             details.update(pipeline_checks["details"])
             issues.extend(pipeline_checks["issues"])
+            
+            # Test different target token counts separately
+            target_counts = [512, 768, 1024]
+            for target_count in target_counts:
+                try:
+                    with torch.no_grad():
+                        test_shirg = self.tower.shirg_token_selection(highres, target_count, test_text_embeddings)
+                    
+                    expected_shape = (2, target_count + 1, self.tower.hidden_size)  # +1 for summary token
+                    if test_shirg.shape == expected_shape:
+                        details[f"target_{target_count}_shape"] = f"✓ Correct: {test_shirg.shape}"
+                    else:
+                        details[f"target_{target_count}_shape"] = f"❌ Wrong: {test_shirg.shape} vs {expected_shape}"
+                        issues.append(f"Wrong shape for target {target_count}: {test_shirg.shape} vs {expected_shape}")
+                
+                except Exception as e:
+                    details[f"target_{target_count}_shape"] = f"❌ Error: {e}"
+                    issues.append(f"Failed target {target_count}: {e}")
             
             # Test reproducibility
             reproducibility_test = self._test_reproducibility()
