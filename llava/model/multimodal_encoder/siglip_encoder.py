@@ -608,19 +608,18 @@ class SigLipVisionTower(nn.Module):
 
         self.vision_tower = SigLipVisionModel.from_pretrained(self.vision_tower_name, device_map=device_map)
 
-        # SHIRG-FIX: 2025-07-27 - Dual-architecture approach for LaViDa + SHIRG compatibility
-        # ISSUE: Need both LaViDa (729 tokens, reduced encoder) and SHIRG (3645 tokens, full encoder)
-        # SOLUTION: Maintain LaViDa compatibility but create separate full encoder for SHIRG
-        # LAVIDA IMPACT: Preserves original LaViDa architecture and performance
-        # SHIRG IMPACT: Enables genuine high-resolution token extraction with full encoder
+        # SHIRG-FIX: 2025-07-27 - Correct approach: preserve full encoder, control output layer
+        # ISSUE: LaViDa deletes last layer, SHIRG needs all layers for high-quality features
+        # SOLUTION: Keep full encoder, use layer indexing to get LaViDa-compatible vs SHIRG outputs
+        # LAVIDA IMPACT: Use layer -2 output for LaViDa compatibility (equivalent to deleted layer)
+        # SHIRG IMPACT: Use layer -1 output for full encoder quality
         
-        # Keep original LaViDa approach for standard forward() method
-        del self.vision_tower.vision_model.encoder.layers[-1:]
+        # IMPORTANT: Do NOT delete the last layer - keep full encoder intact
+        # We'll control which layer output to use in forward methods
+        self._original_num_layers = len(self.vision_tower.vision_model.encoder.layers)
         
-        # Create separate full encoder for SHIRG high-resolution extraction
-        self._full_encoder_for_shirg = None  # Lazy-loaded when needed
-        
-        rank0_print("SHIRG: Dual-architecture setup - LaViDa compatibility (26 layers) + SHIRG capability (27 layers)")
+        rank0_print(f"SHIRG: Preserving full encoder ({self._original_num_layers} layers) for correct SHIRG implementation")
+        rank0_print("SHIRG: LaViDa compatibility via layer -2, SHIRG quality via layer -1")
         
         self.vision_tower.vision_model.head = nn.Identity()
         self.vision_tower.requires_grad_(False)
@@ -628,153 +627,152 @@ class SigLipVisionTower(nn.Module):
         self.is_loaded = True
 
     def forward(self, images):
+        # SHIRG-FIX: 2025-07-27 - Use layer -2 for LaViDa compatibility (simulates deleted layer)
+        # ISSUE: LaViDa originally deleted last layer, so standard forward should use layer -2
+        # SOLUTION: Use layer -2 output to maintain LaViDa compatibility
+        # LAVIDA IMPACT: Maintains exact LaViDa behavior
+        # SHIRG IMPACT: Allows fair comparison with layer -1 output
+        
         if type(images) is list:
             image_features = []
             for image in images:
                 image_forward_out = self.vision_tower(image.to(device=self.device, dtype=self.dtype).unsqueeze(0), output_hidden_states=True)
-                image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
-                # SHIRG-FIX: 2025-07-27 - Remove 729 token assertion to support variable resolutions
-                # ISSUE: Hard assertion breaks when using high-resolution features
-                # SOLUTION: Use flexible shape validation for both 729 and high-res modes
-                # LAVIDA IMPACT: Maintains backward compatibility while enabling high-res processing
-                # SHIRG IMPACT: Allows extraction of genuine high-resolution tokens (3,645+)
-                if image_feature.shape[-2] not in [729, 2304, 2916, 3645]:  # Support standard and various high-res
-                    rank0_print(f"SHIRG Warning: Unexpected token count {image_feature.shape[-2]}, expected 729, 2304, 2916, or 3645")
+                # Use second-to-last layer to simulate LaViDa's deleted layer approach
+                image_feature = image_forward_out.hidden_states[-2].to(image.dtype)
+                # Should always be 729 tokens for standard 384x384 input
+                if image_feature.shape[-2] != 729:
+                    rank0_print(f"SHIRG Warning: Expected 729 tokens, got {image_feature.shape[-2]}")
                 image_features.append(image_feature)
         else:
             image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
-            image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
-            # SHIRG-FIX: Same flexible validation for batch processing
-            if image_features.shape[-2] not in [729, 2304, 2916, 3645]:
-                rank0_print(f"SHIRG Warning: Unexpected token count {image_features.shape[-2]}, expected 729, 2304, 2916, or 3645")
+            # Use second-to-last layer for LaViDa compatibility
+            image_features = image_forward_outs.hidden_states[-2].to(images.dtype)
+            if image_features.shape[-2] != 729:
+                rank0_print(f"SHIRG Warning: Expected 729 tokens, got {image_features.shape[-2]}")
 
         return image_features
 
     def forward_with_high_quality(self, images, return_high_quality=False):
         """
-        Forward pass with optional high-quality token extraction for SHIRG
+        Forward pass with correct SHIRG approach: same encoder, different layer outputs
         
-        SHIRG-FIX: 2025-07-27 - Correct SHIRG methodology implementation
-        ISSUE: SHIRG needs comparable features for valid research, not different resolutions
-        SOLUTION: Same resolution (384x384), different encoder quality (26 vs 27 layers)
-        LAVIDA IMPACT: Standard path unchanged, exact compatibility maintained
-        SHIRG IMPACT: Provides comparable high-quality features for meaningful token selection
+        SHIRG-FIX: 2025-07-27 - Final correct implementation
+        ISSUE: Need fair comparison between LaViDa and SHIRG features
+        SOLUTION: Same encoder, same resolution, different layer depths for comparison
+        LAVIDA IMPACT: Use layer -2 output for compatibility
+        SHIRG IMPACT: Use layer -1 output for maximum quality
         
         Args:
-            images: Input images (single tensor or list) at standard 384x384 resolution
-            return_high_quality: If True, return both standard and high-quality features
+            images: Input images at standard 384x384 resolution
+            return_high_quality: If True, return both layer outputs
             
         Returns:
-            If return_high_quality=False: standard LaViDa features only
-            If return_high_quality=True: (standard_features, high_quality_features)
+            If return_high_quality=False: standard LaViDa-equivalent features
+            If return_high_quality=True: (lavida_equivalent_features, shirg_features)
         """
         
         if not return_high_quality:
-            # Standard LaViDa path - unchanged
-            return self.forward(images)
+            # Standard LaViDa path - use layer -2 to simulate deleted layer
+            return self._extract_high_quality_tokens(images, use_full_encoder=False)
         
-        # SHIRG path - dual processing with SAME resolution but different encoder quality
+        # SHIRG comparison path
         if type(images) is list:
-            standard_features = []
-            high_quality_features = []
+            lavida_features = []
+            shirg_features = []
             
             for image in images:
-                # Path 1: Standard LaViDa features (26 layers, 729 tokens)
-                standard_feature = self._extract_high_quality_tokens(
+                # LaViDa-equivalent: layer -2
+                lavida_feature = self._extract_high_quality_tokens(
                     image.unsqueeze(0) if image.dim() == 3 else image, 
                     use_full_encoder=False
                 ).to(image.dtype)
-                standard_features.append(standard_feature)
+                lavida_features.append(lavida_feature)
                 
-                # Path 2: SHIRG high-quality features (27 layers, 729 tokens, SAME resolution)
-                high_quality_feature = self._extract_high_quality_tokens(
+                # SHIRG: layer -1 (full depth)
+                shirg_feature = self._extract_high_quality_tokens(
                     image.unsqueeze(0) if image.dim() == 3 else image,
                     use_full_encoder=True
                 ).to(image.dtype)
-                high_quality_features.append(high_quality_feature)
+                shirg_features.append(shirg_feature)
                 
-            return standard_features, high_quality_features
+            return lavida_features, shirg_features
         else:
-            # Batch processing
-            # Path 1: Standard LaViDa features (26 layers)
-            standard_features = self._extract_high_quality_tokens(
+            # Batch processing - single forward pass with both layer outputs
+            lavida_features = self._extract_high_quality_tokens(
                 images, use_full_encoder=False
             ).to(images.dtype)
             
-            # Path 2: SHIRG high-quality features (27 layers)
-            high_quality_features = self._extract_high_quality_tokens(
+            shirg_features = self._extract_high_quality_tokens(
                 images, use_full_encoder=True
             ).to(images.dtype)
             
-            return standard_features, high_quality_features
+            return lavida_features, shirg_features
 
-    def _get_full_encoder_for_shirg(self):
+    def _get_layer_output(self, images, target_layer_index=-1):
         """
-        Get full SigLIP encoder for SHIRG - using SAME resolution but MORE layers
+        Get output from specific encoder layer for LaViDa vs SHIRG comparison
         
-        SHIRG-FIX: 2025-07-27 - Correct SHIRG approach
-        ISSUE: Previous approach changed resolution AND layers = incompatible features
-        SOLUTION: Keep SAME resolution (384x384) but use FULL encoder (27 layers vs 26)
-        LAVIDA IMPACT: No impact - maintains 384x384 with 26 layers
-        SHIRG IMPACT: Higher quality features at SAME resolution for meaningful comparison
+        SHIRG-FIX: 2025-07-27 - Correct SHIRG approach using same encoder, different layers
+        ISSUE: Loading separate encoder creates different feature spaces
+        SOLUTION: Use SAME encoder but access different layer outputs
+        LAVIDA IMPACT: Use layer -2 output (simulates deleted layer)
+        SHIRG IMPACT: Use layer -1 output (full encoder quality)
+        
+        Args:
+            images: Input images at standard resolution
+            target_layer_index: Which layer to extract features from (-1=last, -2=second-to-last)
+            
+        Returns:
+            Features from specified layer
         """
-        if self._full_encoder_for_shirg is None:
-            rank0_print("SHIRG: Loading full SigLIP encoder (27 layers) for same-resolution high-quality extraction")
+        with torch.no_grad():
+            # Process through the full encoder
+            outputs = self.vision_tower(
+                images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True
+            )
             
-            # Load complete SigLIP model with all 27 layers
-            self._full_encoder_for_shirg = SigLipVisionModel.from_pretrained(
-                self.vision_tower_name
-            ).to(device=self.device, dtype=self.dtype)
-            
-            # Remove head but keep ALL encoder layers (this is the key difference)
-            self._full_encoder_for_shirg.vision_model.head = nn.Identity()
-            self._full_encoder_for_shirg.requires_grad_(False)
-            
-            rank0_print(f"SHIRG: Full encoder ready - {len(self._full_encoder_for_shirg.vision_model.encoder.layers)} layers for high-quality features")
-            
-        return self._full_encoder_for_shirg
+            # Extract features from target layer
+            if target_layer_index == -2:
+                # LaViDa-equivalent: second-to-last layer (simulates deleted layer)
+                layer_features = outputs.hidden_states[-2]
+            else:
+                # SHIRG: last layer (full encoder quality)
+                layer_features = outputs.hidden_states[-1]
+                
+            return layer_features
     
     def _extract_high_quality_tokens(self, images, use_full_encoder=True):
         """
-        Extract high-quality tokens using full SigLIP encoder at SAME resolution
+        Extract tokens using correct SHIRG approach: same encoder, different layer outputs
         
-        SHIRG-FIX: 2025-07-27 - Correct SHIRG methodology
-        ISSUE: SHIRG doesn't need different resolutions - it needs BETTER features for selection
-        SOLUTION: Same 384x384 resolution, but use FULL encoder (27 layers) vs reduced (26 layers)
-        LAVIDA IMPACT: None - this preserves exact LaViDa compatibility
-        SHIRG IMPACT: Higher quality features for better token selection, comparable to LaViDa baseline
+        SHIRG-FIX: 2025-07-27 - Correct methodology using layer-based approach
+        ISSUE: Separate encoders create different feature spaces
+        SOLUTION: Same encoder, different layer outputs for fair comparison
+        LAVIDA IMPACT: Use layer -2 (equivalent to deleted layer)
+        SHIRG IMPACT: Use layer -1 (full encoder depth)
         
         Args:
             images: Input images tensor [B, C, H, W] at standard 384x384 resolution
-            use_full_encoder: If True, use full 27-layer encoder; if False, use LaViDa 26-layer
+            use_full_encoder: If True, use last layer; if False, use second-to-last layer
             
         Returns:
-            High-quality token features [B, 729, D] with same spatial layout as LaViDa
+            Token features [B, 729, D] from appropriate encoder layer
         """
         
         # Handle single image vs batch
         if images.dim() == 3:  # Single image [C, H, W]
             images = images.unsqueeze(0)
         
-        # SHIRG-FIX: Keep images at standard LaViDa resolution (384x384)
-        # The key insight: SHIRG needs better QUALITY features, not different RESOLUTION
-        input_images = images.to(device=self.device, dtype=self.dtype)
-        
+        # Extract from appropriate layer
         if use_full_encoder:
-            # Use full 27-layer encoder for higher quality features
-            full_encoder = self._get_full_encoder_for_shirg()
-            
-            with torch.no_grad():
-                outputs = full_encoder(input_images, output_hidden_states=True)
-                tokens = outputs.last_hidden_state
-                
+            # SHIRG: Use last layer (full encoder depth)
+            tokens = self._get_layer_output(images, target_layer_index=-1)
         else:
-            # Use standard LaViDa path (26 layers) for comparison
-            with torch.no_grad():
-                outputs = self.vision_tower(input_images, output_hidden_states=True)
-                tokens = outputs.hidden_states[-1]
+            # LaViDa: Use second-to-last layer (simulates deleted layer)
+            tokens = self._get_layer_output(images, target_layer_index=-2)
         
-        # Both paths should give exactly 729 tokens (27x27 grid from 384x384)
+        # Both should give exactly 729 tokens (27x27 grid from 384x384)
         expected_tokens = 729
         actual_tokens = tokens.shape[1]
         
