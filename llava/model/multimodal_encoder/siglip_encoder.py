@@ -650,239 +650,180 @@ class SigLipVisionTower(nn.Module):
 
         return image_features
 
-    def forward_with_high_res(self, images, return_high_res=False, target_resolution=(768, 768)):
+    def forward_with_high_quality(self, images, return_high_quality=False):
         """
-        Forward pass with optional genuine high-resolution token extraction
+        Forward pass with optional high-quality token extraction for SHIRG
         
-        SHIRG-FIX: 2025-07-27 - Complete redesign for proper SHIRG research
-        ISSUE: Previous approach used degraded features, violated SHIRG methodology
-        SOLUTION: Dual-path processing - LaViDa compatibility + genuine high-res SHIRG features
-        LAVIDA IMPACT: Standard path unchanged, maintains compatibility
-        SHIRG IMPACT: Provides genuine high-quality features for valid research
+        SHIRG-FIX: 2025-07-27 - Correct SHIRG methodology implementation
+        ISSUE: SHIRG needs comparable features for valid research, not different resolutions
+        SOLUTION: Same resolution (384x384), different encoder quality (26 vs 27 layers)
+        LAVIDA IMPACT: Standard path unchanged, exact compatibility maintained
+        SHIRG IMPACT: Provides comparable high-quality features for meaningful token selection
         
         Args:
-            images: Input images (single tensor or list)
-            return_high_res: If True, return both standard and high-res features
-            target_resolution: Target resolution for high-res processing
+            images: Input images (single tensor or list) at standard 384x384 resolution
+            return_high_quality: If True, return both standard and high-quality features
             
         Returns:
-            If return_high_res=False: standard LaViDa features only
-            If return_high_res=True: (standard_features, high_res_features)
+            If return_high_quality=False: standard LaViDa features only
+            If return_high_quality=True: (standard_features, high_quality_features)
         """
         
-        if not return_high_res:
+        if not return_high_quality:
             # Standard LaViDa path - unchanged
             return self.forward(images)
         
-        # SHIRG path - dual processing for research validity
+        # SHIRG path - dual processing with SAME resolution but different encoder quality
         if type(images) is list:
             standard_features = []
-            high_res_features = []
+            high_quality_features = []
             
             for image in images:
-                # Path 1: Standard LaViDa features (729 tokens, reduced encoder)
-                standard_out = self.vision_tower(
-                    image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
-                    output_hidden_states=True
-                )
-                standard_feature = standard_out.hidden_states[-1].to(image.dtype)
+                # Path 1: Standard LaViDa features (26 layers, 729 tokens)
+                standard_feature = self._extract_high_quality_tokens(
+                    image.unsqueeze(0) if image.dim() == 3 else image, 
+                    use_full_encoder=False
+                ).to(image.dtype)
                 standard_features.append(standard_feature)
                 
-                # Path 2: SHIRG high-resolution features (full encoder)
-                if image.dim() == 3:  # Single image [C, H, W]
-                    high_res_feature = self._extract_high_res_tokens(
-                        image.unsqueeze(0), target_resolution
-                    )
-                else:  # Already has batch dimension
-                    high_res_feature = self._extract_high_res_tokens(
-                        image, target_resolution
-                    )
+                # Path 2: SHIRG high-quality features (27 layers, 729 tokens, SAME resolution)
+                high_quality_feature = self._extract_high_quality_tokens(
+                    image.unsqueeze(0) if image.dim() == 3 else image,
+                    use_full_encoder=True
+                ).to(image.dtype)
+                high_quality_features.append(high_quality_feature)
                 
-                high_res_features.append(high_res_feature.to(image.dtype))
-                
-            return standard_features, high_res_features
+            return standard_features, high_quality_features
         else:
             # Batch processing
-            batch_size = images.shape[0]
-            
-            # Path 1: Standard LaViDa features (reduced encoder, 729 tokens)
-            standard_outs = self.vision_tower(
-                images.to(device=self.device, dtype=self.dtype), 
-                output_hidden_states=True
-            )
-            standard_features = standard_outs.hidden_states[-1].to(images.dtype)
-            
-            # Path 2: SHIRG high-resolution features (full encoder)
-            high_res_features = self._extract_high_res_tokens(
-                images, target_resolution
+            # Path 1: Standard LaViDa features (26 layers)
+            standard_features = self._extract_high_quality_tokens(
+                images, use_full_encoder=False
             ).to(images.dtype)
             
-            return standard_features, high_res_features
+            # Path 2: SHIRG high-quality features (27 layers)
+            high_quality_features = self._extract_high_quality_tokens(
+                images, use_full_encoder=True
+            ).to(images.dtype)
+            
+            return standard_features, high_quality_features
 
     def _get_full_encoder_for_shirg(self):
         """
-        Lazy-load full SigLIP encoder for SHIRG high-resolution extraction
+        Get full SigLIP encoder for SHIRG - using SAME resolution but MORE layers
         
-        SHIRG-FIX: 2025-07-27 - Separate full encoder for genuine high-resolution features
-        ISSUE: LaViDa uses reduced encoder (26 layers) which degrades feature quality for SHIRG
-        SOLUTION: Maintain separate full encoder (27 layers) specifically for SHIRG extraction
-        LAVIDA IMPACT: No impact on LaViDa - this is only used for SHIRG
-        SHIRG IMPACT: Provides genuine high-quality features for meaningful token selection
+        SHIRG-FIX: 2025-07-27 - Correct SHIRG approach
+        ISSUE: Previous approach changed resolution AND layers = incompatible features
+        SOLUTION: Keep SAME resolution (384x384) but use FULL encoder (27 layers vs 26)
+        LAVIDA IMPACT: No impact - maintains 384x384 with 26 layers
+        SHIRG IMPACT: Higher quality features at SAME resolution for meaningful comparison
         """
         if self._full_encoder_for_shirg is None:
-            rank0_print("SHIRG: Loading full SigLIP encoder for high-resolution extraction")
+            rank0_print("SHIRG: Loading full SigLIP encoder (27 layers) for same-resolution high-quality extraction")
             
             # Load complete SigLIP model with all 27 layers
             self._full_encoder_for_shirg = SigLipVisionModel.from_pretrained(
                 self.vision_tower_name
             ).to(device=self.device, dtype=self.dtype)
             
-            # Remove head but keep all encoder layers
+            # Remove head but keep ALL encoder layers (this is the key difference)
             self._full_encoder_for_shirg.vision_model.head = nn.Identity()
             self._full_encoder_for_shirg.requires_grad_(False)
             
-            rank0_print(f"SHIRG: Full encoder loaded with {len(self._full_encoder_for_shirg.vision_model.encoder.layers)} layers")
+            rank0_print(f"SHIRG: Full encoder ready - {len(self._full_encoder_for_shirg.vision_model.encoder.layers)} layers for high-quality features")
             
         return self._full_encoder_for_shirg
     
-    def _extract_high_res_tokens(self, images, target_resolution=(768, 768), force_token_count=None):
+    def _extract_high_quality_tokens(self, images, use_full_encoder=True):
         """
-        Extract genuine high-resolution tokens using full SigLIP encoder
+        Extract high-quality tokens using full SigLIP encoder at SAME resolution
         
-        SHIRG-FIX: 2025-07-27 - Complete redesign for genuine high-resolution extraction
-        ISSUE: Previous approach used reduced encoder + interpolation = degraded features
-        SOLUTION: Use full encoder on native high-resolution images = genuine features
-        LAVIDA IMPACT: None - this method is SHIRG-specific
-        SHIRG IMPACT: Provides true high-resolution features for meaningful token selection
+        SHIRG-FIX: 2025-07-27 - Correct SHIRG methodology
+        ISSUE: SHIRG doesn't need different resolutions - it needs BETTER features for selection
+        SOLUTION: Same 384x384 resolution, but use FULL encoder (27 layers) vs reduced (26 layers)
+        LAVIDA IMPACT: None - this preserves exact LaViDa compatibility
+        SHIRG IMPACT: Higher quality features for better token selection, comparable to LaViDa baseline
         
         Args:
-            images: Input images tensor [B, C, H, W] - preferably already at target resolution
-            target_resolution: Target resolution tuple (height, width) 
-            force_token_count: Force specific token count (default: None = calculated from resolution)
+            images: Input images tensor [B, C, H, W] at standard 384x384 resolution
+            use_full_encoder: If True, use full 27-layer encoder; if False, use LaViDa 26-layer
             
         Returns:
-            High-resolution token features [B, N_tokens, D] with genuine high-res information
+            High-quality token features [B, 729, D] with same spatial layout as LaViDa
         """
-        import torch.nn.functional as F
         
         # Handle single image vs batch
         if images.dim() == 3:  # Single image [C, H, W]
             images = images.unsqueeze(0)
-            single_image = True
+        
+        # SHIRG-FIX: Keep images at standard LaViDa resolution (384x384)
+        # The key insight: SHIRG needs better QUALITY features, not different RESOLUTION
+        input_images = images.to(device=self.device, dtype=self.dtype)
+        
+        if use_full_encoder:
+            # Use full 27-layer encoder for higher quality features
+            full_encoder = self._get_full_encoder_for_shirg()
+            
+            with torch.no_grad():
+                outputs = full_encoder(input_images, output_hidden_states=True)
+                tokens = outputs.last_hidden_state
+                
         else:
-            single_image = False
+            # Use standard LaViDa path (26 layers) for comparison
+            with torch.no_grad():
+                outputs = self.vision_tower(input_images, output_hidden_states=True)
+                tokens = outputs.hidden_states[-1]
         
-        batch_size = images.shape[0]
-        current_h, current_w = images.shape[-2:]
-        target_h, target_w = target_resolution
+        # Both paths should give exactly 729 tokens (27x27 grid from 384x384)
+        expected_tokens = 729
+        actual_tokens = tokens.shape[1]
         
-        # SHIRG-FIX: Only resize if necessary, preserve native resolution when possible
-        if (current_h, current_w) != (target_h, target_w):
-            # Resize to target resolution using high-quality interpolation
-            high_res_images = F.interpolate(
-                images, 
-                size=target_resolution, 
-                mode='bicubic',  # Higher quality than bilinear
-                align_corners=False
-            )
-        else:
-            high_res_images = images
+        if actual_tokens != expected_tokens:
+            rank0_print(f"SHIRG Warning: Expected {expected_tokens} tokens, got {actual_tokens}")
         
-        # Extract features using FULL encoder (not reduced LaViDa encoder)
-        full_encoder = self._get_full_encoder_for_shirg()
-        
-        with torch.no_grad():
-            # Process with full 27-layer encoder for maximum feature quality
-            high_res_outputs = full_encoder(
-                high_res_images.to(device=self.device, dtype=self.dtype), 
-                output_hidden_states=True
-            )
-            
-            # Use features from full encoder
-            high_res_tokens = high_res_outputs.last_hidden_state
-            
-            # Calculate expected token count from resolution
-            patch_size = 14  # SigLIP patch size
-            expected_tokens = (target_h // patch_size) * (target_w // patch_size)
-            current_tokens = high_res_tokens.shape[1]
-            
-            # Handle token count consistency
-            if force_token_count is not None:
-                target_tokens = force_token_count
-            else:
-                target_tokens = current_tokens  # Use actual token count from resolution
-            
-            # Adjust token count if needed
-            if current_tokens < target_tokens:
-                # Pad with mean of existing tokens (better than zeros)
-                pad_tokens = target_tokens - current_tokens
-                mean_token = high_res_tokens.mean(dim=1, keepdim=True)  # [B, 1, D]
-                padding = mean_token.expand(batch_size, pad_tokens, -1)
-                high_res_tokens = torch.cat([high_res_tokens, padding], dim=1)
-                rank0_print(f"SHIRG: Padded tokens from {current_tokens} to {target_tokens}")
-            elif current_tokens > target_tokens:
-                # Trim to target count
-                high_res_tokens = high_res_tokens[:, :target_tokens, :]
-                rank0_print(f"SHIRG: Trimmed tokens from {current_tokens} to {target_tokens}")
-            
-        return high_res_tokens
+        return tokens
 
-    def get_multiview_high_res_tokens(self, images, view_configs=None):
+    def get_high_quality_tokens_for_shirg(self, images, token_budget=729):
         """
-        Extract high-resolution tokens using LaViDa's multi-view approach with full encoder
+        Extract high-quality tokens for SHIRG selection using correct methodology
         
-        SHIRG-FIX: 2025-07-27 - Proper multi-view implementation for SHIRG research
-        ISSUE: Need genuine LaViDa 5-view approach (4×336² + 1×672²) for 3,645 tokens
-        SOLUTION: Use LaViDa specification but with full encoder for feature quality
-        LAVIDA IMPACT: Follows LaViDa architecture exactly
-        SHIRG IMPACT: Provides high-quality features matching LaViDa's spatial organization
+        SHIRG-FIX: 2025-07-27 - Implement actual SHIRG research approach
+        ISSUE: SHIRG research is about TOKEN SELECTION, not multi-view or resolution changes
+        SOLUTION: Extract high-quality tokens at standard resolution for selection
+        LAVIDA IMPACT: Maintains exact LaViDa compatibility
+        SHIRG IMPACT: Provides high-quality token pool for SHIRG selection algorithm
         
         Args:
-            images: Input images [B, C, H, W]
-            view_configs: View configuration list (default: LaViDa 5-view spec)
+            images: Input images [B, C, H, W] at standard 384x384 resolution
+            token_budget: Number of tokens to extract (default: 729 for LaViDa compatibility)
             
         Returns:
-            Multi-view high-resolution tokens [B, 3645, D] following LaViDa specification
+            High-quality tokens [B, token_budget, D] ready for SHIRG selection
         """
-        if view_configs is None:
-            # SHIRG-FIX: Use proper LaViDa 5-view specification
-            # This matches the paper: 4×336² + 1×672² = 4×576 + 2304 = 4608 → trim to 3645
-            view_configs = [
-                {'size': (336, 336), 'count': 4},  # 4 standard views: 4 × 576 = 2304 tokens
-                {'size': (672, 672), 'count': 1},  # 1 high-res view: 2304 tokens
-            ]  # Total: 4608 tokens → trim to 3645 as per LaViDa paper
         
-        batch_size = images.shape[0]
-        all_view_tokens = []
+        # Extract high-quality tokens using full encoder at standard resolution
+        high_quality_tokens = self._extract_high_quality_tokens(
+            images, use_full_encoder=True
+        )
         
-        for view_config in view_configs:
-            view_size = view_config['size']
-            view_count = view_config['count']
-            
-            for _ in range(view_count):
-                # Extract tokens for this view using full encoder
-                view_tokens = self._extract_high_res_tokens(images, view_size)
-                all_view_tokens.append(view_tokens)
+        current_tokens = high_quality_tokens.shape[1]
         
-        # Concatenate all view tokens
-        concatenated_tokens = torch.cat(all_view_tokens, dim=1)  # [B, total_tokens, D]
-        current_tokens = concatenated_tokens.shape[1]
+        if current_tokens != token_budget:
+            if current_tokens > token_budget:
+                # Trim to budget
+                high_quality_tokens = high_quality_tokens[:, :token_budget, :]
+                rank0_print(f"SHIRG: Trimmed from {current_tokens} to {token_budget} tokens")
+            else:
+                # Pad if needed (shouldn't happen with standard 384x384)
+                batch_size = high_quality_tokens.shape[0]
+                pad_size = token_budget - current_tokens
+                mean_token = high_quality_tokens.mean(dim=1, keepdim=True)
+                padding = mean_token.expand(batch_size, pad_size, -1)
+                high_quality_tokens = torch.cat([high_quality_tokens, padding], dim=1)
+                rank0_print(f"SHIRG: Padded from {current_tokens} to {token_budget} tokens")
         
-        # Trim to LaViDa specification: 3,645 tokens
-        target_tokens = 3645
-        if current_tokens > target_tokens:
-            concatenated_tokens = concatenated_tokens[:, :target_tokens, :]
-            rank0_print(f"SHIRG: Multi-view trimmed from {current_tokens} to {target_tokens} tokens")
-        elif current_tokens < target_tokens:
-            # Pad with mean of existing tokens if somehow under target
-            pad_size = target_tokens - current_tokens
-            mean_token = concatenated_tokens.mean(dim=1, keepdim=True)
-            padding = mean_token.expand(batch_size, pad_size, -1)
-            concatenated_tokens = torch.cat([concatenated_tokens, padding], dim=1)
-            rank0_print(f"SHIRG: Multi-view padded from {current_tokens} to {target_tokens} tokens")
-        
-        rank0_print(f"SHIRG: Multi-view extraction complete: {concatenated_tokens.shape}")
-        return concatenated_tokens
+        rank0_print(f"SHIRG: High-quality token extraction complete: {high_quality_tokens.shape}")
+        return high_quality_tokens
 
     @property
     def dummy_feature(self):
