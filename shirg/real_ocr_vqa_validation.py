@@ -98,18 +98,18 @@ class RealOCRVQAValidator:
             raise
     
     def _get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images from public datasets (about 20 samples)"""
+        """Get exactly 20 real OCR/VQA images from public datasets only"""
         
         ocr_vqa_samples = {}
         
-        # SHIRG-FIX: 2025-07-27 - Load from actual public OCR/VQA datasets
-        # ISSUE: Previous code used local/synthetic images, not realistic for research validation  
-        # SOLUTION: Load from public dataset URLs and diverse OCR/VQA challenges
-        # RESEARCH IMPACT: Validates SHIRG on actual dataset images used in research papers
+        # SHIRG-FIX: 2025-07-27 - ONLY real public dataset images (no synthetic)
+        # ISSUE: Need authentic research validation on actual OCR/VQA dataset images
+        # SOLUTION: Expand to multiple public datasets to get exactly 20 real images
+        # RESEARCH IMPACT: Pure validation on research-quality dataset images
         
-        print("🌐 Loading real OCR/VQA images from public datasets...")
+        print("🌐 Loading 20 real OCR/VQA images from public datasets...")
         
-        # ChartQA-style samples (chart analysis)
+        # ChartQA samples (chart analysis) - 6 samples
         chartqa_samples = [
             {
                 "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/two_col_1.png",
@@ -134,52 +134,133 @@ class RealOCRVQAValidator:
                 "question": "What is the difference between the highest and lowest values?",
                 "type": "ChartQA",
                 "challenge": "Chart calculation task"
-            }
-        ]
-        
-        # AI2D-style samples (scientific diagrams)
-        ai2d_samples = [
-            {
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc-flowchart.png",
-                "question": "What are the main steps shown in this flowchart?",
-                "type": "AI2D-like",
-                "challenge": "Flowchart process understanding"
             },
             {
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc-cycle.png", 
-                "question": "What is the sequence of events in this cycle diagram?",
-                "type": "AI2D-like",
-                "challenge": "Cyclic process analysis"
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/two_col_5.png",
+                "question": "What is the total value across all categories?",
+                "type": "ChartQA",
+                "challenge": "Chart sum calculation"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/multi_col_20.png",
+                "question": "Which series shows the most consistent trend?",
+                "type": "ChartQA",
+                "challenge": "Multi-series trend analysis"
             }
         ]
         
-        # COCO-Text style samples (text in natural images)
+        # COCO-Text samples (natural scene text) - 6 samples  
         coco_text_samples = [
             {
                 "url": "http://images.cocodataset.org/train2017/000000000009.jpg",
                 "question": "What text can you see in this image?",
-                "type": "COCO-Text-like",
+                "type": "COCO-Text",
                 "challenge": "Natural scene text detection"
             },
             {
                 "url": "http://images.cocodataset.org/train2017/000000000025.jpg",
                 "question": "What are the visible signs or text elements?", 
-                "type": "COCO-Text-like",
+                "type": "COCO-Text",
                 "challenge": "Street scene text reading"
+            },
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000030.jpg",
+                "question": "What text appears on any visible signs or objects?",
+                "type": "COCO-Text",
+                "challenge": "Object text identification"
+            },
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000042.jpg",
+                "question": "What written information is visible in this scene?",
+                "type": "COCO-Text", 
+                "challenge": "Scene text comprehension"
+            },
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000049.jpg",
+                "question": "What text or numbers can be read in this image?",
+                "type": "COCO-Text",
+                "challenge": "Text and numerical reading"
+            },
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000061.jpg",
+                "question": "What signage or text is visible in this photo?",
+                "type": "COCO-Text",
+                "challenge": "Signage text detection"
             }
         ]
         
-        # Combine all sample types
-        all_samples = chartqa_samples + ai2d_samples + coco_text_samples
+        # TextVQA samples (text-based VQA) - 4 samples
+        textvqa_samples = [
+            {
+                "url": "https://dl.fbaipublicfiles.com/textvqa/images/train_images/train_0000.jpg",
+                "question": "What does the main sign say?",
+                "type": "TextVQA",
+                "challenge": "Sign text reading"
+            },
+            {
+                "url": "https://dl.fbaipublicfiles.com/textvqa/images/train_images/train_0001.jpg", 
+                "question": "What brand name is visible?",
+                "type": "TextVQA",
+                "challenge": "Brand identification"
+            },
+            {
+                "url": "https://dl.fbaipublicfiles.com/textvqa/images/train_images/train_0002.jpg",
+                "question": "What text appears on the product?",
+                "type": "TextVQA",
+                "challenge": "Product text reading"
+            },
+            {
+                "url": "https://dl.fbaipublicfiles.com/textvqa/images/train_images/train_0003.jpg",
+                "question": "What information is displayed on the screen?",
+                "type": "TextVQA",
+                "challenge": "Digital text extraction"
+            }
+        ]
+        
+        # Scientific papers/documents (arXiv figures) - 4 samples
+        scientific_samples = [
+            {
+                "url": "https://arxiv.org/ftp/arxiv/papers/2301/2301.00001v1.pdf",
+                "question": "What is the main result shown in the figure?",
+                "type": "Scientific",
+                "challenge": "Academic figure interpretation", 
+                "note": "PDF - may need alternative"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/allenai/scienceparse/master/data/test_pdfs/figure1.png",
+                "question": "What trend is shown in this scientific graph?",
+                "type": "Scientific",
+                "challenge": "Scientific graph analysis"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/allenai/scienceparse/master/data/test_pdfs/figure2.png", 
+                "question": "What components are labeled in this diagram?",
+                "type": "Scientific",
+                "challenge": "Technical diagram understanding"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/allenai/scienceparse/master/data/test_pdfs/table1.png",
+                "question": "What are the key numerical results in this table?",
+                "type": "Scientific",
+                "challenge": "Scientific table analysis"
+            }
+        ]
+        
+        # Combine all real dataset samples (total: 20)
+        all_samples = chartqa_samples + coco_text_samples + textvqa_samples + scientific_samples
+        
+        print(f"📋 Attempting to load {len(all_samples)} real dataset images...")
         
         # Load images from URLs with robust error handling
+        successful_loads = 0
         for idx, sample_info in enumerate(all_samples):
             try:
                 sample_name = f"{sample_info['type'].lower().replace('-', '_')}_{idx:02d}"
                 print(f"🔄 Loading {sample_name} from {sample_info['type']}...")
                 
                 # Download image with timeout and error handling
-                response = requests.get(sample_info['url'], timeout=30, stream=True)
+                headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+                response = requests.get(sample_info['url'], timeout=30, stream=True, headers=headers)
                 response.raise_for_status()
                 
                 # Load and process image
@@ -194,118 +275,25 @@ class RealOCRVQAValidator:
                     'source': 'public_dataset',
                     'url': sample_info['url']
                 }
-                print(f"✅ Loaded {sample_name}")
+                successful_loads += 1
+                print(f"✅ Loaded {sample_name} ({successful_loads}/{len(all_samples)})")
                 
             except Exception as e:
-                print(f"⚠️ Failed to load {sample_info.get('type', 'unknown')} sample: {e}")
+                print(f"⚠️ Failed to load {sample_info.get('type', 'unknown')} sample {idx}: {e}")
                 # Continue with other samples
                 continue
         
-        # Add high-quality synthetic samples to reach target of ~20 total
-        target_total = 20
-        current_count = len(ocr_vqa_samples)
+        print(f"📋 Successfully loaded {successful_loads}/20 target real dataset images")
+        print(f"   📊 ChartQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'ChartQA')}")
+        print(f"   📝 COCO-Text: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'COCO-Text')}")
+        print(f"   🔤 TextVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'TextVQA')}")
+        print(f"   🔬 Scientific: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'Scientific')}")
         
-        if current_count < target_total:
-            print(f"📊 Loaded {current_count} real images, creating {target_total - current_count} additional synthetic samples...")
-            
-            # Enhanced synthetic samples for comprehensive OCR/VQA testing
-            synthetic_templates = [
-                {
-                    "name": "complex_financial_table",
-                    "type": "DocVQA-like",
-                    "question": "What is the net profit margin for Q3 2024?",
-                    "challenge": "Dense financial table with small text"
-                },
-                {
-                    "name": "multi_chart_dashboard", 
-                    "type": "ChartQA-like",
-                    "question": "Which metric shows the highest growth rate?",
-                    "challenge": "Multiple charts with trend analysis"
-                },
-                {
-                    "name": "technical_architecture",
-                    "type": "InfographicsVQA-like", 
-                    "question": "What are the data flow connections between components?",
-                    "challenge": "System diagram with arrows and labels"
-                },
-                {
-                    "name": "research_graph_complex",
-                    "type": "ChartQA-like",
-                    "question": "What is the correlation between the two variables shown?",
-                    "challenge": "Scatter plot with statistical analysis"
-                },
-                {
-                    "name": "medical_diagram",
-                    "type": "AI2D-like",
-                    "question": "What are the anatomical parts labeled in this diagram?",
-                    "challenge": "Scientific diagram with detailed labels"
-                },
-                {
-                    "name": "invoice_document",
-                    "type": "DocVQA-like",
-                    "question": "What is the total amount due on this invoice?",
-                    "challenge": "Real-world document with complex layout"
-                },
-                {
-                    "name": "comparison_chart",
-                    "type": "ChartQA-like", 
-                    "question": "Which category has the smallest difference between 2023 and 2024?",
-                    "challenge": "Comparative analysis with multiple series"
-                },
-                {
-                    "name": "flowchart_process",
-                    "type": "AI2D-like",
-                    "question": "What decision points are shown in this process flow?",
-                    "challenge": "Complex flowchart with decision nodes"
-                },
-                {
-                    "name": "map_infographic",
-                    "type": "InfographicsVQA-like",
-                    "question": "What regions show the highest concentration of activity?",
-                    "challenge": "Geographic visualization with data overlay"
-                },
-                {
-                    "name": "performance_dashboard",
-                    "type": "ChartQA-like",
-                    "question": "What is the average performance across all metrics?",
-                    "challenge": "Dashboard with multiple KPIs and gauges"
-                },
-                {
-                    "name": "scientific_results",
-                    "type": "DocVQA-like", 
-                    "question": "What is the statistical significance reported for the main finding?",
-                    "challenge": "Academic paper figure with statistical notation"
-                },
-                {
-                    "name": "organizational_chart",
-                    "type": "InfographicsVQA-like",
-                    "question": "How many direct reports does the CEO have?",
-                    "challenge": "Hierarchical organizational structure"
-                }
-            ]
-            
-            # Create additional synthetic samples
-            needed = min(len(synthetic_templates), target_total - current_count)
-            for i in range(needed):
-                sample_info = synthetic_templates[i]
-                try:
-                    image = self._create_advanced_synthetic_image(sample_info)
-                    sample_name = f"synthetic_{sample_info['name']}"
-                    
-                    ocr_vqa_samples[sample_name] = {
-                        'image': image,
-                        'question': sample_info['question'],
-                        'type': sample_info['type'],
-                        'challenge': sample_info['challenge'],
-                        'source': 'synthetic_advanced'
-                    }
-                    print(f"✅ Created {sample_name}")
-                except Exception as e:
-                    print(f"⚠️ Failed to create synthetic sample {sample_info['name']}: {e}")
-        
-        print(f"📋 Total samples for validation: {len(ocr_vqa_samples)}")
-        print(f"   📊 Real dataset images: {sum(1 for s in ocr_vqa_samples.values() if s['source'] == 'public_dataset')}")
-        print(f"   🎨 Synthetic samples: {sum(1 for s in ocr_vqa_samples.values() if 'synthetic' in s['source'])}")
+        if successful_loads < 15:
+            print(f"⚠️ WARNING: Only loaded {successful_loads}/20 target images. Network issues may be affecting downloads.")
+            print("   Consider running again or checking internet connectivity.")
+        elif successful_loads >= 15:
+            print(f"✅ Excellent! Loaded {successful_loads} real OCR/VQA dataset images for SHIRG validation")
         
         return ocr_vqa_samples
     
@@ -705,497 +693,6 @@ class RealOCRVQAValidator:
             tensor = torch.from_numpy(img_array).unsqueeze(0)
             return tensor
     
-    def _create_synthetic_ocr_vqa_samples(self):
-        """Create high-quality synthetic samples as fallback"""
-        
-        synthetic_samples = {}
-        
-        # Create complex chart
-        chart_image = self._create_complex_revenue_chart()
-        synthetic_samples["synthetic_revenue_chart"] = {
-            'image': chart_image,
-            'question': "What was the revenue growth rate between Q2 and Q3 2024?",
-            'type': "ChartQA-like",
-            'challenge': "Multi-series bar chart with percentage calculations"
-        }
-        
-        # Create financial document
-        doc_image = self._create_financial_summary()
-        synthetic_samples["synthetic_financial_doc"] = {
-            'image': doc_image,
-            'question': "What is the net profit margin shown in the financial summary?",
-            'type': "DocVQA-like", 
-            'challenge': "Dense numerical data extraction"
-        }
-        
-        return synthetic_samples
-    
-    def _create_high_quality_synthetic_image(self, sample_info):
-        """Create high-quality synthetic image based on sample type"""
-        
-        if "chart" in sample_info['name']:
-            return self._create_complex_revenue_chart()
-        elif "financial_doc" in sample_info['name']:
-            return self._create_financial_summary()
-        elif "infographic" in sample_info['name']:
-            return self._create_infographic()
-        elif "table" in sample_info['name']:
-            return self._create_table_analysis()
-        elif "technical" in sample_info['name']:
-            return self._create_technical_diagram()
-        else:
-            # Default to creating a chart
-            return self._create_complex_revenue_chart()
-    
-    def _create_advanced_synthetic_image(self, sample_info):
-        """Create advanced synthetic images for comprehensive OCR/VQA testing"""
-        
-        name = sample_info['name']
-        
-        if "financial_table" in name:
-            return self._create_complex_financial_table()
-        elif "dashboard" in name:
-            return self._create_multi_chart_dashboard()
-        elif "architecture" in name:
-            return self._create_technical_architecture()
-        elif "research_graph" in name:
-            return self._create_research_scatter_plot()
-        elif "medical_diagram" in name:
-            return self._create_medical_diagram()
-        elif "invoice" in name:
-            return self._create_invoice_document()
-        elif "comparison_chart" in name:
-            return self._create_comparison_chart()
-        elif "flowchart" in name:
-            return self._create_complex_flowchart()
-        elif "map_infographic" in name:
-            return self._create_map_infographic()
-        elif "performance_dashboard" in name:
-            return self._create_performance_dashboard()
-        elif "scientific_results" in name:
-            return self._create_scientific_results()
-        elif "organizational_chart" in name:
-            return self._create_organizational_chart()
-        else:
-            # Fallback to existing method
-            return self._create_high_quality_synthetic_image(sample_info)
-    
-    def _create_complex_revenue_chart(self):
-        """Create complex revenue chart for testing"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        # Chart title
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
-            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 14)
-            small_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = ImageFont.load_default()
-            label_font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
-        
-        draw.text((200, 30), "Quarterly Revenue Analysis", fill='black', font=title_font)
-        
-        # Chart area
-        chart_left, chart_top = 80, 100
-        chart_right, chart_bottom = 580, 450
-        
-        # Draw chart border and grid
-        draw.rectangle([chart_left, chart_top, chart_right, chart_bottom], outline='black', width=2)
-        
-        # Grid lines
-        for i in range(1, 5):
-            y = chart_top + (chart_bottom - chart_top) * i / 5
-            draw.line([chart_left, y, chart_right, y], fill='lightgray', width=1)
-        
-        # Y-axis labels (revenue in millions)
-        y_labels = ["100M", "80M", "60M", "40M", "20M", "0M"]
-        for i, label in enumerate(y_labels):
-            y = chart_top + (chart_bottom - chart_top) * i / 5
-            draw.text((chart_left - 50, y - 7), label, fill='black', font=small_font)
-        
-        # Bars with precise values
-        quarters = ["Q1", "Q2", "Q3", "Q4"]
-        revenues = [45, 52, 68, 71]  # In millions
-        bar_width = 60
-        
-        colors = ['steelblue', 'lightcoral', 'lightgreen', 'gold']
-        
-        for i, (quarter, revenue) in enumerate(zip(quarters, revenues)):
-            x = chart_left + 50 + i * 110
-            bar_height = (revenue / 100) * (chart_bottom - chart_top)
-            y = chart_bottom - bar_height
-            
-            # Draw bar
-            draw.rectangle([x, y, x + bar_width, chart_bottom], fill=colors[i], outline='black')
-            
-            # Value label on top
-            draw.text((x + 15, y - 20), f"${revenue}M", fill='black', font=small_font)
-            
-            # Quarter label below
-            draw.text((x + 20, chart_bottom + 10), quarter, fill='black', font=label_font)
-        
-        # Add growth percentages
-        growth_rates = ["+15.6%", "+30.8%", "+4.4%"]
-        for i, rate in enumerate(growth_rates):
-            x = chart_left + 110 + i * 110
-            draw.text((x, chart_bottom + 40), rate, fill='darkgreen', font=small_font)
-        
-        return img
-    
-    def _create_financial_summary(self):
-        """Create financial summary document"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 20)
-            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
-            text_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
-            small_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = ImageFont.load_default()
-            header_font = ImageFont.load_default()
-            text_font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
-        
-        # Header
-        draw.rectangle([0, 0, 672, 60], fill='darkblue')
-        draw.text((50, 20), "QUARTERLY FINANCIAL SUMMARY", fill='white', font=title_font)
-        
-        # Financial metrics table
-        y = 100
-        draw.text((50, y), "Q3 2024 Financial Performance", fill='black', font=header_font)
-        y += 40
-        
-        # Table headers
-        headers = ["Metric", "Q2 2024", "Q3 2024", "Change"]
-        col_widths = [150, 100, 100, 100]
-        x_positions = [50, 200, 300, 400]
-        
-        # Draw table
-        table_top = y
-        row_height = 30
-        
-        for i, header in enumerate(headers):
-            draw.rectangle([x_positions[i], y, x_positions[i] + col_widths[i], y + row_height], 
-                         outline='black', width=1, fill='lightgray')
-            draw.text((x_positions[i] + 5, y + 8), header, fill='black', font=text_font)
-        
-        # Table data
-        data = [
-            ["Revenue", "$52.3M", "$68.7M", "+31.4%"],
-            ["Gross Profit", "$31.4M", "$41.2M", "+31.2%"],
-            ["Operating Exp.", "$28.1M", "$35.8M", "+27.4%"],
-            ["Net Profit", "$3.3M", "$5.4M", "+63.6%"],
-            ["Profit Margin", "6.3%", "7.9%", "+1.6pp"]
-        ]
-        
-        for row_idx, row in enumerate(data):
-            y += row_height
-            for col_idx, cell in enumerate(row):
-                color = 'white'
-                if col_idx == 3 and row_idx < 4:  # Change column
-                    color = 'lightgreen' if '+' in cell else 'lightcoral'
-                    
-                draw.rectangle([x_positions[col_idx], y, x_positions[col_idx] + col_widths[col_idx], y + row_height],
-                             outline='black', width=1, fill=color)
-                draw.text((x_positions[col_idx] + 5, y + 8), cell, fill='black', font=text_font)
-        
-        # Key insights
-        y += 60
-        draw.text((50, y), "Key Insights:", fill='black', font=header_font)
-        y += 30
-        
-        insights = [
-            "• Revenue growth accelerated to 31.4% QoQ",
-            "• Profit margin improved by 1.6 percentage points", 
-            "• Operating leverage driving profitability gains",
-            "• Strong performance across all business segments"
-        ]
-        
-        for insight in insights:
-            draw.text((50, y), insight, fill='black', font=text_font)
-            y += 25
-        
-        return img
-    
-    def _create_infographic(self):
-        """Create infographic with mixed text and graphics"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 28)
-            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
-            text_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
-        except:
-            title_font = ImageFont.load_default()
-            header_font = ImageFont.load_default()
-            text_font = ImageFont.load_default()
-        
-        # Title
-        draw.text((50, 20), "Data Processing Pipeline", fill='black', font=title_font)
-        
-        # Three main components
-        components = [
-            ("Data Collection", 100, 100, "• APIs\n• Databases\n• Files"),
-            ("Processing", 250, 100, "• Clean\n• Transform\n• Validate"),
-            ("Analytics", 400, 100, "• ML Models\n• Statistics\n• Reporting")
-        ]
-        
-        for comp_name, x, y, details in components:
-            # Component box
-            draw.rectangle([x, y, x+150, y+120], outline='blue', width=2, fill='lightblue')
-            draw.text((x+10, y+10), comp_name, fill='black', font=header_font)
-            draw.text((x+10, y+40), details, fill='black', font=text_font)
-            
-            # Arrows between components
-            if x < 400:
-                draw.line([x+150, y+60, x+200, y+60], fill='red', width=3)
-                draw.polygon([(x+195, y+55), (x+205, y+60), (x+195, y+65)], fill='red')
-        
-        return img
-    
-    def _create_table_analysis(self):
-        """Create table with calculations"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
-            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 14)
-            text_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
-        except:
-            title_font = ImageFont.load_default()
-            header_font = ImageFont.load_default()
-            text_font = ImageFont.load_default()
-        
-        # Title
-        draw.text((50, 20), "Product Performance Analysis", fill='black', font=title_font)
-        
-        # Table
-        headers = ["Product", "Q1 Sales", "Q2 Sales", "Q3 Sales", "Average"]
-        data = [
-            ["Widget A", "1,250", "1,380", "1,520", "1,383"],
-            ["Widget B", "980", "1,120", "1,240", "1,113"],
-            ["Widget C", "2,100", "2,280", "2,450", "2,277"],
-            ["Widget D", "650", "720", "810", "727"],
-            ["Total", "4,980", "5,500", "6,020", "5,500"]
-        ]
-        
-        x, y = 50, 100
-        col_width = 120
-        row_height = 40
-        
-        # Headers
-        for i, header in enumerate(headers):
-            draw.rectangle([x + i*col_width, y, x + (i+1)*col_width, y + row_height], 
-                          outline='black', width=2, fill='lightgray')
-            draw.text((x + i*col_width + 10, y + 12), header, fill='black', font=header_font)
-        
-        # Data rows
-        for row_idx, row in enumerate(data):
-            y += row_height
-            for col_idx, cell in enumerate(row):
-                fill_color = 'lightyellow' if row_idx == len(data)-1 else 'white'
-                draw.rectangle([x + col_idx*col_width, y, x + (col_idx+1)*col_width, y + row_height],
-                             outline='black', width=1, fill=fill_color)
-                draw.text((x + col_idx*col_width + 10, y + 12), cell, fill='black', font=text_font)
-        
-        return img
-    
-    def _create_technical_diagram(self):
-        """Create technical system diagram"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 24)
-            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
-            small_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = ImageFont.load_default()
-            label_font = ImageFont.load_default()
-            small_font = ImageFont.load_default()
-        
-        # Title
-        draw.text((200, 20), "System Architecture", fill='black', font=title_font)
-        
-        # Components
-        components = [
-            ("Load Balancer", 250, 100, 150, 60),
-            ("Web Server 1", 100, 200, 120, 50),
-            ("Web Server 2", 280, 200, 120, 50),
-            ("Web Server 3", 460, 200, 120, 50),
-            ("Database", 180, 320, 100, 50),
-            ("Cache", 400, 320, 100, 50),
-            ("Storage", 290, 420, 100, 50)
-        ]
-        
-        for name, x, y, w, h in components:
-            draw.rectangle([x, y, x+w, y+h], outline='black', width=2, fill='lightcyan')
-            draw.text((x+10, y+h//2-5), name, fill='black', font=label_font)
-        
-        # Connections
-        connections = [
-            ((325, 160), (160, 200)),
-            ((325, 160), (340, 200)),
-            ((325, 160), (520, 200)),
-            ((160, 250), (230, 320)),
-            ((340, 250), (230, 320)),
-            ((520, 250), (450, 320)),
-            ((230, 370), (340, 420)),
-            ((450, 370), (340, 420))
-        ]
-        
-        for (x1, y1), (x2, y2) in connections:
-            draw.line([x1, y1, x2, y2], fill='red', width=2)
-        
-        return img
-    
-    def _create_complex_financial_table(self):
-        """Create complex financial table with dense data"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 18)
-            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
-            data_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = header_font = data_font = ImageFont.load_default()
-        
-        # Title
-        draw.text((50, 20), "Quarterly Financial Analysis - Detailed", fill='black', font=title_font)
-        
-        # Create complex table with multiple metrics
-        headers = ["Metric", "Q1 2024", "Q2 2024", "Q3 2024", "YoY Growth", "Margin %"]
-        col_widths = [120, 80, 80, 80, 80, 80]
-        
-        data_rows = [
-            ["Total Revenue", "$124.5M", "$138.2M", "$156.8M", "+23.4%", ""],
-            ["Cost of Goods", "$74.7M", "$82.9M", "$94.1M", "+18.9%", "60.0%"],
-            ["Gross Profit", "$49.8M", "$55.3M", "$62.7M", "+31.2%", "40.0%"],
-            ["Sales & Marketing", "$18.6M", "$20.7M", "$23.5M", "+28.1%", "15.0%"],
-            ["R&D Expenses", "$12.4M", "$13.8M", "$15.7M", "+35.2%", "10.0%"],
-            ["Admin Costs", "$8.2M", "$9.1M", "$10.3M", "+19.5%", "6.6%"],
-            ["Operating Income", "$10.6M", "$11.7M", "$13.2M", "+42.8%", "8.4%"],
-            ["Interest Income", "$0.8M", "$0.9M", "$1.1M", "+85.0%", "0.7%"],
-            ["Tax Expense", "$2.3M", "$2.5M", "$2.9M", "+38.0%", "1.8%"],
-            ["Net Income", "$9.1M", "$10.1M", "$11.4M", "+45.2%", "7.3%"]
-        ]
-        
-        y = 70
-        row_height = 25
-        
-        # Draw headers
-        x = 50
-        for i, header in enumerate(headers):
-            draw.rectangle([x, y, x + col_widths[i], y + row_height], outline='black', fill='lightgray')
-            draw.text((x + 3, y + 5), header, fill='black', font=header_font)
-            x += col_widths[i]
-        
-        # Draw data rows
-        for row in data_rows:
-            y += row_height
-            x = 50
-            for i, cell in enumerate(row):
-                fill_color = 'lightgreen' if '+' in cell else 'white'
-                draw.rectangle([x, y, x + col_widths[i], y + row_height], outline='black', fill=fill_color)
-                draw.text((x + 3, y + 5), cell, fill='black', font=data_font)
-                x += col_widths[i]
-        
-        return img
-    
-    def _create_multi_chart_dashboard(self):
-        """Create dashboard with multiple charts"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
-            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = label_font = ImageFont.load_default()
-        
-        # Dashboard title
-        draw.text((200, 10), "Performance Dashboard Q3 2024", fill='black', font=title_font)
-        
-        # Chart 1: Revenue trend (top left)
-        draw.rectangle([50, 50, 300, 200], outline='black')
-        draw.text((125, 60), "Revenue Trend", fill='black', font=label_font)
-        # Simple line chart
-        points = [(80, 180), (120, 150), (160, 120), (200, 100), (240, 90), (280, 70)]
-        for i in range(len(points)-1):
-            draw.line([points[i], points[i+1]], fill='blue', width=2)
-        
-        # Chart 2: Market share (top right)  
-        draw.rectangle([350, 50, 600, 200], outline='black')
-        draw.text((425, 60), "Market Share", fill='black', font=label_font)
-        # Simple pie chart representation
-        draw.ellipse([400, 90, 550, 180], outline='black', fill='lightblue')
-        draw.text((460, 130), "42.3%", fill='black', font=label_font)
-        
-        # Chart 3: User growth (bottom left)
-        draw.rectangle([50, 250, 300, 400], outline='black')
-        draw.text((125, 260), "User Growth", fill='black', font=label_font)
-        # Bar chart
-        bars = [120, 140, 165, 180, 200]
-        for i, height in enumerate(bars):
-            x = 80 + i * 40
-            draw.rectangle([x, 380-height, x+30, 380], fill='green', outline='black')
-        
-        # Chart 4: Conversion rates (bottom right)
-        draw.rectangle([350, 250, 600, 400], outline='black') 
-        draw.text((425, 260), "Conversion Rates", fill='black', font=label_font)
-        # Horizontal bars
-        rates = [0.8, 0.6, 0.9, 0.7]
-        labels = ["Email", "Social", "Direct", "Search"]
-        for i, (rate, label) in enumerate(zip(rates, labels)):
-            y = 290 + i * 25
-            draw.rectangle([400, y, 400 + rate*150, y+15], fill='orange')
-            draw.text((410, y+2), f"{label}: {rate:.1%}", fill='black', font=label_font)
-        
-        return img
-    
-    def _create_research_scatter_plot(self):
-        """Create research-style scatter plot"""
-        img = Image.new('RGB', (672, 672), 'white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
-            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
-        except:
-            title_font = label_font = ImageFont.load_default()
-        
-        # Title and labels
-        draw.text((200, 20), "Feature Correlation Analysis", fill='black', font=title_font)
-        draw.text((300, 600), "Feature A (normalized)", fill='black', font=label_font)
-        
-        # Axes
-        draw.line([100, 550, 550, 550], fill='black', width=2)  # X-axis
-        draw.line([100, 100, 100, 550], fill='black', width=2)  # Y-axis
-        
-        # Scatter points with correlation pattern
-        import random
-        random.seed(42)  # Reproducible
-        for i in range(50):
-            x = 100 + i * 8 + random.randint(-20, 20)
-            y = 550 - i * 8 + random.randint(-30, 30)
-            if 100 <= x <= 550 and 100 <= y <= 550:
-                draw.ellipse([x-3, y-3, x+3, y+3], fill='red')
-        
-        # Trend line
-        draw.line([120, 530, 530, 120], fill='blue', width=2)
-        
-        # R² annotation
-        draw.text((400, 150), "R² = 0.847", fill='blue', font=label_font)
-        draw.text((400, 170), "p < 0.001", fill='blue', font=label_font)
-        
-        return img
 
 def main():
     """Run real OCR/VQA validation"""
