@@ -883,9 +883,38 @@ class SigLipVisionTower(nn.Module):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 
-            # Process in chunks to avoid memory overflow during gradient computation
-            if batch_size > 2:
-                # Split large batches to prevent OOM
+            # MEMORY-OPTIMIZATION: Process in smaller chunks during gradient computation
+            # Check if we're in training mode or have gradients enabled
+            if batch_size > 1 and (torch.is_grad_enabled() or any(p.requires_grad for p in self.vision_tower.parameters())):
+                # During gradient computation, use very small chunks to prevent OOM
+                chunk_size = 1
+                chunk_results = []
+                
+                for i in range(0, batch_size, chunk_size):
+                    end_idx = min(i + chunk_size, batch_size)
+                    chunk_tokens = highres_tokens[i:end_idx]
+                    chunk_text = text_embeddings[i:end_idx] if text_embeddings is not None else None
+                    
+                    # Clear cache before processing each chunk
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    
+                    # Process chunk with minimal memory footprint
+                    chunk_result = self._process_token_chunk_for_selection(
+                        chunk_tokens, target_count, chunk_text
+                    )
+                    chunk_results.append(chunk_result)
+                    
+                    # Clean up chunk tensors immediately
+                    del chunk_tokens
+                    if chunk_text is not None:
+                        del chunk_text
+                
+                # Combine results
+                final_tokens = torch.cat(chunk_results, dim=0)
+                return final_tokens
+            elif batch_size > 2:
+                # Normal processing with larger chunks when not training
                 chunk_size = 2
                 chunk_results = []
                 
