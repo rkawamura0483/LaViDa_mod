@@ -17,6 +17,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
+import random
+
+# Check for torchvision availability
+try:
+    import torchvision.transforms as transforms
+    TORCHVISION_AVAILABLE = True
+except ImportError:
+    print("⚠️ torchvision not available, using basic tensor conversion")
+    TORCHVISION_AVAILABLE = False
 
 warnings.filterwarnings('ignore')
 
@@ -89,92 +98,215 @@ class RealOCRVQAValidator:
             raise
     
     def _get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images from local data directory"""
+        """Get real OCR/VQA images from public datasets (about 20 samples)"""
         
         ocr_vqa_samples = {}
         
-        # First, load images from local data directory
-        data_dir = Path("./data/real_images")
+        # SHIRG-FIX: 2025-07-27 - Load from actual public OCR/VQA datasets
+        # ISSUE: Previous code used local/synthetic images, not realistic for research validation  
+        # SOLUTION: Load from public dataset URLs and diverse OCR/VQA challenges
+        # RESEARCH IMPACT: Validates SHIRG on actual dataset images used in research papers
         
-        # Load ChartQA samples
-        chartqa_dir = data_dir / "chartqa"
-        if chartqa_dir.exists():
-            print(f"📁 Loading local ChartQA images from {chartqa_dir}")
-            chartqa_questions = [
-                "What is the highest commodity price index value shown in this chart?",
-                "Which commodity has the highest price index in the chart?",
-                "What percentage of population does Mauritania have in armed forces?"
-            ]
-            
-            for idx, img_path in enumerate(sorted(chartqa_dir.glob("*.jpg"))[:3]):
-                try:
-                    image = Image.open(img_path).convert('RGB')
-                    image = self._resize_for_shirg(image)
-                    
-                    sample_name = f"chartqa_{img_path.stem}"
-                    ocr_vqa_samples[sample_name] = {
-                        'image': image,
-                        'question': chartqa_questions[idx % len(chartqa_questions)],
-                        'type': 'ChartQA-like',
-                        'challenge': 'Chart analysis and numerical extraction',
-                        'source': 'local'
-                    }
-                    print(f"✅ Loaded {sample_name}")
-                except Exception as e:
-                    print(f"❌ Error loading {img_path}: {e}")
+        print("🌐 Loading real OCR/VQA images from public datasets...")
         
-        # If not enough local images, create high-quality synthetic OCR/VQA samples
-        if len(ocr_vqa_samples) < 5:
-            print(f"📊 Found {len(ocr_vqa_samples)} local images, creating additional synthetic samples...")
-            
-            # Create realistic synthetic OCR/VQA images for comprehensive testing
-            synthetic_samples = [
-                {
-                    "name": "synthetic_revenue_chart",
-                    "type": "ChartQA-like",
-                    "question": "What was the revenue growth rate between Q2 and Q3 2024?",
-                    "challenge": "Multi-series bar chart with percentage calculations"
-                },
-                {
-                    "name": "synthetic_financial_doc",
-                    "type": "DocVQA-like", 
-                    "question": "What is the net profit margin shown in the financial summary?",
-                    "challenge": "Dense numerical data extraction"
-                },
-                {
-                    "name": "synthetic_infographic",
-                    "type": "InfographicsVQA-like",
-                    "question": "What are the three main components shown in the diagram?",
-                    "challenge": "Complex layout with mixed text and graphics"
-                },
-                {
-                    "name": "synthetic_table_analysis",
-                    "type": "TabMWP-like",
-                    "question": "What is the average value across all categories?",
-                    "challenge": "Tabular data with calculations"
-                },
-                {
-                    "name": "synthetic_technical_diagram",
-                    "type": "AI2D-like",
-                    "question": "What is the data flow between the main components?",
-                    "challenge": "Technical diagram with labels and connections"
-                }
-            ]
-            
-            # Create only as many synthetic samples as needed
-            needed = max(0, 5 - len(ocr_vqa_samples))
-            for sample_info in synthetic_samples[:needed]:
-                image = self._create_high_quality_synthetic_image(sample_info)
-                ocr_vqa_samples[sample_info['name']] = {
+        # ChartQA-style samples (chart analysis)
+        chartqa_samples = [
+            {
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/two_col_1.png",
+                "question": "What is the highest value shown in this bar chart?",
+                "type": "ChartQA",
+                "challenge": "Bar chart numerical extraction"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/two_col_100.png", 
+                "question": "What year had the highest value in this chart?",
+                "type": "ChartQA",
+                "challenge": "Line chart trend analysis"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/multi_col_1.png",
+                "question": "Which category has the highest value in the latest year?",
+                "type": "ChartQA", 
+                "challenge": "Multi-series chart comparison"
+            },
+            {
+                "url": "https://raw.githubusercontent.com/vis-nlp/ChartQA/main/ChartQA%20Dataset/test/png/two_col_200.png",
+                "question": "What is the difference between the highest and lowest values?",
+                "type": "ChartQA",
+                "challenge": "Chart calculation task"
+            }
+        ]
+        
+        # AI2D-style samples (scientific diagrams)
+        ai2d_samples = [
+            {
+                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc-flowchart.png",
+                "question": "What are the main steps shown in this flowchart?",
+                "type": "AI2D-like",
+                "challenge": "Flowchart process understanding"
+            },
+            {
+                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc-cycle.png", 
+                "question": "What is the sequence of events in this cycle diagram?",
+                "type": "AI2D-like",
+                "challenge": "Cyclic process analysis"
+            }
+        ]
+        
+        # COCO-Text style samples (text in natural images)
+        coco_text_samples = [
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000009.jpg",
+                "question": "What text can you see in this image?",
+                "type": "COCO-Text-like",
+                "challenge": "Natural scene text detection"
+            },
+            {
+                "url": "http://images.cocodataset.org/train2017/000000000025.jpg",
+                "question": "What are the visible signs or text elements?", 
+                "type": "COCO-Text-like",
+                "challenge": "Street scene text reading"
+            }
+        ]
+        
+        # Combine all sample types
+        all_samples = chartqa_samples + ai2d_samples + coco_text_samples
+        
+        # Load images from URLs with robust error handling
+        for idx, sample_info in enumerate(all_samples):
+            try:
+                sample_name = f"{sample_info['type'].lower().replace('-', '_')}_{idx:02d}"
+                print(f"🔄 Loading {sample_name} from {sample_info['type']}...")
+                
+                # Download image with timeout and error handling
+                response = requests.get(sample_info['url'], timeout=30, stream=True)
+                response.raise_for_status()
+                
+                # Load and process image
+                image = Image.open(BytesIO(response.content)).convert('RGB')
+                image = self._resize_for_shirg(image)
+                
+                ocr_vqa_samples[sample_name] = {
                     'image': image,
                     'question': sample_info['question'],
                     'type': sample_info['type'],
                     'challenge': sample_info['challenge'],
-                    'source': 'synthetic'
+                    'source': 'public_dataset',
+                    'url': sample_info['url']
                 }
-                print(f"✅ Created {sample_info['name']}")
+                print(f"✅ Loaded {sample_name}")
+                
+            except Exception as e:
+                print(f"⚠️ Failed to load {sample_info.get('type', 'unknown')} sample: {e}")
+                # Continue with other samples
+                continue
+        
+        # Add high-quality synthetic samples to reach target of ~20 total
+        target_total = 20
+        current_count = len(ocr_vqa_samples)
+        
+        if current_count < target_total:
+            print(f"📊 Loaded {current_count} real images, creating {target_total - current_count} additional synthetic samples...")
+            
+            # Enhanced synthetic samples for comprehensive OCR/VQA testing
+            synthetic_templates = [
+                {
+                    "name": "complex_financial_table",
+                    "type": "DocVQA-like",
+                    "question": "What is the net profit margin for Q3 2024?",
+                    "challenge": "Dense financial table with small text"
+                },
+                {
+                    "name": "multi_chart_dashboard", 
+                    "type": "ChartQA-like",
+                    "question": "Which metric shows the highest growth rate?",
+                    "challenge": "Multiple charts with trend analysis"
+                },
+                {
+                    "name": "technical_architecture",
+                    "type": "InfographicsVQA-like", 
+                    "question": "What are the data flow connections between components?",
+                    "challenge": "System diagram with arrows and labels"
+                },
+                {
+                    "name": "research_graph_complex",
+                    "type": "ChartQA-like",
+                    "question": "What is the correlation between the two variables shown?",
+                    "challenge": "Scatter plot with statistical analysis"
+                },
+                {
+                    "name": "medical_diagram",
+                    "type": "AI2D-like",
+                    "question": "What are the anatomical parts labeled in this diagram?",
+                    "challenge": "Scientific diagram with detailed labels"
+                },
+                {
+                    "name": "invoice_document",
+                    "type": "DocVQA-like",
+                    "question": "What is the total amount due on this invoice?",
+                    "challenge": "Real-world document with complex layout"
+                },
+                {
+                    "name": "comparison_chart",
+                    "type": "ChartQA-like", 
+                    "question": "Which category has the smallest difference between 2023 and 2024?",
+                    "challenge": "Comparative analysis with multiple series"
+                },
+                {
+                    "name": "flowchart_process",
+                    "type": "AI2D-like",
+                    "question": "What decision points are shown in this process flow?",
+                    "challenge": "Complex flowchart with decision nodes"
+                },
+                {
+                    "name": "map_infographic",
+                    "type": "InfographicsVQA-like",
+                    "question": "What regions show the highest concentration of activity?",
+                    "challenge": "Geographic visualization with data overlay"
+                },
+                {
+                    "name": "performance_dashboard",
+                    "type": "ChartQA-like",
+                    "question": "What is the average performance across all metrics?",
+                    "challenge": "Dashboard with multiple KPIs and gauges"
+                },
+                {
+                    "name": "scientific_results",
+                    "type": "DocVQA-like", 
+                    "question": "What is the statistical significance reported for the main finding?",
+                    "challenge": "Academic paper figure with statistical notation"
+                },
+                {
+                    "name": "organizational_chart",
+                    "type": "InfographicsVQA-like",
+                    "question": "How many direct reports does the CEO have?",
+                    "challenge": "Hierarchical organizational structure"
+                }
+            ]
+            
+            # Create additional synthetic samples
+            needed = min(len(synthetic_templates), target_total - current_count)
+            for i in range(needed):
+                sample_info = synthetic_templates[i]
+                try:
+                    image = self._create_advanced_synthetic_image(sample_info)
+                    sample_name = f"synthetic_{sample_info['name']}"
+                    
+                    ocr_vqa_samples[sample_name] = {
+                        'image': image,
+                        'question': sample_info['question'],
+                        'type': sample_info['type'],
+                        'challenge': sample_info['challenge'],
+                        'source': 'synthetic_advanced'
+                    }
+                    print(f"✅ Created {sample_name}")
+                except Exception as e:
+                    print(f"⚠️ Failed to create synthetic sample {sample_info['name']}: {e}")
         
         print(f"📋 Total samples for validation: {len(ocr_vqa_samples)}")
+        print(f"   📊 Real dataset images: {sum(1 for s in ocr_vqa_samples.values() if s['source'] == 'public_dataset')}")
+        print(f"   🎨 Synthetic samples: {sum(1 for s in ocr_vqa_samples.values() if 'synthetic' in s['source'])}")
+        
         return ocr_vqa_samples
     
     def _resize_for_shirg(self, image, target_size=672):
@@ -554,14 +686,24 @@ class RealOCRVQAValidator:
     
     def _pil_to_tensor(self, pil_image):
         """Convert PIL image to tensor"""
-        import torchvision.transforms as transforms
-        
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-        
-        return transform(pil_image).unsqueeze(0)
+        if TORCHVISION_AVAILABLE:
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+            ])
+            return transform(pil_image).unsqueeze(0)
+        else:
+            # Manual conversion without torchvision
+            img_array = np.array(pil_image).astype(np.float32)
+            # Convert HWC to CHW
+            img_array = img_array.transpose(2, 0, 1)
+            # Normalize to [0, 1] range
+            img_array = img_array / 255.0
+            # Apply normalization (mean=0.5, std=0.5) -> (x - 0.5) / 0.5 = 2x - 1
+            img_array = img_array * 2.0 - 1.0
+            # Convert to tensor and add batch dimension
+            tensor = torch.from_numpy(img_array).unsqueeze(0)
+            return tensor
     
     def _create_synthetic_ocr_vqa_samples(self):
         """Create high-quality synthetic samples as fallback"""
@@ -604,6 +746,39 @@ class RealOCRVQAValidator:
         else:
             # Default to creating a chart
             return self._create_complex_revenue_chart()
+    
+    def _create_advanced_synthetic_image(self, sample_info):
+        """Create advanced synthetic images for comprehensive OCR/VQA testing"""
+        
+        name = sample_info['name']
+        
+        if "financial_table" in name:
+            return self._create_complex_financial_table()
+        elif "dashboard" in name:
+            return self._create_multi_chart_dashboard()
+        elif "architecture" in name:
+            return self._create_technical_architecture()
+        elif "research_graph" in name:
+            return self._create_research_scatter_plot()
+        elif "medical_diagram" in name:
+            return self._create_medical_diagram()
+        elif "invoice" in name:
+            return self._create_invoice_document()
+        elif "comparison_chart" in name:
+            return self._create_comparison_chart()
+        elif "flowchart" in name:
+            return self._create_complex_flowchart()
+        elif "map_infographic" in name:
+            return self._create_map_infographic()
+        elif "performance_dashboard" in name:
+            return self._create_performance_dashboard()
+        elif "scientific_results" in name:
+            return self._create_scientific_results()
+        elif "organizational_chart" in name:
+            return self._create_organizational_chart()
+        else:
+            # Fallback to existing method
+            return self._create_high_quality_synthetic_image(sample_info)
     
     def _create_complex_revenue_chart(self):
         """Create complex revenue chart for testing"""
@@ -877,6 +1052,148 @@ class RealOCRVQAValidator:
         
         for (x1, y1), (x2, y2) in connections:
             draw.line([x1, y1, x2, y2], fill='red', width=2)
+        
+        return img
+    
+    def _create_complex_financial_table(self):
+        """Create complex financial table with dense data"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 18)
+            header_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
+            data_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
+        except:
+            title_font = header_font = data_font = ImageFont.load_default()
+        
+        # Title
+        draw.text((50, 20), "Quarterly Financial Analysis - Detailed", fill='black', font=title_font)
+        
+        # Create complex table with multiple metrics
+        headers = ["Metric", "Q1 2024", "Q2 2024", "Q3 2024", "YoY Growth", "Margin %"]
+        col_widths = [120, 80, 80, 80, 80, 80]
+        
+        data_rows = [
+            ["Total Revenue", "$124.5M", "$138.2M", "$156.8M", "+23.4%", ""],
+            ["Cost of Goods", "$74.7M", "$82.9M", "$94.1M", "+18.9%", "60.0%"],
+            ["Gross Profit", "$49.8M", "$55.3M", "$62.7M", "+31.2%", "40.0%"],
+            ["Sales & Marketing", "$18.6M", "$20.7M", "$23.5M", "+28.1%", "15.0%"],
+            ["R&D Expenses", "$12.4M", "$13.8M", "$15.7M", "+35.2%", "10.0%"],
+            ["Admin Costs", "$8.2M", "$9.1M", "$10.3M", "+19.5%", "6.6%"],
+            ["Operating Income", "$10.6M", "$11.7M", "$13.2M", "+42.8%", "8.4%"],
+            ["Interest Income", "$0.8M", "$0.9M", "$1.1M", "+85.0%", "0.7%"],
+            ["Tax Expense", "$2.3M", "$2.5M", "$2.9M", "+38.0%", "1.8%"],
+            ["Net Income", "$9.1M", "$10.1M", "$11.4M", "+45.2%", "7.3%"]
+        ]
+        
+        y = 70
+        row_height = 25
+        
+        # Draw headers
+        x = 50
+        for i, header in enumerate(headers):
+            draw.rectangle([x, y, x + col_widths[i], y + row_height], outline='black', fill='lightgray')
+            draw.text((x + 3, y + 5), header, fill='black', font=header_font)
+            x += col_widths[i]
+        
+        # Draw data rows
+        for row in data_rows:
+            y += row_height
+            x = 50
+            for i, cell in enumerate(row):
+                fill_color = 'lightgreen' if '+' in cell else 'white'
+                draw.rectangle([x, y, x + col_widths[i], y + row_height], outline='black', fill=fill_color)
+                draw.text((x + 3, y + 5), cell, fill='black', font=data_font)
+                x += col_widths[i]
+        
+        return img
+    
+    def _create_multi_chart_dashboard(self):
+        """Create dashboard with multiple charts"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
+            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
+        except:
+            title_font = label_font = ImageFont.load_default()
+        
+        # Dashboard title
+        draw.text((200, 10), "Performance Dashboard Q3 2024", fill='black', font=title_font)
+        
+        # Chart 1: Revenue trend (top left)
+        draw.rectangle([50, 50, 300, 200], outline='black')
+        draw.text((125, 60), "Revenue Trend", fill='black', font=label_font)
+        # Simple line chart
+        points = [(80, 180), (120, 150), (160, 120), (200, 100), (240, 90), (280, 70)]
+        for i in range(len(points)-1):
+            draw.line([points[i], points[i+1]], fill='blue', width=2)
+        
+        # Chart 2: Market share (top right)  
+        draw.rectangle([350, 50, 600, 200], outline='black')
+        draw.text((425, 60), "Market Share", fill='black', font=label_font)
+        # Simple pie chart representation
+        draw.ellipse([400, 90, 550, 180], outline='black', fill='lightblue')
+        draw.text((460, 130), "42.3%", fill='black', font=label_font)
+        
+        # Chart 3: User growth (bottom left)
+        draw.rectangle([50, 250, 300, 400], outline='black')
+        draw.text((125, 260), "User Growth", fill='black', font=label_font)
+        # Bar chart
+        bars = [120, 140, 165, 180, 200]
+        for i, height in enumerate(bars):
+            x = 80 + i * 40
+            draw.rectangle([x, 380-height, x+30, 380], fill='green', outline='black')
+        
+        # Chart 4: Conversion rates (bottom right)
+        draw.rectangle([350, 250, 600, 400], outline='black') 
+        draw.text((425, 260), "Conversion Rates", fill='black', font=label_font)
+        # Horizontal bars
+        rates = [0.8, 0.6, 0.9, 0.7]
+        labels = ["Email", "Social", "Direct", "Search"]
+        for i, (rate, label) in enumerate(zip(rates, labels)):
+            y = 290 + i * 25
+            draw.rectangle([400, y, 400 + rate*150, y+15], fill='orange')
+            draw.text((410, y+2), f"{label}: {rate:.1%}", fill='black', font=label_font)
+        
+        return img
+    
+    def _create_research_scatter_plot(self):
+        """Create research-style scatter plot"""
+        img = Image.new('RGB', (672, 672), 'white')
+        draw = ImageDraw.Draw(img)
+        
+        try:
+            title_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
+            label_font = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 10)
+        except:
+            title_font = label_font = ImageFont.load_default()
+        
+        # Title and labels
+        draw.text((200, 20), "Feature Correlation Analysis", fill='black', font=title_font)
+        draw.text((300, 600), "Feature A (normalized)", fill='black', font=label_font)
+        
+        # Axes
+        draw.line([100, 550, 550, 550], fill='black', width=2)  # X-axis
+        draw.line([100, 100, 100, 550], fill='black', width=2)  # Y-axis
+        
+        # Scatter points with correlation pattern
+        import random
+        random.seed(42)  # Reproducible
+        for i in range(50):
+            x = 100 + i * 8 + random.randint(-20, 20)
+            y = 550 - i * 8 + random.randint(-30, 30)
+            if 100 <= x <= 550 and 100 <= y <= 550:
+                draw.ellipse([x-3, y-3, x+3, y+3], fill='red')
+        
+        # Trend line
+        draw.line([120, 530, 530, 120], fill='blue', width=2)
+        
+        # R² annotation
+        draw.text((400, 150), "R² = 0.847", fill='blue', font=label_font)
+        draw.text((400, 170), "p < 0.001", fill='blue', font=label_font)
         
         return img
 
