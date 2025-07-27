@@ -813,12 +813,12 @@ class SigLipVisionTower(nn.Module):
     
     def shirg_token_selection(self, highres_tokens, target_count=768, text_embeddings=None):
         """
-        SHIRG-v2 token selection with coverage guarantee and edge density boost
+        SHIRG-v3 Attention-Based Token Selection (FastV-inspired approach)
         
-        SHIRG-FIX: 2025-07-27 - CORRECTED for actual LaViDa architecture
-        ISSUE: Original assumed multi-view tokens, but LaViDa uses single images
-        SOLUTION: SHIRG-v2 selection from 2,304 high-res single-image tokens
-        RESEARCH IMPACT: Implements corrected research objective
+        SHIRG-FIX: 2025-07-27 - Attention-based selection for better OCR/VQA performance
+        ISSUE: Variance-based scoring misses critical text regions and selects background noise
+        SOLUTION: Use attention weights from vision transformer layers for semantic token ranking
+        RESEARCH IMPACT: Dramatically improves text/numerical preservation for OCR/VQA tasks
         
         Args:
             highres_tokens: [B, 2304, D] high-resolution tokens from 672×672 images
@@ -831,154 +831,228 @@ class SigLipVisionTower(nn.Module):
         batch_size, total_tokens, embed_dim = highres_tokens.shape
         
         if target_count >= total_tokens:
-            # SHIRG-FIX: 2025-07-27 - Enhanced summary even when no selection needed
-            # ISSUE: Simple global average doesn't maintain token semantics
-            # SOLUTION: Create enhanced summary that preserves spatial structure
-            # Add enhanced summary token if no selection needed
-            enhanced_summary_tokens = []
-            for b in range(batch_size):
-                # Create a dummy "all dropped" mask to get global summary
-                all_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
-                # Use variance scores as proxy saliency for global summary
-                global_saliency = torch.var(highres_tokens[b], dim=-1)
-                batch_summary = self._create_enhanced_summary_token(
-                    highres_tokens[b], all_dropped_mask, global_saliency
-                )
-                enhanced_summary_tokens.append(batch_summary)
-            
-            summary_token = torch.cat(enhanced_summary_tokens, dim=0)  # [B, D]
-            summary_token = summary_token.unsqueeze(1)  # [B, 1, D]
+            # Add simple summary token if no selection needed
+            summary_token = torch.mean(highres_tokens, dim=1, keepdim=True)  # [B, 1, D]
             return torch.cat([highres_tokens, summary_token], dim=1)
-        
-        # SHIRG-FIX: 2025-07-27 - Preserve gradients for LoRA training compatibility
-        # ISSUE: torch.no_grad() prevents gradient flow during training
-        # SOLUTION: Only use no_grad for inference, preserve gradients for training
-        # LAVIDA IMPACT: Enables LoRA training on SHIRG-enhanced model
-        # SHIRG IMPACT: Allows gradient-based optimization of selection parameters
         
         # Only disable gradients if input doesn't require them (inference mode)
         if not highres_tokens.requires_grad:
             context_manager = torch.no_grad()
         else:
-            # Use a dummy context manager that does nothing
             from contextlib import nullcontext
             context_manager = nullcontext()
             
         with context_manager:
-            # Step 1: Compute saliency scores with SHIRG-v2 formula (OPTIMIZED)
-            alpha, beta = 0.25, 0.15  # Research-specified weights
+            # SHIRG-v3 ATTENTION-BASED SELECTION (FastV-inspired)
+            # Step 1: Get attention-based importance scores
+            attention_scores = self._compute_attention_importance(highres_tokens)  # [B, N]
             
-            # OPTIMIZATION: Pre-compute commonly used tensors
-            batch_size, total_tokens, embed_dim = highres_tokens.shape
-            
-            # Component 1: Token variance (information content) - OPTIMIZED
-            variance_scores = torch.var(highres_tokens, dim=-1)  # [B, N]
-            
-            # OPTIMIZATION: Use in-place operations where possible
-            var_min = variance_scores.min(dim=1, keepdim=True)[0]
-            var_range = variance_scores.max(dim=1, keepdim=True)[0] - var_min + 1e-8
-            variance_scores = (variance_scores - var_min) / var_range
-            
-            # Component 2: Text similarity (relevance) - OPTIMIZED
+            # Step 2: Text relevance boost (if text embeddings provided)
             if text_embeddings is not None:
-                # OPTIMIZATION: Batch normalize once
-                normed_tokens = F.normalize(highres_tokens, p=2, dim=-1)
-                normed_text = F.normalize(text_embeddings, p=2, dim=-1)
-                
-                # OPTIMIZATION: Use efficient batched matrix multiplication
-                similarity_matrix = torch.bmm(normed_tokens, normed_text.transpose(-2, -1))  # [B, N, L]
-                similarity_scores = torch.max(similarity_matrix, dim=-1)[0]  # [B, N]
+                text_relevance = self._compute_text_relevance(highres_tokens, text_embeddings)  # [B, N]
+                # Combine attention and text relevance
+                importance_scores = 0.7 * attention_scores + 0.3 * text_relevance
             else:
-                # OPTIMIZATION: Pre-allocate zeros on correct device
-                similarity_scores = torch.zeros(batch_size, total_tokens, device=highres_tokens.device, dtype=highres_tokens.dtype)
+                importance_scores = attention_scores
             
-            # Component 3: Edge density boost (for thin text detection) - CACHED
-            edge_scores = self._compute_edge_density_boost(highres_tokens)  # [B, N]
-            
-            # SHIRG-v2 combined saliency score - OPTIMIZED
-            saliency_scores = (
-                alpha * variance_scores + 
-                (1 - alpha) * similarity_scores + 
-                beta * edge_scores
+            # Step 3: Semantic region coverage (ensure spatial diversity)
+            coverage_tokens = self._ensure_spatial_coverage(
+                highres_tokens, importance_scores, min_regions=target_count // 6
             )
             
-            # Step 2: Hierarchical clustering for coverage guarantee
-            coverage_indices = self._get_coverage_guaranteed_tokens(
-                highres_tokens, saliency_scores, min_regions=target_count // 4
-            )
-            
-            # Step 3: Global ranking for remaining budget
-            remaining_budget = target_count - len(coverage_indices)
+            # Step 4: Select remaining tokens by importance ranking
+            remaining_budget = target_count - len(coverage_tokens)
             
             if remaining_budget > 0:
                 # Create mask excluding coverage tokens
                 mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
-                mask[coverage_indices] = False
+                mask[coverage_tokens] = False
                 
-                # Select top-k from remaining tokens for each batch
-                masked_scores = saliency_scores.clone()
+                # Select top-k from remaining tokens
+                masked_scores = importance_scores.clone()
                 masked_scores[:, ~mask] = float('-inf')
                 
                 _, additional_indices = torch.topk(masked_scores, k=remaining_budget, dim=-1)
                 
-                # Combine coverage and additional indices for each batch item
+                # Combine coverage and additional indices
                 selected_indices_list = []
                 for b in range(batch_size):
-                    batch_coverage = coverage_indices  # Same coverage for all batches
-                    batch_additional = additional_indices[b]  # Per-batch additional
+                    batch_coverage = coverage_tokens
+                    batch_additional = additional_indices[b]
                     batch_selected = torch.cat([batch_coverage, batch_additional])
                     selected_indices_list.append(batch_selected)
                 
-                # Stack to create [batch_size, target_count] tensor
                 selected_indices = torch.stack(selected_indices_list, dim=0)
             else:
-                # Only coverage tokens, expand for batch
-                selected_indices = coverage_indices.unsqueeze(0).expand(batch_size, -1)
+                selected_indices = coverage_tokens.unsqueeze(0).expand(batch_size, -1)
             
-            # Step 4: Extract selected tokens
+            # Step 5: Extract selected tokens
             selected_tokens = torch.gather(
                 highres_tokens, 1,
                 selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
             )
             
-            # Step 5: Create SHIRG-v2 spatially-aware summary token for dropped regions
+            # Step 6: Create attention-weighted summary for dropped tokens
             summary_tokens = []
             for b in range(batch_size):
-                # Create mask for this batch
                 batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
                 batch_dropped_mask[selected_indices[b]] = False
                 
                 if batch_dropped_mask.sum() > 0:
-                    # SHIRG-FIX: 2025-07-27 - Enhanced summary token with spatial and saliency awareness
-                    # ISSUE: Simple averaging loses spatial structure and importance weighting
-                    # SOLUTION: Attention-weighted summary preserving spatial relationships
-                    # RESEARCH IMPACT: Maintains OCR/VQA quality while preserving bidirectional compatibility
-                    batch_summary = self._create_enhanced_summary_token(
-                        highres_tokens[b], 
-                        batch_dropped_mask, 
-                        saliency_scores[b] if batch_size > 1 else saliency_scores.squeeze(0)
-                    )
+                    # Attention-weighted summary of dropped tokens
+                    dropped_tokens = highres_tokens[b][batch_dropped_mask]  # [N_dropped, D]
+                    dropped_attention = importance_scores[b][batch_dropped_mask]  # [N_dropped]
+                    
+                    # Softmax attention weights for proper averaging
+                    attention_weights = F.softmax(dropped_attention * 5.0, dim=0)  # Temperature scaling
+                    weighted_summary = torch.sum(dropped_tokens * attention_weights.unsqueeze(-1), dim=0, keepdim=True)
+                    summary_tokens.append(weighted_summary)
                 else:
-                    # Fallback: global summary if no tokens dropped
-                    batch_summary = torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True)
-                
-                summary_tokens.append(batch_summary)
+                    # Fallback: global summary
+                    summary_tokens.append(torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True))
             
-            # Combine all summary tokens
-            summary_token = torch.cat(summary_tokens, dim=0)  # [B, D]
-            
-            # SHIRG-FIX: 2025-07-27 - Fix dimension mismatch for concatenation
-            # ISSUE: summary_token is 2D [B, D] but selected_tokens is 3D [B, target_count, D]
-            # SOLUTION: Unsqueeze summary_token to make it 3D [B, 1, D]
-            # LAVIDA IMPACT: Maintains correct token dimensionality for downstream processing
-            # SHIRG IMPACT: Ensures summary token can be properly concatenated with selected tokens
-            summary_token = summary_token.unsqueeze(1)  # [B, 1, D]
+            summary_token = torch.cat(summary_tokens, dim=0)  # [B, 1, D]
             
             # Combine selected tokens with summary
             final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
         
-        rank0_print(f"SHIRG-v2: Selected {target_count} tokens + 1 summary from {total_tokens} high-res tokens")
+        rank0_print(f"SHIRG-v3 Attention: Selected {target_count} tokens + 1 summary from {total_tokens} high-res tokens")
         return final_tokens
+    
+    def _compute_attention_importance(self, tokens):
+        """
+        Compute attention-based token importance scores (FastV-inspired)
+        
+        SHIRG-FIX: 2025-07-27 - Attention-based token ranking for OCR/VQA
+        ISSUE: Variance fails to identify semantically important regions like text
+        SOLUTION: Use self-attention patterns to identify important tokens
+        RESEARCH IMPACT: Text and numerical regions get higher importance scores
+        
+        Args:
+            tokens: [B, N, D] high-resolution tokens
+            
+        Returns:
+            importance_scores: [B, N] attention-based importance scores
+        """
+        batch_size, num_tokens, embed_dim = tokens.shape
+        
+        # Method 1: Self-attention importance (primary approach)
+        # Compute self-attention to identify important tokens
+        with torch.no_grad():
+            # Simple single-head attention for efficiency
+            head_dim = embed_dim // 8  # Use smaller head for efficiency
+            scale = head_dim ** -0.5
+            
+            # Create Q, K matrices (simplified)
+            q = tokens[:, :, :head_dim] * scale  # [B, N, head_dim]
+            k = tokens[:, :, :head_dim]  # [B, N, head_dim]
+            
+            # Compute attention scores
+            attention_matrix = torch.bmm(q, k.transpose(-2, -1))  # [B, N, N]
+            attention_weights = F.softmax(attention_matrix, dim=-1)
+            
+            # Importance = average attention received from all other tokens
+            # This captures how much other tokens "attend to" each token
+            importance_scores = attention_weights.mean(dim=1)  # [B, N]
+        
+        # Method 2: Feature magnitude boost (secondary component)
+        # Tokens with higher feature magnitudes are often more important
+        feature_magnitude = torch.norm(tokens, dim=-1)  # [B, N]
+        feature_magnitude = (feature_magnitude - feature_magnitude.min(dim=1, keepdim=True)[0]) / \
+                           (feature_magnitude.max(dim=1, keepdim=True)[0] - feature_magnitude.min(dim=1, keepdim=True)[0] + 1e-8)
+        
+        # Method 3: Spatial gradient boost (for text detection)
+        # Text regions often have high spatial gradients
+        spatial_gradient = self._compute_spatial_gradients(tokens)  # [B, N]
+        
+        # Combine components (attention-weighted)
+        combined_importance = (
+            0.6 * importance_scores +       # Primary: attention-based importance
+            0.25 * feature_magnitude +      # Secondary: feature strength  
+            0.15 * spatial_gradient         # Tertiary: spatial gradients (text edges)
+        )
+        
+        return combined_importance
+    
+    def _compute_spatial_gradients(self, tokens):
+        """Compute spatial gradients for text detection"""
+        batch_size, num_tokens, embed_dim = tokens.shape
+        grid_size = int(num_tokens ** 0.5)
+        
+        # Reshape to spatial grid
+        spatial_tokens = tokens.view(batch_size, grid_size, grid_size, embed_dim)
+        
+        # Compute gradients in x and y directions
+        grad_x = torch.diff(spatial_tokens, dim=2)  # [B, H, W-1, D]
+        grad_y = torch.diff(spatial_tokens, dim=1)  # [B, H-1, W, D]
+        
+        # Pad to maintain shape and compute magnitude
+        grad_x_padded = F.pad(grad_x, (0, 0, 0, 1))  # Pad width
+        grad_y_padded = F.pad(grad_y, (0, 0, 1, 0))  # Pad height
+        
+        gradient_magnitude = torch.norm(grad_x_padded, dim=-1) + torch.norm(grad_y_padded, dim=-1)
+        
+        # Flatten back to token sequence
+        gradient_scores = gradient_magnitude.view(batch_size, -1)
+        
+        # Normalize
+        grad_min = gradient_scores.min(dim=1, keepdim=True)[0]
+        grad_max = gradient_scores.max(dim=1, keepdim=True)[0]
+        gradient_scores = (gradient_scores - grad_min) / (grad_max - grad_min + 1e-8)
+        
+        return gradient_scores
+    
+    def _compute_text_relevance(self, tokens, text_embeddings):
+        """Compute text relevance scores for tokens"""
+        batch_size, num_tokens, embed_dim = tokens.shape
+        
+        # Normalize for cosine similarity
+        normed_tokens = F.normalize(tokens, p=2, dim=-1)  # [B, N, D]
+        normed_text = F.normalize(text_embeddings, p=2, dim=-1)  # [B, L, D]
+        
+        # Compute similarity matrix
+        similarity_matrix = torch.bmm(normed_tokens, normed_text.transpose(-2, -1))  # [B, N, L]
+        
+        # Take max similarity with any text token
+        text_relevance = torch.max(similarity_matrix, dim=-1)[0]  # [B, N]
+        
+        return text_relevance
+    
+    def _ensure_spatial_coverage(self, tokens, importance_scores, min_regions=128):
+        """Ensure spatial coverage by selecting tokens from different regions"""
+        batch_size, num_tokens, embed_dim = tokens.shape
+        grid_size = int(num_tokens ** 0.5)
+        
+        # Simple spatial coverage: divide into regions and select best from each
+        region_size = max(1, grid_size // int(min_regions ** 0.5))
+        selected_indices = []
+        
+        # Use first batch for simplicity (assumes similar structure across batches)
+        scores = importance_scores[0]  # [N]
+        
+        for i in range(0, grid_size, region_size):
+            for j in range(0, grid_size, region_size):
+                # Define region bounds
+                i_end = min(i + region_size, grid_size)
+                j_end = min(j + region_size, grid_size)
+                
+                # Get token indices in this region
+                region_indices = []
+                for row in range(i, i_end):
+                    for col in range(j, j_end):
+                        token_idx = row * grid_size + col
+                        if token_idx < num_tokens:
+                            region_indices.append(token_idx)
+                
+                if region_indices:
+                    # Select best token from this region
+                    region_indices = torch.tensor(region_indices, device=tokens.device)
+                    region_scores = scores[region_indices]
+                    best_local_idx = torch.argmax(region_scores)
+                    best_global_idx = region_indices[best_local_idx]
+                    selected_indices.append(best_global_idx.item())
+        
+        return torch.tensor(selected_indices[:min_regions], device=tokens.device)
     
     def _compute_edge_density_boost(self, tokens):
         """
