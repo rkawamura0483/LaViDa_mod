@@ -681,11 +681,11 @@ class SigLipVisionTower(nn.Module):
         """
         Get multi-view tokens for SHIRG selection following LaViDa's architecture
         
-        SHIRG-FIX: 2025-07-27 - Corrected multi-view token extraction 
-        ISSUE: LaViDa multi-view gives 4×576 + 2304 = 4608 tokens, not 3645
-        SOLUTION: Extract actual multi-view tokens, use full count for SHIRG selection
-        LAVIDA IMPACT: Maintains LaViDa's exact multi-view processing
-        SHIRG IMPACT: Works with real token pool for better selection quality
+        SHIRG-FIX: 2025-07-27 - Corrected multi-view token extraction with proper normalization
+        ISSUE: LaViDa multi-view gives 4×576 + 2304 = 4608 tokens, tokens have unusual magnitudes
+        SOLUTION: Extract actual multi-view tokens, apply post-layernorm normalization
+        LAVIDA IMPACT: Maintains LaViDa's exact multi-view processing with proper token scaling
+        SHIRG IMPACT: Works with real token pool with normalized magnitudes for better selection
         
         Args:
             images: Input images [B, C, H, W]
@@ -721,7 +721,9 @@ class SigLipVisionTower(nn.Module):
                         view_images.to(device=self.device, dtype=self.dtype),
                         output_hidden_states=True
                     )
-                    view_tokens = view_outputs.hidden_states[-1]  # [B, N_patches, D]
+                    # SHIRG-FIX: Apply post_layernorm like in standard forward pass
+                    raw_tokens = view_outputs.hidden_states[-1]  # [B, N_patches, D]
+                    view_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
                     
                     # Verify expected token count
                     expected_patches = (height // 14) ** 2
