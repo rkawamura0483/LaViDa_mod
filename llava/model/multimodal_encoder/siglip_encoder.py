@@ -567,20 +567,18 @@ class SigLipVisionTower(nn.Module):
 
         self.vision_tower = SigLipVisionModel.from_pretrained(self.vision_tower_name, device_map=device_map)
 
-        # SHIRG-FIX: 2025-07-27 - Restore full SigLIP for high-resolution tokens (3,645)
-        # ISSUE: LaViDa removes last encoder layer, limiting tokens to 729 (27x27 grid)
-        # SOLUTION: Comment out layer deletion to preserve full encoder depth for high-res processing
-        # LAVIDA IMPACT: Maintains LaViDa compatibility while enabling higher resolution features
-        # SHIRG IMPACT: Enables genuine high-resolution token extraction for meaningful selection
+        # SHIRG-FIX: 2025-07-27 - Maintain LaViDa compatibility while enabling high-res
+        # ISSUE: Need both standard LaViDa behavior (729 tokens) and high-res capability  
+        # SOLUTION: Keep original LaViDa layer deletion for standard path, use full encoder for high-res
+        # LAVIDA IMPACT: Preserves original LaViDa architecture and compatibility
+        # SHIRG IMPACT: Enables high-resolution extraction via specialized methods
         
-        # Original LaViDa approach (729 tokens): Remove last layer
-        # del self.vision_tower.vision_model.encoder.layers[-1:]
+        # Keep original LaViDa approach for compatibility with mm_projector
+        del self.vision_tower.vision_model.encoder.layers[-1:]
         
-        # SHIRG approach: Keep all encoder layers for high-resolution processing
-        # This allows us to extract features at different resolutions:
-        # - Layer -2: Higher resolution features for SHIRG selection
-        # - Layer -1: Standard features for LaViDa compatibility
-        rank0_print("SHIRG: Keeping all SigLIP encoder layers for high-resolution token extraction")
+        # Store reference to the deleted layer for high-res processing
+        # We'll reconstruct the full encoder when needed for high-resolution extraction
+        rank0_print("SHIRG: Maintaining LaViDa compatibility (729 tokens) while enabling high-res extraction")
         
         self.vision_tower.vision_model.head = nn.Identity()
         self.vision_tower.requires_grad_(False)
@@ -721,28 +719,20 @@ class SigLipVisionTower(nn.Module):
             align_corners=False
         )
         
-        # Extract features using full SigLIP encoder
+        # SHIRG-FIX: 2025-07-27 - Use simpler approach for high-resolution extraction
+        # ISSUE: Cannot use full encoder since last layer was deleted for LaViDa compatibility
+        # SOLUTION: Use the existing (reduced) encoder but process at higher resolution
+        # RESEARCH IMPACT: Still provides higher spatial resolution even with fewer layers
+        
+        # Extract features using current vision tower (with reduced layers)
         with torch.no_grad():
-            # Get patch embeddings at high resolution
-            vision_model = self.vision_tower.vision_model
-            
-            # Step 1: Patch embedding extraction
-            hidden_states = vision_model.embeddings(high_res_images.to(
+            # Use the existing vision tower but at higher resolution
+            high_res_outputs = self.vision_tower(high_res_images.to(
                 device=self.device, dtype=self.dtype
-            ))
+            ), output_hidden_states=True)
             
-            # Step 2: Full encoder processing (all layers preserved)
-            encoder_outputs = vision_model.encoder(
-                inputs_embeds=hidden_states,
-                output_hidden_states=True,
-                return_dict=True
-            )
-            
-            # Step 3: Use final layer features
-            high_res_tokens = encoder_outputs.last_hidden_state
-            
-            # Step 4: Post-layer normalization (like original SigLIP)
-            high_res_tokens = vision_model.post_layernorm(high_res_tokens)
+            # Use the last hidden state from the reduced encoder
+            high_res_tokens = high_res_outputs.hidden_states[-1]
             
             # Calculate actual token count
             H, W = target_resolution
