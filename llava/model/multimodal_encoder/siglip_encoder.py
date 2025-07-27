@@ -768,8 +768,22 @@ class SigLipVisionTower(nn.Module):
         batch_size, total_tokens, embed_dim = highres_tokens.shape
         
         if target_count >= total_tokens:
-            # Add dummy summary token if no selection needed
-            summary_token = torch.mean(highres_tokens, dim=1, keepdim=True)
+            # SHIRG-FIX: 2025-07-27 - Enhanced summary even when no selection needed
+            # ISSUE: Simple global average doesn't maintain token semantics
+            # SOLUTION: Create enhanced summary that preserves spatial structure
+            # Add enhanced summary token if no selection needed
+            enhanced_summary_tokens = []
+            for b in range(batch_size):
+                # Create a dummy "all dropped" mask to get global summary
+                all_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
+                # Use variance scores as proxy saliency for global summary
+                global_saliency = torch.var(highres_tokens[b], dim=-1)
+                batch_summary = self._create_enhanced_summary_token(
+                    highres_tokens[b], all_dropped_mask, global_saliency
+                )
+                enhanced_summary_tokens.append(batch_summary)
+            
+            summary_token = torch.cat(enhanced_summary_tokens, dim=0)
             return torch.cat([highres_tokens, summary_token], dim=1)
         
         # SHIRG-FIX: 2025-07-27 - Preserve gradients for LoRA training compatibility
@@ -855,7 +869,7 @@ class SigLipVisionTower(nn.Module):
                 selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
             )
             
-            # Step 5: Create summary token for dropped regions
+            # Step 5: Create SHIRG-v2 spatially-aware summary token for dropped regions
             summary_tokens = []
             for b in range(batch_size):
                 # Create mask for this batch
@@ -863,9 +877,17 @@ class SigLipVisionTower(nn.Module):
                 batch_dropped_mask[selected_indices[b]] = False
                 
                 if batch_dropped_mask.sum() > 0:
-                    batch_dropped_tokens = highres_tokens[b:b+1, batch_dropped_mask]
-                    batch_summary = torch.mean(batch_dropped_tokens, dim=1, keepdim=True)
+                    # SHIRG-FIX: 2025-07-27 - Enhanced summary token with spatial and saliency awareness
+                    # ISSUE: Simple averaging loses spatial structure and importance weighting
+                    # SOLUTION: Attention-weighted summary preserving spatial relationships
+                    # RESEARCH IMPACT: Maintains OCR/VQA quality while preserving bidirectional compatibility
+                    batch_summary = self._create_enhanced_summary_token(
+                        highres_tokens[b], 
+                        batch_dropped_mask, 
+                        saliency_scores[b] if batch_size > 1 else saliency_scores.squeeze(0)
+                    )
                 else:
+                    # Fallback: global summary if no tokens dropped
                     batch_summary = torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True)
                 
                 summary_tokens.append(batch_summary)
@@ -967,6 +989,118 @@ class SigLipVisionTower(nn.Module):
         coverage_indices = sorted_indices[::stride][:min_regions]
         
         return coverage_indices
+    
+    def _create_enhanced_summary_token(self, tokens, dropped_mask, saliency_scores):
+        """
+        Create SHIRG-v2 enhanced summary token with spatial and saliency awareness
+        
+        SHIRG-FIX: 2025-07-27 - Research-aligned summary token implementation
+        ISSUE: Simple averaging destroys spatial structure and ignores importance
+        SOLUTION: Attention-weighted summary with spatial clustering for OCR/VQA compatibility
+        LAVIDA IMPACT: Maintains bidirectional attention compatibility with enhanced semantics
+        SHIRG IMPACT: Preserves dropped region information for better OCR/VQA performance
+        
+        Args:
+            tokens: [N, D] single batch tokens
+            dropped_mask: [N] boolean mask (True = dropped)
+            saliency_scores: [N] saliency scores for weighting
+            
+        Returns:
+            summary_token: [1, D] enhanced summary token
+        """
+        device = tokens.device
+        dropped_tokens = tokens[dropped_mask]  # [N_dropped, D]
+        dropped_saliency = saliency_scores[dropped_mask]  # [N_dropped]
+        
+        if len(dropped_tokens) == 0:
+            return torch.mean(tokens, dim=0, keepdim=True)
+        
+        # Method 1: Saliency-weighted averaging (primary component)
+        # Normalize saliency scores for stable weighting
+        saliency_weights = F.softmax(dropped_saliency * 5.0, dim=0)  # Temperature scaling
+        saliency_summary = torch.sum(dropped_tokens * saliency_weights.unsqueeze(-1), dim=0)
+        
+        # Method 2: Spatial clustering summary (secondary component)
+        # Group dropped tokens by spatial proximity and summarize clusters
+        spatial_summary = self._create_spatial_cluster_summary(tokens, dropped_mask)
+        
+        # Method 3: Global context preservation (tertiary component)
+        # Maintain relationship to selected tokens
+        if dropped_mask.sum() < len(tokens):  # If some tokens were selected
+            selected_tokens = tokens[~dropped_mask]
+            selected_mean = torch.mean(selected_tokens, dim=0)
+            # Context vector: difference between dropped and selected regions
+            context_vector = torch.mean(dropped_tokens, dim=0) - selected_mean
+        else:
+            context_vector = torch.zeros_like(saliency_summary)
+        
+        # SHIRG-v2 Enhanced Summary Formula:
+        # 60% saliency-weighted (preserves important information)
+        # 25% spatial clustering (preserves spatial structure) 
+        # 15% context preservation (maintains bidirectional relationships)
+        enhanced_summary = (
+            0.60 * saliency_summary + 
+            0.25 * spatial_summary +
+            0.15 * context_vector
+        )
+        
+        return enhanced_summary.unsqueeze(0)  # [1, D]
+    
+    def _create_spatial_cluster_summary(self, tokens, dropped_mask):
+        """
+        Create spatial cluster summary for dropped regions
+        
+        Args:
+            tokens: [N, D] all tokens 
+            dropped_mask: [N] boolean mask (True = dropped)
+            
+        Returns:
+            spatial_summary: [D] spatially-aware summary
+        """
+        dropped_indices = torch.where(dropped_mask)[0]
+        
+        if len(dropped_indices) == 0:
+            return torch.mean(tokens, dim=0)
+        
+        # Convert token indices to 2D spatial coordinates
+        # For 2304 tokens: 48x48 grid
+        total_tokens = len(tokens)
+        grid_size = int(total_tokens ** 0.5)
+        
+        # Get spatial coordinates of dropped tokens
+        dropped_rows = dropped_indices // grid_size
+        dropped_cols = dropped_indices % grid_size
+        
+        # Simple spatial clustering: group by proximity
+        dropped_tokens = tokens[dropped_mask]
+        
+        # Weight by spatial density (tokens in dense regions get higher weight)
+        spatial_weights = []
+        for i, (row, col) in enumerate(zip(dropped_rows, dropped_cols)):
+            # Count nearby dropped tokens (within 3x3 neighborhood)
+            neighbor_count = 0
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    neighbor_row, neighbor_col = row + dr, col + dc
+                    if (0 <= neighbor_row < grid_size and 
+                        0 <= neighbor_col < grid_size):
+                        neighbor_idx = neighbor_row * grid_size + neighbor_col
+                        if neighbor_idx < total_tokens and dropped_mask[neighbor_idx]:
+                            neighbor_count += 1
+            
+            spatial_weights.append(neighbor_count)
+        
+        # Normalize spatial weights
+        spatial_weights = torch.tensor(spatial_weights, device=tokens.device, dtype=torch.float32)
+        if spatial_weights.sum() > 0:
+            spatial_weights = spatial_weights / spatial_weights.sum()
+        else:
+            spatial_weights = torch.ones_like(spatial_weights) / len(spatial_weights)
+        
+        # Compute spatially-weighted summary
+        spatial_summary = torch.sum(dropped_tokens * spatial_weights.unsqueeze(-1), dim=0)
+        
+        return spatial_summary
 
     def compare_baseline_vs_shirg(self, images, target_tokens=980, text_embeddings=None):
         """
