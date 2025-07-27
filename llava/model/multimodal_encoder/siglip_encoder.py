@@ -863,6 +863,82 @@ class SigLipVisionTower(nn.Module):
                     importance_scores = attention_scores
                 
                 rank0_print(f"SHIRG DEBUG: Final importance scores shape: {importance_scores.shape}")
+                
+                # Step 3: Semantic region coverage (ensure spatial diversity)
+                coverage_tokens = self._ensure_spatial_coverage(
+                    highres_tokens, importance_scores, min_regions=target_count // 6
+                )  # [B, num_coverage_tokens]
+                
+                # Step 4: Select remaining tokens by importance ranking
+                num_coverage_tokens = coverage_tokens.size(1) if coverage_tokens.size(1) > 0 else 0
+                remaining_budget = target_count - num_coverage_tokens
+                
+                if remaining_budget > 0 and num_coverage_tokens > 0:
+                    # Create batched masks excluding coverage tokens
+                    selected_indices_list = []
+                    
+                    for b in range(batch_size):
+                        # Create mask for this batch
+                        mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
+                        batch_coverage = coverage_tokens[b]  # [num_coverage_tokens]
+                        
+                        # Exclude coverage tokens from selection
+                        mask[batch_coverage] = False
+                        
+                        # Select top-k from remaining tokens for this batch
+                        batch_scores = importance_scores[b].clone()  # [N]
+                        batch_scores[~mask] = float('-inf')
+                        
+                        _, batch_additional = torch.topk(batch_scores, k=remaining_budget, dim=-1)
+                        
+                        # Combine coverage and additional indices for this batch
+                        batch_selected = torch.cat([batch_coverage, batch_additional])
+                        selected_indices_list.append(batch_selected)
+                    
+                    selected_indices = torch.stack(selected_indices_list, dim=0)  # [B, target_count]
+                elif num_coverage_tokens > 0:
+                    # Only use coverage tokens (no additional selection needed)
+                    if num_coverage_tokens >= target_count:
+                        # Truncate coverage tokens to target count
+                        selected_indices = coverage_tokens[:, :target_count]
+                    else:
+                        # Pad coverage tokens to reach target count by repeating last token
+                        padding_needed = target_count - num_coverage_tokens
+                        padding = coverage_tokens[:, -1:].expand(-1, padding_needed)
+                        selected_indices = torch.cat([coverage_tokens, padding], dim=1)
+                else:
+                    # Fallback: no coverage tokens, select top-k globally
+                    _, selected_indices = torch.topk(importance_scores, k=target_count, dim=-1)
+                
+                # Step 5: Extract selected tokens
+                selected_tokens = torch.gather(
+                    highres_tokens, 1,
+                    selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
+                )
+                
+                # Step 6: Create attention-weighted summary for dropped tokens
+                summary_tokens = []
+                for b in range(batch_size):
+                    batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
+                    batch_dropped_mask[selected_indices[b]] = False
+                    
+                    if batch_dropped_mask.sum() > 0:
+                        # Attention-weighted summary of dropped tokens
+                        dropped_tokens = highres_tokens[b][batch_dropped_mask]  # [N_dropped, D]
+                        dropped_attention = importance_scores[b][batch_dropped_mask]  # [N_dropped]
+                        
+                        # Softmax attention weights for proper averaging
+                        attention_weights = F.softmax(dropped_attention * 5.0, dim=0)  # Temperature scaling
+                        weighted_summary = torch.sum(dropped_tokens * attention_weights.unsqueeze(-1), dim=0, keepdim=True)
+                        summary_tokens.append(weighted_summary)
+                    else:
+                        # Fallback: global summary
+                        summary_tokens.append(torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True))
+                
+                summary_token = torch.cat(summary_tokens, dim=0)  # [B, 1, D]
+                
+                # Combine selected tokens with summary
+                final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
         
         except Exception as e:
             rank0_print(f"SHIRG DEBUG ERROR in shirg_token_selection: {e}")
@@ -877,82 +953,6 @@ class SigLipVisionTower(nn.Module):
             _, selected_indices = torch.topk(torch.randn(batch_size, total_tokens, device=highres_tokens.device), k=target_count, dim=-1)
             selected_tokens = torch.gather(highres_tokens, 1, selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim))
             summary_token = torch.mean(highres_tokens, dim=1, keepdim=True)
-            return torch.cat([selected_tokens, summary_token], dim=1)
-            
-            # Step 3: Semantic region coverage (ensure spatial diversity)
-            coverage_tokens = self._ensure_spatial_coverage(
-                highres_tokens, importance_scores, min_regions=target_count // 6
-            )  # [B, num_coverage_tokens]
-            
-            # Step 4: Select remaining tokens by importance ranking
-            num_coverage_tokens = coverage_tokens.size(1) if coverage_tokens.size(1) > 0 else 0
-            remaining_budget = target_count - num_coverage_tokens
-            
-            if remaining_budget > 0 and num_coverage_tokens > 0:
-                # Create batched masks excluding coverage tokens
-                selected_indices_list = []
-                
-                for b in range(batch_size):
-                    # Create mask for this batch
-                    mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
-                    batch_coverage = coverage_tokens[b]  # [num_coverage_tokens]
-                    
-                    # Exclude coverage tokens from selection
-                    mask[batch_coverage] = False
-                    
-                    # Select top-k from remaining tokens for this batch
-                    batch_scores = importance_scores[b].clone()  # [N]
-                    batch_scores[~mask] = float('-inf')
-                    
-                    _, batch_additional = torch.topk(batch_scores, k=remaining_budget, dim=-1)
-                    
-                    # Combine coverage and additional indices for this batch
-                    batch_selected = torch.cat([batch_coverage, batch_additional])
-                    selected_indices_list.append(batch_selected)
-                
-                selected_indices = torch.stack(selected_indices_list, dim=0)  # [B, target_count]
-            elif num_coverage_tokens > 0:
-                # Only use coverage tokens (no additional selection needed)
-                if num_coverage_tokens >= target_count:
-                    # Truncate coverage tokens to target count
-                    selected_indices = coverage_tokens[:, :target_count]
-                else:
-                    # Pad coverage tokens to reach target count by repeating last token
-                    padding_needed = target_count - num_coverage_tokens
-                    padding = coverage_tokens[:, -1:].expand(-1, padding_needed)
-                    selected_indices = torch.cat([coverage_tokens, padding], dim=1)
-            else:
-                # Fallback: no coverage tokens, select top-k globally
-                _, selected_indices = torch.topk(importance_scores, k=target_count, dim=-1)
-            
-            # Step 5: Extract selected tokens
-            selected_tokens = torch.gather(
-                highres_tokens, 1,
-                selected_indices.unsqueeze(-1).expand(-1, -1, embed_dim)
-            )
-            
-            # Step 6: Create attention-weighted summary for dropped tokens
-            summary_tokens = []
-            for b in range(batch_size):
-                batch_dropped_mask = torch.ones(total_tokens, dtype=torch.bool, device=highres_tokens.device)
-                batch_dropped_mask[selected_indices[b]] = False
-                
-                if batch_dropped_mask.sum() > 0:
-                    # Attention-weighted summary of dropped tokens
-                    dropped_tokens = highres_tokens[b][batch_dropped_mask]  # [N_dropped, D]
-                    dropped_attention = importance_scores[b][batch_dropped_mask]  # [N_dropped]
-                    
-                    # Softmax attention weights for proper averaging
-                    attention_weights = F.softmax(dropped_attention * 5.0, dim=0)  # Temperature scaling
-                    weighted_summary = torch.sum(dropped_tokens * attention_weights.unsqueeze(-1), dim=0, keepdim=True)
-                    summary_tokens.append(weighted_summary)
-                else:
-                    # Fallback: global summary
-                    summary_tokens.append(torch.mean(highres_tokens[b:b+1], dim=1, keepdim=True))
-            
-            summary_token = torch.cat(summary_tokens, dim=0)  # [B, 1, D]
-            
-            # Combine selected tokens with summary
             final_tokens = torch.cat([selected_tokens, summary_token], dim=1)
         
         rank0_print(f"SHIRG-v3 Attention: Selected {target_count} tokens + 1 summary from {total_tokens} high-res tokens")
