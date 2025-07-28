@@ -322,12 +322,12 @@ class SigLipShirgExtensions:
             grid_size = int(math.sqrt(N))  # Use floor value
         
         # Reshape to spatial grid
-        # SHIRG-FIX: 2025-07-28 - Ensure tensor is contiguous for view operation
+        # SHIRG-FIX: 2025-07-28 - Use reshape instead of view for gradient compatibility
         # ISSUE: Non-contiguous tensor causes "view size is not compatible" error during gradient flow
-        # SOLUTION: Make tensor contiguous before view operation
+        # SOLUTION: Use reshape() which handles non-contiguous tensors automatically
         # LAVIDA IMPACT: Ensures gradient flow works properly for LoRA training
         # SHIRG IMPACT: Fixes gradient computation through spatial reshaping
-        spatial_tokens = hi_detail_tokens.contiguous().view(B, grid_size, grid_size, D)  # [B, 48, 48, D]
+        spatial_tokens = hi_detail_tokens.reshape(B, grid_size, grid_size, D)  # [B, 48, 48, D]
         
         # Apply 8×8 average pooling to create 6×6 scaffold grid (36 tokens)
         # But we want 64 tokens (8×8), so use 6×6 pooling on 48×48 to get 8×8
@@ -342,12 +342,12 @@ class SigLipShirgExtensions:
         ).permute(0, 2, 3, 1)  # [B, 8, 8, D]
         
         # Flatten scaffold: [B, 8, 8, D] → [B, 64, D]
-        # SHIRG-FIX: 2025-07-28 - Ensure tensor is contiguous for view operation
+        # SHIRG-FIX: 2025-07-28 - Use reshape instead of view for gradient compatibility
         # ISSUE: Permute operations make tensor non-contiguous
-        # SOLUTION: Make tensor contiguous before view
+        # SOLUTION: Use reshape() which handles non-contiguous tensors automatically
         # LAVIDA IMPACT: Maintains gradient flow through scaffold tokens
         # SHIRG IMPACT: Ensures proper scaffold token generation
-        lo_res_scaffold = lo_res_spatial.contiguous().view(B, scaffold_grid_size * scaffold_grid_size, D)
+        lo_res_scaffold = lo_res_spatial.reshape(B, scaffold_grid_size * scaffold_grid_size, D)
         
         # Validate lo-res scaffold count
         expected_scaffold = scaffold_grid_size * scaffold_grid_size  # 64 tokens
@@ -836,7 +836,7 @@ class SigLipShirgExtensions:
         
         # Reshape to spatial grid
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for gradient flow
-        spatial_tokens = tokens.contiguous().view(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
+        spatial_tokens = tokens.reshape(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
         
         # Compute local variance using 3×3 convolution as proxy for neighbor distance
         kernel = torch.ones(1, 1, 3, 3, device=tokens.device) / 9.0
@@ -851,7 +851,7 @@ class SigLipShirgExtensions:
         
         # Average across feature dimensions and reshape
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operation
-        neighbor_distances = local_variance.mean(dim=1).contiguous().view(B, -1)  # [B, N]
+        neighbor_distances = local_variance.mean(dim=1).reshape(B, -1)  # [B, N]
         
         return neighbor_distances
 
@@ -877,8 +877,8 @@ class SigLipShirgExtensions:
         
         # Reshape for spatial operations
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensors for view operations
-        spatial_tokens = tokens.contiguous().view(B, H, W, D)
-        spatial_scores = scores.contiguous().view(B, H, W)
+        spatial_tokens = tokens.reshape(B, H, W, D)
+        spatial_scores = scores.reshape(B, H, W)
         
         # Apply 3×3 smoothing filter to tokens based on score similarities
         smoothed_tokens = F.avg_pool2d(
@@ -897,7 +897,7 @@ class SigLipShirgExtensions:
         
         # Reshape back
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operation
-        merged_tokens = merged_spatial.contiguous().view(B, N, D)
+        merged_tokens = merged_spatial.reshape(B, N, D)
         merged_coords = coords  # Coordinates remain unchanged in this simplified version
         
         return merged_tokens, merged_coords
@@ -1098,13 +1098,13 @@ class SigLipShirgExtensions:
         # SHIRG IMPACT: Enables edge-aware token selection for better OCR performance
         
         # Reshape to spatial grid for edge detection
-        spatial_tokens = tokens.contiguous().view(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
+        spatial_tokens = tokens.reshape(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
         
         # Simple edge detection using Sobel-like filters
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
-                              device=tokens.device, dtype=tokens.dtype).view(1, 1, 3, 3)
+                              device=tokens.device, dtype=tokens.dtype).reshape(1, 1, 3, 3)
         sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
-                              device=tokens.device, dtype=tokens.dtype).view(1, 1, 3, 3)
+                              device=tokens.device, dtype=tokens.dtype).reshape(1, 1, 3, 3)
         
         # Apply edge filters (simplified - use mean of first few feature dimensions)
         # Use more dimensions for better edge detection
@@ -1118,7 +1118,7 @@ class SigLipShirgExtensions:
         edge_magnitude = torch.sqrt(edges_x**2 + edges_y**2 + 1e-6)  # [B, 1, H, W]
         
         # Reshape back to token sequence
-        edge_boost = edge_magnitude.squeeze(1).contiguous().view(B, -1)  # [B, N]
+        edge_boost = edge_magnitude.squeeze(1).reshape(B, -1)  # [B, N]
         
         return edge_boost
     
