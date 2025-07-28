@@ -591,25 +591,16 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # LAVIDA IMPACT: Enables proper error diagnosis for LoRA training setup
         # SHIRG IMPACT: Exposes token selection implementation issues for resolution
         
-        # SHIRG-FIX: 2025-07-28 - Call the correct SHIRG method from extensions
-        # ISSUE: Multiple forward_with_shirg methods can cause method resolution conflicts
-        # SOLUTION: Explicitly call the main SHIRG implementation from the extensions mixin
+        # SHIRG-FIX: 2025-07-28 - Direct call to SHIRG implementation via mixin method
+        # ISSUE: super() call to forward_with_shirg causes method resolution conflicts
+        # ROOT CAUSE: SigLipVisionTower inherits from both nn.Module and SigLipShirgExtensions
+        # SOLUTION: Directly call the mixin method without super() to avoid MRO issues
         # LAVIDA IMPACT: Ensures proper SHIRG method resolution for token selection
-        # SHIRG IMPACT: Uses the optimized SHIRG implementation for high-resolution processing
+        # SHIRG IMPACT: Uses the complete SHIRG implementation for high-resolution processing
         
-        # Call the main SHIRG method from the SigLipShirgExtensions mixin
-        # This method implements the complete SHIRG methodology with dual-scale tokens
-        shirg_result = super(SigLipVisionTower, self).forward_with_shirg(images, text_embeddings)
-        
-        # GRADIENT-FIX: 2025-07-28 - Handle tuple return from SHIRG extensions
-        # ISSUE: forward_with_shirg_x returns (tokens, coords) tuple for some cases
-        # SOLUTION: Extract just the tokens for standard forward interface
-        # LAVIDA IMPACT: Maintains expected return type for LaViDa integration
-        # SHIRG IMPACT: Handles both tuple and tensor returns from SHIRG methods
-        if isinstance(shirg_result, tuple):
-            return shirg_result[0]  # Return just the tokens
-        else:
-            return shirg_result  # Return as-is if not tuple
+        # Call the SHIRG method directly from the mixin class
+        # This implements the complete SHIRG methodology: dual-scale tokens → selection → 1216 tokens
+        return SigLipShirgExtensions.forward_with_shirg(self, images, text_embeddings)
 
     # Additional convenience methods for external compatibility
     def get_highres_tokens_for_shirg(self, images):

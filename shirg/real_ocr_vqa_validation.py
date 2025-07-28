@@ -192,6 +192,15 @@ class RealOCRVQAValidator:
             # Get vision tower for SHIRG token analysis
             self.tower = self.model.get_vision_tower()
             
+            # SHIRG-FIX: 2025-07-28 - Explicitly enable SHIRG after model loading
+            # ISSUE: Vision tower loads but SHIRG isn't actually enabled for inference
+            # SOLUTION: Set shirg_enabled=True directly on the vision tower instance
+            # LAVIDA IMPACT: Enables SHIRG processing during validation without affecting baseline
+            # SHIRG IMPACT: Ensures SHIRG forward path is actually used during validation
+            if self.tower is not None:
+                self.tower.shirg_enabled = True
+                print(f"   SHIRG enabled: {getattr(self.tower, 'shirg_enabled', False)}")
+            
             print("✅ LaViDa model loaded successfully")
             print(f"   Vision tower: {self.tower.vision_tower_name if self.tower else 'None'}")
             print(f"   Device: {self.device}")
