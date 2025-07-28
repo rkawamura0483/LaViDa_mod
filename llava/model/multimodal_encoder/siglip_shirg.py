@@ -157,15 +157,6 @@ class SigLipShirgExtensions:
         """
         start_time = time.time()
         
-        # GPU-DEBUG: 2025-07-28 - Debug device placement issues
-        if hasattr(images, 'device'):
-            rank0_print(f"🔍 SHIRG DEBUG: Input images on device: {images.device}")
-        if hasattr(self, 'vision_tower'):
-            model_device = next(self.vision_tower.parameters()).device
-            rank0_print(f"🔍 SHIRG DEBUG: Vision tower parameters on device: {model_device}")
-        if hasattr(self, 'device'):
-            rank0_print(f"🔍 SHIRG DEBUG: Tower device property: {self.device}")
-        
         # Step 1: Process high-resolution images (672×672) to get 2,304 tokens
         if hasattr(images, 'shape') and len(images.shape) == 4:
             B, C, H, W = images.shape
