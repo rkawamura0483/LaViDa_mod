@@ -67,15 +67,15 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
 ### 3.2 Algorithm Overview
 
 **Input**: 672×672 image → SigLIP-H/14 → 2,304 patch tokens  
-**Output**: 768 selected tokens + 144 scaffold tokens → mm_projector → LaViDa
+**Output**: 1,152 selected tokens + 64 scaffold tokens → mm_projector → LaViDa
 
 ```
 1. Dual-Scale Extraction:
    - Hi-detail: 2,304 tokens from 48×48 patches (672²÷14²)
-   - Lo-res scaffold: 144 tokens from 4×4 average pooling (always kept)
+   - Lo-res scaffold: 64 tokens from 8×8 average pooling (always kept)
 
 2. Distance-Aware Scoring:
-   - Compute text-image similarity scores
+   - Compute text-image similarity scores (query-agnostic first pass)
    - Apply spatial distance penalties (to neighbors, to center)
    - Generate importance score: s_i = 0.7×Sim_i - 0.2×||p_i-p_neighbors|| - 0.1×||p_i-center||
 
@@ -85,12 +85,12 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
    - Update coordinate information
 
 4. Hierarchical Selection:
-   - Keep all 144 scaffold tokens (global context)
-   - Select top-K hi-detail tokens (K=768 fixed)
-   - Add coordinate embeddings: (x,y,h,w) → 128-d vectors
+   - Keep all 64 scaffold tokens (global context)
+   - Select top-K hi-detail tokens (K=1,152 fixed, 55% keep-rate)
+   - Add 2D rotary coordinate embeddings: (x,y,h,w) → 128-d vectors
 
 5. LoRA-Adapted Projection:
-   - Process [K+144] tokens through mm_projector + LoRA
+   - Process [K+64] tokens through mm_projector + LoRA
    - Generate static visual prefix for cache
 ```
 
@@ -104,17 +104,17 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
 - Full spatial resolution for fine-grained features
 - Subject to selection and pruning
 
-**Lo-Res Scaffold (144)**:
-- 4×4 average pooling over 48×48 feature map
+**Lo-Res Scaffold (64)**:
+- 8×8 average pooling over 48×48 feature map
 - Always retained (no selection pressure)
 - Provides global context and spatial anchors
 - Ensures coverage of entire image region
 
 **Coordinate Embedding**:
 - Each selected token gets (x,y,width,height) coordinates
-- Mapped through learnable linear layer: ℝ⁴ → ℝ¹²⁸
+- Mapped through 2D rotary embeddings: ℝ⁴ → ℝ¹²⁸
 - Added to token embeddings before projection
-- Preserves spatial relationships after pruning
+- Preserves spatial relationships after pruning with rotary position encoding
 
 #### 3.3.2 Distance-Aware Importance Scoring
 
@@ -135,32 +135,33 @@ Where:
 
 #### 3.3.3 Training-Minimal LoRA Adaptation
 
-**LoRA Target Modules** (Rank-64):
+**LoRA Target Modules** (Rank-128):
 ```yaml
 projector_lora:
   targets: ["mm_projector.fc1", "mm_projector.fc2"]
-  rank: 64
-  alpha: 128
+  rank: 128
+  alpha: 256
   
 siglip_lora:
-  targets: ["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv"]
-  rank: 64
-  alpha: 128
+  targets: ["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv", "blocks.4.attn.qkv", "blocks.5.attn.qkv", "blocks.6.attn.qkv", "blocks.7.attn.qkv"]
+  rank: 128
+  alpha: 256
 
 coordinate_lora:
-  targets: ["coord_linear"]
-  rank: 8
-  alpha: 16
+  targets: ["coord_rotary"]
+  rank: 16
+  alpha: 32
 
-Total trainable: ~120M parameters (1.4% of 8B model)
+Total trainable: ~230M parameters (2.7% of 8B model)
 ```
 
 **Training Configuration**:
+- SigLIP pre-adaptation: 20k steps at 512²-768² before LoRA
 - Learning rate: 7e-5 (LoRA), 2e-5 (base weights)
 - Batch size: 16 per GPU × 8 GPUs
-- Epochs: 2-3 with cosine decay
-- Mixed resolution training: 384², 512², 672² randomly sampled
-- Training time: <8 hours on 8×A100
+- Epochs: 4 with cosine decay
+- Mixed resolution training: 512², 672², 768² randomly sampled
+- Training time: ~9 hours on 8×A100 (1.2h pre-adapt + 6h LoRA + 1.8h extended)
 
 ---
 
@@ -174,9 +175,9 @@ def extract_shirg_tokens(self, pixel_values):
     # Process full 672x672 image
     features = self.vision_model(pixel_values)  # [B, 2304, D]
     
-    # Generate lo-res scaffold (4x4 avg pool)
+    # Generate lo-res scaffold (8x8 avg pool)
     scaffold = F.avg_pool2d(features.view(B, 48, 48, D), 
-                           kernel_size=12, stride=12)  # [B, 144, D]
+                           kernel_size=6, stride=6)  # [B, 64, D]
     
     # Compute patch coordinates
     coords = self.compute_patch_coordinates(features)  # [B, 2304, 4]
@@ -186,7 +187,7 @@ def extract_shirg_tokens(self, pixel_values):
 
 **SHIRG Selector** (`shirg/shirg_selector.py`):
 ```python
-def select_tokens(self, features, text_features, coordinates, K=768):
+def select_tokens(self, features, text_features, coordinates, K=1152):
     # Distance-aware importance scoring
     similarity_scores = self.compute_similarity(features, text_features)
     neighbor_distances = self.compute_neighbor_distances(coordinates)
@@ -216,14 +217,14 @@ def forward_with_shirg(self, images, text_features):
     
     # Select high-importance tokens
     selected_tokens, selected_coords = self.shirg_selector.select_tokens(
-        hi_detail, text_features, coords, K=768)
+        hi_detail, text_features, coords, K=1152)
     
-    # Add coordinate embeddings
-    coord_embeds = self.coord_linear(selected_coords)  # LoRA layer
+    # Add 2D rotary coordinate embeddings
+    coord_embeds = self.coord_rotary(selected_coords)  # LoRA layer
     selected_tokens = selected_tokens + coord_embeds
     
     # Combine with scaffold
-    visual_tokens = torch.cat([scaffold, selected_tokens], dim=1)  # [B, 912, D]
+    visual_tokens = torch.cat([scaffold, selected_tokens], dim=1)  # [B, 1216, D]
     
     # Project through LoRA-adapted mm_projector
     projected = self.mm_projector(visual_tokens)
@@ -239,8 +240,8 @@ def forward_with_shirg(self, images, text_features):
 - Plug-and-play integration with existing cache infrastructure
 
 **Memory Management**:
-- Visual prefix: 912 tokens × 16-bit → ~3GB (vs 5GB full precision)
-- Total inference memory: ~8.9GB (vs 20GB full high-res)
+- Visual prefix: 1,216 tokens × 16-bit → ~4.1GB (vs 6.5GB full precision)
+- Total inference memory: ~11GB (vs 20GB full high-res)
 - Cache bandwidth: optimized through streaming and compression
 
 ---
@@ -252,11 +253,11 @@ def forward_with_shirg(self, images, text_features):
 **Quantitative Metrics**:
 | Metric | Baseline (384²) | Full (672²) | SHIRG Target |
 |--------|----------------|-------------|--------------|
-| ChartQA CIDEr | 45.2 | 52.1 (+7) | 48.5 (+3.3) |
-| DocVQA EM | 76.3 | 79.8 (+3.5) | 78.1 (+1.8) |
-| EntityGrid F1 | 68.1 | 72.4 (+4.3) | 70.3 (+2.2) |
-| Latency (30 steps) | 37ms | 76ms | 50ms |
-| GPU Memory | 7.6GB | 20GB | 8.9GB |
+| ChartQA CIDEr | 45.2 | 52.1 (+7) | 47.0 (+1.8) |
+| DocVQA EM | 76.3 | 79.8 (+3.5) | 80.3 (+4.0) |
+| EntityGrid F1 | 68.1 | 72.4 (+4.3) | 70.6 (+2.5) |
+| Latency (30 steps) | 37ms | 76ms | 58ms |
+| GPU Memory | 7.6GB | 20GB | 11GB |
 
 **Quality Preservation**:
 - Standard VQA tasks: maintain baseline ±1% performance
@@ -328,10 +329,10 @@ def forward_with_shirg(self, images, text_features):
 
 ### Expected Outcomes
 **Conservative Estimates**:
-- SHIRG-Fixed performance: +3 to +5 CIDEr on ChartQA
-- Latency: ~50ms (1.35× baseline, 0.66× full high-res)  
-- Memory: 8.9GB (1.17× baseline, 0.45× full high-res)
-- Training convergence: successful within 8 hours
+- SHIRG-Fixed performance: +1.8 CIDEr on ChartQA, +4% EM on DocVQA
+- Latency: ~58ms (1.57× baseline, 0.76× full high-res)  
+- Memory: 11GB (1.45× baseline, 0.55× full high-res)
+- Training convergence: successful within 9 hours
 
 ---
 

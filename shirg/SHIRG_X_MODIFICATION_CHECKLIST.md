@@ -1,7 +1,7 @@
 # SHIRG Implementation Modification Checklist
 
 ## Overview
-This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance Gate) modifications to the LaViDa fork. SHIRG enables high-resolution processing (672×672, 2,304 tokens) while maintaining cache compatibility through static token selection with minimal LoRA adaptation (1.4% parameters).
+This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance Gate) modifications to the LaViDa fork. SHIRG enables high-resolution processing (672×672, 2,304 tokens) while maintaining cache compatibility through static token selection with optimized LoRA adaptation (2.7% parameters, rank-128).
 
 ---
 
@@ -11,7 +11,7 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 - [ ] **Modify SigLIP encoder** (`llava/model/multimodal_encoder/siglip_encoder.py`)
   - [ ] Add SHIRG configuration flags and methods
   - [ ] Implement `extract_shirg_tokens()` method for 672×672 processing
-  - [ ] Add lo-res scaffold generation: 4×4 avg pooling → 144 tokens (always kept)
+  - [ ] Add lo-res scaffold generation: 8×8 avg pooling → 64 tokens (always kept)
   - [ ] Add hi-detail token extraction: 48×48 patches → 2,304 tokens
   - [ ] Implement patch coordinate computation: (x,y,width,height) per token
   - [ ] Add positional embedding interpolation: 24×24 → 48×48 for 672p inputs
@@ -22,8 +22,8 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
   - [ ] Text-image similarity computation using cosine similarity
   - [ ] Neighbor distance calculation (8-connected adjacency, averaged)
   - [ ] Center distance calculation (Euclidean from patch to image center)
-  - [ ] Fixed K=768 token selection (eliminate adaptive gating variance)
-  - [ ] SAINT-style coverage guarantee ensuring each 4×4 region keeps ≥1 token
+  - [ ] Fixed K=1,152 token selection (eliminate adaptive gating variance, 55% keep-rate)
+  - [ ] SAINT-style coverage guarantee ensuring each 8×8 region keeps ≥1 token
 
 ### 3. Neighbor-Aware Token Merging
 - [ ] **Implement token merging** (ToMe-style approach)
@@ -34,18 +34,19 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 
 ### 4. Coordinate Embedding Integration
 - [ ] **Add coordinate embedding layer** (`shirg/lavida_shirg_integration.py`)
-  - [ ] Create `CoordinateEmbedding` class: ℝ⁴ → ℝ¹²⁸ linear layer
-  - [ ] Integrate with LoRA training pipeline (rank-8 LoRA)
-  - [ ] Add coordinate features to selected hi-detail tokens before projection
+  - [ ] Create `CoordinateEmbedding` class: ℝ⁴ → ℝ¹²⁸ 2D rotary embeddings
+  - [ ] Integrate with LoRA training pipeline (rank-16 LoRA)
+  - [ ] Add rotary coordinate features to selected hi-detail tokens before projection
   - [ ] Ensure gradient flow for coordinate embedding training
 
 ### 5. LoRA Adaptation Pipeline
-- [ ] **Configure minimal LoRA training**
-  - [ ] **Projector LoRA**: rank-64 on `["mm_projector.fc1", "mm_projector.fc2"]`
-  - [ ] **SigLIP LoRA**: rank-64 on `["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv"]`
-  - [ ] **Coordinate LoRA**: rank-8 on `["coord_linear"]`
-  - [ ] Total trainable: ~120M params (1.4% of 8B model)
-  - [ ] Training configuration: LR 7e-5, batch 16×8 GPUs, 2-3 epochs, <8h training time
+- [ ] **Configure optimized LoRA training**
+  - [ ] **SigLIP pre-adaptation**: 20k steps at 512²-768² before LoRA training
+  - [ ] **Projector LoRA**: rank-128 on `["mm_projector.fc1", "mm_projector.fc2"]`
+  - [ ] **SigLIP LoRA**: rank-128 on `["blocks.0-7.attn.qkv"]` (8 blocks vs 4)
+  - [ ] **Coordinate LoRA**: rank-16 on `["coord_rotary"]`
+  - [ ] Total trainable: ~230M params (2.7% of 8B model)
+  - [ ] Training configuration: LR 7e-5, batch 16×8 GPUs, 4 epochs, ~9h training time
 
 ---
 
@@ -57,8 +58,8 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
   - [ ] Extract dual-scale tokens (hi-detail + scaffold)
   - [ ] Apply distance-aware scoring to hi-detail tokens
   - [ ] Perform neighbor-aware merging
-  - [ ] Select top-768 hi-detail tokens
-  - [ ] Combine with 144 scaffold tokens → total 912 tokens
+  - [ ] Select top-1,152 hi-detail tokens
+  - [ ] Combine with 64 scaffold tokens → total 1,216 tokens
   - [ ] Add coordinate embeddings to selected tokens
   - [ ] Process through LoRA-adapted mm_projector
 
@@ -73,8 +74,8 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 - [ ] **Integrate PrefixKV for memory efficiency**
   - [ ] Add 16-bit KV compression for visual prefix tokens
   - [ ] Reduce memory footprint by ~40% with <2ms overhead
-  - [ ] Visual prefix: 912 tokens → ~3GB (vs 5GB full precision)
-  - [ ] Total inference memory target: ~8.9GB (vs 20GB full high-res)
+  - [ ] Visual prefix: 1,216 tokens → ~4.1GB (vs 6.5GB full precision)
+  - [ ] Total inference memory target: ~11GB (vs 20GB full high-res)
 
 ---
 
@@ -90,11 +91,11 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 
 ### 10. Performance Benchmarking
 - [ ] **Target performance metrics**
-  - [ ] ChartQA CIDEr: +3.3 improvement (baseline 45.2 → 48.5)
-  - [ ] DocVQA EM: +1.8 improvement (baseline 76.3 → 78.1)
-  - [ ] EntityGrid F1: +2.2 improvement (baseline 68.1 → 70.3)
-  - [ ] Latency: 50ms for 30 steps (1.35× baseline, 0.66× full high-res)
-  - [ ] GPU memory: 8.9GB (1.17× baseline, 0.45× full high-res)
+  - [ ] ChartQA CIDEr: +1.8 improvement (baseline 45.2 → 47.0)
+  - [ ] DocVQA EM: +4.0 improvement (baseline 76.3 → 80.3)
+  - [ ] EntityGrid F1: +2.5 improvement (baseline 68.1 → 70.6)
+  - [ ] Latency: 58ms for 30 steps (1.57× baseline, 0.76× full high-res)
+  - [ ] GPU memory: 11GB (1.45× baseline, 0.55× full high-res)
 
 ### 11. Comparison Baselines
 - [ ] **Benchmark against key comparisons**
@@ -115,9 +116,10 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 - [ ] Basic distance-aware scoring implementation
 
 **Phase 1B: LoRA Setup (4h)**
-- [ ] Configure rank-64 LoRA on mm_projector + SigLIP blocks 0-3
+- [ ] Run SigLIP pre-adaptation: 20k steps at 512²-768²
+- [ ] Configure rank-128 LoRA on mm_projector + SigLIP blocks 0-7
 - [ ] Setup training pipeline with PEFT 0.10
-- [ ] Launch training job: 8 GPUs, LR 7e-5, 2 epochs
+- [ ] Launch training job: 8 GPUs, LR 7e-5, 4 epochs
 - [ ] Monitor initial convergence
 
 ### Day 2: Integration and Optimization (10h)
@@ -194,13 +196,13 @@ This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance
 ## Success Criteria
 
 ### Must-Have (MVP)
-- [ ] ✅ Dual-scale token extraction (2,304 hi-detail + 144 scaffold) functional
-- [ ] ✅ Distance-aware selection algorithm working with fixed K=768
+- [ ] ✅ Dual-scale token extraction (2,304 hi-detail + 64 scaffold) functional
+- [ ] ✅ Distance-aware selection algorithm working with fixed K=1,152 (55% keep-rate)
 - [ ] ✅ Coordinate embedding integrated and trainable
-- [ ] ✅ LoRA training converging within 8h budget
+- [ ] ✅ LoRA training converging within 9h budget (including pre-adaptation)
 - [ ] ✅ Measurable spatial reasoning improvement >+3% on target benchmarks
-- [ ] ✅ Memory usage within 8.9GB target
-- [ ] ✅ Latency within 50ms target for 30-step inference
+- [ ] ✅ Memory usage within 11GB target
+- [ ] ✅ Latency within 58ms target for 30-step inference
 
 ### Nice-to-Have (Full Implementation)
 - [ ] ✅ Neighbor-aware token merging optimally implemented
