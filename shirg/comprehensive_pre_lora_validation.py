@@ -181,7 +181,12 @@ class ComprehensiveValidator:
         try:
             from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
             
-            # Load model
+            # GPU-FIX: 2025-07-28 - Ensure proper GPU loading for validation
+            # ISSUE: Model may be loading on CPU despite GPU being available
+            # SOLUTION: Force GPU loading with explicit device verification
+            # PERFORMANCE IMPACT: Ensures model actually uses GPU, ~100x speedup
+            
+            # Load model with explicit GPU targeting
             start_time = time.time()
             self.tower = SigLipVisionTower(
                 vision_tower="google/siglip-so400m-patch14-384",
@@ -190,7 +195,52 @@ class ComprehensiveValidator:
             )
             
             if not self.tower.is_loaded:
-                self.tower.load_model()
+                # Force load on GPU if available
+                device_map = {'': torch.device('cuda' if torch.cuda.is_available() else 'cpu')} if torch.cuda.is_available() else None
+                self.tower.load_model(device_map=device_map)
+            
+            # Verify the model is actually on GPU
+            if torch.cuda.is_available():
+                try:
+                    model_device = self.tower.device
+                    rank0_print(f"SHIRG GPU-FIX: Vision tower loaded on device: {model_device}")
+                    
+                    if model_device.type != 'cuda':
+                        rank0_print(f"🚨 CRITICAL ERROR: Model on {model_device} but CUDA available - attempting GPU move")
+                        
+                        # Force move the entire tower to GPU
+                        if hasattr(self.tower, 'vision_tower'):
+                            self.tower.vision_tower = self.tower.vision_tower.cuda()
+                            rank0_print(f"🔧 Moved vision_tower to GPU")
+                        
+                        if hasattr(self.tower, 'coord_rotary'):
+                            self.tower.coord_rotary = self.tower.coord_rotary.cuda()
+                            rank0_print(f"🔧 Moved coord_rotary to GPU")
+                        
+                        # Verify the move worked
+                        new_device = self.tower.device
+                        rank0_print(f"🔍 After GPU move, device is now: {new_device}")
+                        
+                        if new_device.type != 'cuda':
+                            rank0_print(f"❌ GPU move failed, still on {new_device}")
+                        else:
+                            rank0_print(f"✅ GPU move successful")
+                    else:
+                        rank0_print(f"✅ SHIRG GPU-FIX: Model successfully loaded on GPU")
+                        
+                    # Additional debugging - check individual components
+                    if hasattr(self.tower, 'vision_tower'):
+                        for name, param in self.tower.vision_tower.named_parameters():
+                            if param.device.type != 'cuda':
+                                rank0_print(f"⚠️ Parameter {name} still on {param.device}")
+                                break
+                        else:
+                            rank0_print(f"✅ All vision_tower parameters on GPU")
+                            
+                except Exception as e:
+                    rank0_print(f"🚨 Error checking GPU placement: {e}")
+                    import traceback
+                    traceback.print_exc()
             
             load_time = time.time() - start_time
             metrics["model_load_time_sec"] = load_time

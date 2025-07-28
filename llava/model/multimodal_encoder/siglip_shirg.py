@@ -208,6 +208,15 @@ class SigLipShirgExtensions:
         """
         start_time = time.time()
         
+        # GPU-DEBUG: 2025-07-28 - Debug device placement issues
+        if hasattr(images, 'device'):
+            rank0_print(f"🔍 SHIRG DEBUG: Input images on device: {images.device}")
+        if hasattr(self, 'vision_tower'):
+            model_device = next(self.vision_tower.parameters()).device
+            rank0_print(f"🔍 SHIRG DEBUG: Vision tower parameters on device: {model_device}")
+        if hasattr(self, 'device'):
+            rank0_print(f"🔍 SHIRG DEBUG: Tower device property: {self.device}")
+        
         # Step 1: Process high-resolution images (672×672) to get 2,304 tokens
         if hasattr(images, 'shape') and len(images.shape) == 4:
             B, C, H, W = images.shape
@@ -310,23 +319,35 @@ class SigLipShirgExtensions:
         
         if torch.cuda.is_available():
             # Clear intermediate variables to free memory
-            if 'spatial_tokens' in locals():
-                del spatial_tokens
-            if 'lo_res_spatial' in locals():
-                del lo_res_spatial
-            
-            # Force garbage collection for tensors
-            torch.cuda.empty_cache()
-            
-            current_memory = torch.cuda.memory_allocated() / 1e9
-            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-            memory_percent = (current_memory / total_memory) * 100
-            
-            # Memory usage analysis
-            if memory_percent > 80:
-                rank0_print(f"⚠️ SHIRG Memory Warning: {memory_percent:.1f}% GPU usage, consider reducing batch size")
-            
-            rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {elapsed_time:.1f}ms | GPU: {current_memory:.1f}GB ({memory_percent:.1f}%)")
+            try:
+                if 'spatial_tokens' in locals():
+                    del spatial_tokens
+                if 'lo_res_spatial' in locals():
+                    del lo_res_spatial
+                
+                # Force garbage collection for tensors
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Ensure operations complete
+                
+                # GPU-FIX: 2025-07-28 - Fix memory reporting to show actual usage
+                # ISSUE: Memory reporting showing 0.0GB even with GPU processing
+                # SOLUTION: Check device of actual tensors and report per-device memory
+                device_id = hi_detail_tokens.device.index if hi_detail_tokens.device.type == 'cuda' else 0
+                
+                current_memory = torch.cuda.memory_allocated(device_id) / 1e9
+                total_memory = torch.cuda.get_device_properties(device_id).total_memory / 1e9
+                memory_percent = (current_memory / total_memory) * 100
+                
+                # Memory usage analysis
+                if memory_percent > 80:
+                    rank0_print(f"⚠️ SHIRG Memory Warning: {memory_percent:.1f}% GPU usage, consider reducing batch size")
+                
+                rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {elapsed_time:.1f}ms | GPU: {current_memory:.1f}GB ({memory_percent:.1f}%) | Device: {hi_detail_tokens.device}")
+                
+            except Exception as e:
+                rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {elapsed_time:.1f}ms | Memory reporting error: {e}")
+        else:
+            rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {elapsed_time:.1f}ms | CPU mode")
         
         return hi_detail_tokens, lo_res_scaffold
 
@@ -384,22 +405,31 @@ class SigLipShirgExtensions:
         
         extraction_time = (time.time() - start_time) * 1000
         
-        # GPU-FIX: 2025-07-28 - Memory optimization with cleanup
+        # GPU-FIX: 2025-07-28 - Memory optimization with cleanup and accurate reporting
         if torch.cuda.is_available():
-            # Clear intermediate computation tensors
-            torch.cuda.empty_cache()
-            
-            current_memory = torch.cuda.memory_allocated() / 1e9
-            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-            usage_percent = (current_memory / total_memory) * 100
-            
-            # Memory pressure warnings
-            if usage_percent > 85:
-                rank0_print(f"🚨 SHIRG Critical Memory: {usage_percent:.1f}% - reduce batch size or resolution")
-            elif usage_percent > 70:
-                rank0_print(f"⚠️ SHIRG High Memory: {usage_percent:.1f}% - monitor for OOM")
-            
-            rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} high-res tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB ({usage_percent:.1f}%)")
+            try:
+                # Clear intermediate computation tensors
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+                # Get device-specific memory info
+                device_id = hi_detail_tokens.device.index if hi_detail_tokens.device.type == 'cuda' else 0
+                current_memory = torch.cuda.memory_allocated(device_id) / 1e9
+                total_memory = torch.cuda.get_device_properties(device_id).total_memory / 1e9
+                usage_percent = (current_memory / total_memory) * 100
+                
+                # Memory pressure warnings
+                if usage_percent > 85:
+                    rank0_print(f"🚨 SHIRG Critical Memory: {usage_percent:.1f}% - reduce batch size or resolution")
+                elif usage_percent > 70:
+                    rank0_print(f"⚠️ SHIRG High Memory: {usage_percent:.1f}% - monitor for OOM")
+                
+                rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} high-res tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB ({usage_percent:.1f}%) | Device: {hi_detail_tokens.device}")
+                
+            except Exception as e:
+                rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} high-res tokens in {extraction_time:.1f}ms | Memory reporting error: {e}")
+        else:
+            rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} high-res tokens in {extraction_time:.1f}ms | CPU mode")
         
         return hi_detail_tokens
 

@@ -77,7 +77,27 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             rank0_print("{} is already loaded, `load_model` called again, skipping.".format(self.vision_tower_name))
             return
 
-        self.vision_tower = SigLipVisionModel.from_pretrained(self.vision_tower_name, device_map=device_map)
+        # GPU-FIX: 2025-07-28 - Ensure model loads on GPU for proper utilization
+        # ISSUE: Model loading on CPU causing 0.0GB GPU usage and 10s processing times
+        # SOLUTION: Explicit GPU device placement with automatic fallback
+        # PERFORMANCE IMPACT: Enables actual GPU processing, ~100x speedup expected
+        
+        # Determine target device
+        if device_map is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            device_map = {'': device} if torch.cuda.is_available() else None
+            rank0_print(f"SHIRG GPU-FIX: Loading vision tower on device: {device}")
+        
+        self.vision_tower = SigLipVisionModel.from_pretrained(
+            self.vision_tower_name, 
+            device_map=device_map,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
+        )
+        
+        # Ensure coordinate embedding is also on the same device
+        if torch.cuda.is_available():
+            self.coord_rotary = self.coord_rotary.cuda()
+            rank0_print(f"SHIRG GPU-FIX: Moved coordinate embedding to GPU")
 
         # SHIRG: Maintain LaViDa architecture - delete last layer for 26-layer config
         del self.vision_tower.vision_model.encoder.layers[-1:]
