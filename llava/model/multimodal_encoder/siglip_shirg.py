@@ -217,7 +217,11 @@ class SigLipShirgExtensions:
         # SHIRG-X Step 3: Combine hi-detail + lo-res scaffold
         dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
         
-        return dual_scale_tokens.to(images.dtype if hasattr(images, 'dtype') else torch.float32), coord_coords
+        # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
+        target_dtype = images.dtype if hasattr(images, 'dtype') else torch.float32
+        if dual_scale_tokens.dtype != target_dtype:
+            dual_scale_tokens = dual_scale_tokens.to(dtype=target_dtype)
+        return dual_scale_tokens, coord_coords
 
     def extract_shirg_x_tokens(self, images):
         """
@@ -287,7 +291,10 @@ class SigLipShirgExtensions:
                     # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
                     # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
                     # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
-                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                    # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
+                    image_feature = image_forward_out.hidden_states[-1]
+                    if image_feature.dtype != image.dtype:
+                        image_feature = image_feature.to(dtype=image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -301,7 +308,10 @@ class SigLipShirgExtensions:
                 # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
                 # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
                 # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
-                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
+                # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
+                hi_detail_tokens = image_forward_outs.hidden_states[-1]
+                if hi_detail_tokens.dtype != images.dtype:
+                    hi_detail_tokens = hi_detail_tokens.to(dtype=images.dtype)
         
         # Validate token dimensions
         if len(hi_detail_tokens.shape) == 3:
@@ -437,7 +447,10 @@ class SigLipShirgExtensions:
                     # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
                     # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
                     # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
-                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                    # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
+                    image_feature = image_forward_out.hidden_states[-1]
+                    if image_feature.dtype != image.dtype:
+                        image_feature = image_feature.to(dtype=image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -450,7 +463,10 @@ class SigLipShirgExtensions:
                 # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
                 # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
                 # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
-                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
+                # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
+                hi_detail_tokens = image_forward_outs.hidden_states[-1]
+                if hi_detail_tokens.dtype != images.dtype:
+                    hi_detail_tokens = hi_detail_tokens.to(dtype=images.dtype)
         
         # Validate expected token count (2304 for 672×672)
         expected_tokens = (672 // 14) ** 2  # 2304

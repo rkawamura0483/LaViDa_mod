@@ -250,7 +250,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # ISSUE: Using last_hidden_state (post-normalized) causes different token magnitudes than expected
                 # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa behavior
                 # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa token processing
-                image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                # GRADIENT-FIX: 2025-07-28 - Avoid gradient-breaking .to() operations
+                # ISSUE: .to(dtype) can break gradient chain if dtype conversion occurs
+                # SOLUTION: Only convert dtype if necessary, preserve gradients
+                image_feature = image_forward_out.hidden_states[-1]
+                if image_feature.dtype != image.dtype:
+                    # Only convert if needed, and ensure gradients are preserved
+                    image_feature = image_feature.to(dtype=image.dtype)
+                # If dtypes match, keep original tensor to preserve gradients
                 
                 # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
                 expected_tokens = (384 // 14) ** 2  # 729
@@ -267,7 +274,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # ISSUE: Using last_hidden_state (post-normalized) causes different token magnitudes than expected
             # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa behavior  
             # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa token processing
-            image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
+            # GRADIENT-FIX: 2025-07-28 - Avoid gradient-breaking .to() operations
+            # ISSUE: .to(dtype) can break gradient chain if dtype conversion occurs
+            # SOLUTION: Only convert dtype if necessary, preserve gradients
+            image_features = image_forward_outs.hidden_states[-1]
+            if image_features.dtype != images.dtype:
+                # Only convert if needed, and ensure gradients are preserved
+                image_features = image_features.to(dtype=images.dtype)
+            # If dtypes match, keep original tensor to preserve gradients
             
             # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
             expected_tokens = (384 // 14) ** 2  # 729
