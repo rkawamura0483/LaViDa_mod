@@ -98,16 +98,142 @@ class RealOCRVQAValidator:
             raise
     
     def _get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images from working dataset URLs"""
+        """Get real OCR/VQA images from HuggingFace datasets using proper API"""
         
         ocr_vqa_samples = {}
         
-        # SHIRG-FIX: 2025-07-27 - Use verified working URLs from actual datasets
-        # ISSUE: Need real dataset images, not synthetic ones
-        # SOLUTION: Find working URLs from accessible OCR/VQA datasets
+        # SHIRG-FIX: 2025-07-27 - Use HuggingFace datasets library for reliable access
+        # ISSUE: Direct URLs return 403/404 errors - need proper dataset loading
+        # SOLUTION: Use datasets library to programmatically load real dataset images
         # RESEARCH IMPACT: Authentic validation on real research dataset images
         
-        print("🌐 Loading real OCR/VQA images from verified dataset sources...")
+        print("🌐 Loading real OCR/VQA images from HuggingFace datasets...")
+        
+        try:
+            # Check if datasets library is available
+            try:
+                from datasets import load_dataset
+                print("✅ HuggingFace datasets library available")
+            except ImportError:
+                print("⚠️ HuggingFace datasets library not available, using fallback COCO URLs")
+                return self._get_fallback_coco_samples()
+            
+            # Load actual datasets programmatically
+            datasets_to_load = [
+                {
+                    "name": "HuggingFaceM4/ChartQA",
+                    "split": "test",
+                    "samples": 3,
+                    "type": "ChartQA",
+                    "challenge": "Chart question answering"
+                },
+                {
+                    "name": "lmms-lab/DocVQA", 
+                    "split": "validation",
+                    "samples": 3,
+                    "type": "DocVQA",
+                    "challenge": "Document question answering"
+                },
+                {
+                    "name": "howard-hou/OCR-VQA",
+                    "split": "validation", 
+                    "samples": 2,
+                    "type": "OCR-VQA",
+                    "challenge": "OCR-based VQA"
+                }
+            ]
+            
+            total_loaded = 0
+            for dataset_info in datasets_to_load:
+                try:
+                    print(f"🔄 Loading {dataset_info['name']} ({dataset_info['samples']} samples)...")
+                    
+                    # Load dataset with streaming to avoid large downloads
+                    dataset = load_dataset(
+                        dataset_info['name'], 
+                        split=dataset_info['split'],
+                        streaming=True,
+                        trust_remote_code=True
+                    )
+                    
+                    # Take first N samples
+                    samples_taken = 0
+                    for idx, example in enumerate(dataset):
+                        if samples_taken >= dataset_info['samples']:
+                            break
+                            
+                        try:
+                            # Extract image and question
+                            if 'image' in example and example['image'] is not None:
+                                image = example['image']
+                                
+                                # Handle different question formats
+                                question = "What information is shown in this image?"
+                                if 'question' in example:
+                                    question = example['question']
+                                elif 'query' in example:
+                                    question = example['query'] 
+                                elif 'questions' in example and len(example['questions']) > 0:
+                                    question = example['questions'][0]
+                                
+                                # Resize for SHIRG processing
+                                processed_image = self._resize_for_shirg(image)
+                                
+                                sample_name = f"{dataset_info['type'].lower().replace('-', '_')}_{total_loaded:02d}"
+                                
+                                ocr_vqa_samples[sample_name] = {
+                                    'image': processed_image,
+                                    'question': question,
+                                    'type': dataset_info['type'],
+                                    'challenge': dataset_info['challenge'],
+                                    'source': 'huggingface_dataset',
+                                    'dataset_name': dataset_info['name']
+                                }
+                                
+                                samples_taken += 1
+                                total_loaded += 1
+                                print(f"✅ Loaded {sample_name} from {dataset_info['name']}")
+                        
+                        except Exception as e:
+                            print(f"⚠️ Failed to process sample {idx} from {dataset_info['name']}: {e}")
+                            continue
+                    
+                    print(f"✅ Successfully loaded {samples_taken} samples from {dataset_info['name']}")
+                    
+                except Exception as e:
+                    print(f"⚠️ Failed to load dataset {dataset_info['name']}: {e}")
+                    continue
+            
+            # Add working COCO samples as fallback
+            coco_samples = self._get_fallback_coco_samples()
+            ocr_vqa_samples.update(coco_samples)
+            total_loaded += len(coco_samples)
+            
+        except Exception as e:
+            print(f"⚠️ Error loading HuggingFace datasets: {e}")
+            print("🔄 Falling back to COCO images...")
+            return self._get_fallback_coco_samples()
+        
+        print(f"📋 Successfully loaded {total_loaded} real OCR/VQA dataset samples")
+        print(f"   📊 ChartQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'ChartQA')}")
+        print(f"   📄 DocVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'DocVQA')}")
+        print(f"   📝 OCR-VQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'OCR-VQA')}")
+        print(f"   📝 COCO-Text: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'COCO-Text')}")
+        
+        if total_loaded < 10:
+            print(f"⚠️ WARNING: Only loaded {total_loaded} samples. Some datasets may be inaccessible.")
+            print("   Consider checking internet connectivity or dataset availability.")
+        elif total_loaded >= 15:
+            print(f"✅ Excellent! Loaded {total_loaded} real dataset samples for comprehensive SHIRG validation")
+        else:
+            print(f"✅ Good! Loaded {total_loaded} real dataset samples for SHIRG validation")
+        
+        return ocr_vqa_samples
+    
+    def _get_fallback_coco_samples(self):
+        """Get COCO images as fallback when HuggingFace datasets fail"""
+        
+        coco_samples = {}
         
         # COCO images with text content (working URLs)
         coco_text_samples = [
@@ -149,202 +275,55 @@ class RealOCRVQAValidator:
             }
         ]
         
-        # AI2 Diagram images (accessible academic dataset)
-        ai2_diagram_samples = [
-            {
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/1.png",
-                "question": "What is labeled as A in this diagram?",
-                "type": "AI2-Diagram",
-                "challenge": "Diagram component identification"
-            },
-            {
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/2.png", 
-                "question": "What process is shown in this scientific diagram?",
-                "type": "AI2-Diagram",
-                "challenge": "Scientific process understanding"
-            },
-            {
-                "url": "https://ai2-public-datasets.s3.amazonaws.com/diagrams/ai2d-images/abc_question_images/3.png",
-                "question": "What are the numbered components in this diagram?",
-                "type": "AI2-Diagram", 
-                "challenge": "Technical diagram reading"
-            }
-        ]
-        
-        # DocVQA dataset images (working URLs from HuggingFace)
-        docvqa_samples = [
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/0/image/image.jpg",
-                "question": "What is the document title?",
-                "type": "DocVQA",
-                "challenge": "Document title extraction"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/1/image/image.jpg",
-                "question": "What date is mentioned in this document?",
-                "type": "DocVQA",
-                "challenge": "Date extraction from document"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/DocVQA/--/lmms-lab--DocVQA/train/2/image/image.jpg",
-                "question": "What is the main number or value shown?",
-                "type": "DocVQA",
-                "challenge": "Numerical information extraction"
-            }
-        ]
-        
-        # InfographicsVQA samples (HuggingFace)
-        infographics_samples = [
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/InfographicsVQA/--/lmms-lab--InfographicsVQA/validation/0/image/image.jpg",
-                "question": "What is the main statistic presented?",
-                "type": "InfographicsVQA",
-                "challenge": "Infographic data extraction"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/InfographicsVQA/--/lmms-lab--InfographicsVQA/validation/1/image/image.jpg",
-                "question": "What percentage is highlighted?",
-                "type": "InfographicsVQA",
-                "challenge": "Percentage reading from infographics"
-            }
-        ]
-        
-        # TextCaps dataset (working URLs)
-        textcaps_samples = [
-            {
-                "url": "https://datasets-server.huggingface.co/assets/HuggingFaceM4/TextCaps/--/HuggingFaceM4--TextCaps/train/0/image/image.jpg",
-                "question": "What text is visible in this image?",
-                "type": "TextCaps",
-                "challenge": "General text detection"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/HuggingFaceM4/TextCaps/--/HuggingFaceM4--TextCaps/train/1/image/image.jpg",
-                "question": "What is written on the main object?",
-                "type": "TextCaps",
-                "challenge": "Object text reading"
-            }
-        ]
-        
-        # ScienceQA visual questions (HuggingFace)
-        scienceqa_samples = [
-            {
-                "url": "https://datasets-server.huggingface.co/assets/derek-thomas/ScienceQA/--/derek-thomas--ScienceQA/train/0/image/image.jpg",
-                "question": "What scientific concept is illustrated?",
-                "type": "ScienceQA",
-                "challenge": "Scientific diagram interpretation"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/derek-thomas/ScienceQA/--/derek-thomas--ScienceQA/train/1/image/image.jpg",
-                "question": "What measurements or values are shown?",
-                "type": "ScienceQA", 
-                "challenge": "Scientific measurement reading"
-            }
-        ]
-        
-        # PlotQA dataset (chart reading)
-        plotqa_samples = [
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/PlotQA/--/lmms-lab--PlotQA/train/0/image/image.jpg",
-                "question": "What is the highest value in this chart?",
-                "type": "PlotQA",
-                "challenge": "Chart value extraction"
-            },
-            {
-                "url": "https://datasets-server.huggingface.co/assets/lmms-lab/PlotQA/--/lmms-lab--PlotQA/train/1/image/image.jpg",
-                "question": "What trend is shown in this plot?",
-                "type": "PlotQA",
-                "challenge": "Chart trend analysis"
-            }
-        ]
-        
-        # Combine all real dataset samples
-        all_samples = (coco_text_samples + ai2_diagram_samples + docvqa_samples + 
-                      infographics_samples + textcaps_samples + scienceqa_samples + plotqa_samples)
-        
-        print(f"📋 Attempting to load {len(all_samples)} OCR/VQA samples...")
-        
-        # Load images with enhanced error handling and fallback
+        print("🔄 Loading fallback COCO images...")
         successful_loads = 0
-        for idx, sample_info in enumerate(all_samples):
+        
+        for idx, sample_info in enumerate(coco_text_samples):
             try:
-                sample_name = f"{sample_info['type'].lower().replace('-', '_')}_{idx:02d}"
-                print(f"🔄 Loading {sample_name} from {sample_info['type']}...")
+                sample_name = f"coco_text_{idx:02d}"
+                print(f"🔄 Loading {sample_name} from COCO...")
                 
-                # Handle URL-based samples with robust error handling
-                if 'url' in sample_info:
-                    # Enhanced headers for better compatibility
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                        'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Connection': 'keep-alive',
-                        'Upgrade-Insecure-Requests': '1'
-                    }
-                    
-                    try:
-                        # Download with extended timeout and retry logic
-                        response = requests.get(
-                            sample_info['url'], 
-                            timeout=45, 
-                            stream=True, 
-                            headers=headers,
-                            allow_redirects=True
-                        )
-                        response.raise_for_status()
-                        
-                        # Validate content type
-                        content_type = response.headers.get('content-type', '').lower()
-                        if not any(img_type in content_type for img_type in ['image/', 'jpeg', 'jpg', 'png', 'gif', 'webp']):
-                            print(f"⚠️ Warning: Unexpected content type for {sample_name}: {content_type}")
-                        
-                        # Load and process image
-                        image = Image.open(BytesIO(response.content)).convert('RGB')
-                        image = self._resize_for_shirg(image)
-                        
-                        ocr_vqa_samples[sample_name] = {
-                            'image': image,
-                            'question': sample_info['question'],
-                            'type': sample_info['type'],
-                            'challenge': sample_info['challenge'],
-                            'source': 'public_dataset',
-                            'url': sample_info['url']
-                        }
-                        successful_loads += 1
-                        print(f"✅ Loaded {sample_name} ({successful_loads}/{len(all_samples)})")
-                        
-                    except requests.exceptions.RequestException as e:
-                        print(f"⚠️ Failed to load {sample_info.get('type', 'unknown')} sample {idx}: {e}")
-                        continue
-                    except Exception as e:
-                        print(f"⚠️ Image processing failed for {sample_name}: {e}")
-                        continue
-                else:
-                    print(f"⚠️ No URL provided for sample {idx}")
-                    continue
+                # Enhanced headers for better compatibility
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept-Encoding': 'gzip, deflate',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+                
+                # Download with extended timeout and retry logic
+                response = requests.get(
+                    sample_info['url'], 
+                    timeout=45, 
+                    stream=True, 
+                    headers=headers,
+                    allow_redirects=True
+                )
+                response.raise_for_status()
+                
+                # Load and process image
+                image = Image.open(BytesIO(response.content)).convert('RGB')
+                image = self._resize_for_shirg(image)
+                
+                coco_samples[sample_name] = {
+                    'image': image,
+                    'question': sample_info['question'],
+                    'type': sample_info['type'],
+                    'challenge': sample_info['challenge'],
+                    'source': 'coco_fallback',
+                    'url': sample_info['url']
+                }
+                successful_loads += 1
+                print(f"✅ Loaded {sample_name} ({successful_loads}/{len(coco_text_samples)})")
                 
             except Exception as e:
-                print(f"⚠️ Unexpected error loading sample {idx}: {e}")
+                print(f"⚠️ Failed to load COCO sample {idx}: {e}")
                 continue
         
-        print(f"📋 Successfully loaded {successful_loads} real OCR/VQA dataset samples")
-        print(f"   📝 COCO-Text: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'COCO-Text')}")
-        print(f"   🔬 AI2-Diagram: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'AI2-Diagram')}")
-        print(f"   📄 DocVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'DocVQA')}")
-        print(f"   📊 InfographicsVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'InfographicsVQA')}")
-        print(f"   📝 TextCaps: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'TextCaps')}")
-        print(f"   🧪 ScienceQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'ScienceQA')}")
-        print(f"   📈 PlotQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'PlotQA')}")
-        
-        if successful_loads < 10:
-            print(f"⚠️ WARNING: Only loaded {successful_loads} samples. Some datasets may be inaccessible.")
-            print("   Consider checking internet connectivity or dataset availability.")
-        elif successful_loads >= 15:
-            print(f"✅ Excellent! Loaded {successful_loads} real dataset samples for comprehensive SHIRG validation")
-        else:
-            print(f"✅ Good! Loaded {successful_loads} real dataset samples for SHIRG validation")
-        
-        return ocr_vqa_samples
+        print(f"✅ Loaded {successful_loads} COCO fallback samples")
+        return coco_samples
     
     def _resize_for_shirg(self, image, target_size=672):
         """Resize image for SHIRG while maintaining aspect ratio"""
