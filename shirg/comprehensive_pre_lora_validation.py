@@ -751,13 +751,22 @@ class ComprehensiveValidator:
                     # Test with minimal target tokens to reduce memory usage
                     shirg_output = self.tower.forward_with_shirg(small_test, 256)  # Very small target
                     
-                    # Use only a small part for gradient computation
-                    if shirg_output.numel() > 100:
-                        loss = shirg_output.view(-1)[:100].mean()
+                    # GRADIENT-FIX: 2025-07-28 - Handle tuple return from forward_with_shirg
+                    # ISSUE: forward_with_shirg returns (tokens, coords) tuple, not just tokens
+                    # SOLUTION: Extract tokens from tuple for gradient computation
+                    # VALIDATION IMPACT: Fixes 'tuple' object has no attribute 'numel' error
+                    if isinstance(shirg_output, tuple):
+                        shirg_tokens = shirg_output[0]  # Extract tokens from (tokens, coords) tuple
                     else:
-                        loss = shirg_output.mean()
+                        shirg_tokens = shirg_output
                     
-                    if shirg_output.grad_fn is not None:
+                    # Use only a small part for gradient computation
+                    if shirg_tokens.numel() > 100:
+                        loss = shirg_tokens.view(-1)[:100].mean()
+                    else:
+                        loss = shirg_tokens.mean()
+                    
+                    if shirg_tokens.grad_fn is not None:
                         loss.backward()
                         
                         has_gradients = small_test.grad is not None
