@@ -574,7 +574,29 @@ class RealOCRVQAValidator:
         try:
             # Process image for SHIRG (672×672)
             shirg_image = image.resize((672, 672), Image.Resampling.LANCZOS)
-            image_tensor = process_images([shirg_image], self.image_processor, self.model.config)
+            
+            # SHIRG-FIX: 2025-07-28 - Bypass LaViDa process_images for SHIRG high-resolution
+            # ISSUE: process_images always resizes to 384×384 via image_processor.preprocess()
+            # SOLUTION: Directly use image_processor with custom size for SHIRG high-resolution
+            # LAVIDA IMPACT: Preserves original LaViDa functionality while enabling SHIRG
+            # SHIRG IMPACT: Ensures 672×672 images reach vision tower for 2304-token processing
+            
+            # Create custom image processor for SHIRG with 672×672 size
+            from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
+            shirg_image_processor = SigLipImageProcessor(
+                image_mean=self.image_processor.image_mean,
+                image_std=self.image_processor.image_std,
+                size=(672, 672),  # SHIRG high-resolution size
+                crop_size={"height": 672, "width": 672},
+                resample=self.image_processor.resample,
+                rescale_factor=self.image_processor.rescale_factor,
+                data_format=self.image_processor.data_format
+            )
+            
+            # Process with SHIRG image processor to preserve 672×672 resolution
+            image_tensor = shirg_image_processor.preprocess([shirg_image], return_tensors="pt")["pixel_values"]
+            if not isinstance(image_tensor, list):
+                image_tensor = [image_tensor]
             image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             image_sizes = [shirg_image.size]
             
