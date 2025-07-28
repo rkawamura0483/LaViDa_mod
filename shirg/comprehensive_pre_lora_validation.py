@@ -378,7 +378,10 @@ class ComprehensiveValidator:
             # Create test images with different patterns
             test_cases = {
                 "uniform": torch.ones(2, 3, 384, 384, device=device) * 0.5,
-                "gradient": torch.linspace(0, 1, 384*384, device=device).view(1, 1, 384, 384).expand(2, 3, 384, 384),
+                # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient compatibility
+                # ISSUE: view() operations fail during gradient computation
+                # SOLUTION: Use reshape() for safer tensor operations
+                "gradient": torch.linspace(0, 1, 384*384, device=device).reshape(1, 1, 384, 384).expand(2, 3, 384, 384),
                 "checkerboard": self._create_checkerboard_pattern(2, 3, 384, 384, device=device),
                 "text_like": self._create_text_pattern(2, 3, 384, 384, device=device),
                 "random": torch.randn(2, 3, 384, 384, device=device)
@@ -773,7 +776,8 @@ class ComprehensiveValidator:
                         # Create dummy loss (use smaller subset to reduce memory)
                         if output.numel() > 1000:
                             # Use only first 100 elements for gradient computation
-                            loss = output.view(-1)[:100].mean()
+                            # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient safety
+                            loss = output.reshape(-1)[:100].mean()
                         else:
                             loss = output.mean()
                         
@@ -848,7 +852,8 @@ class ComprehensiveValidator:
                     
                     # Use only a small part for gradient computation
                     if shirg_tokens.numel() > 100:
-                        loss = shirg_tokens.view(-1)[:100].mean()
+                        # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient safety
+                        loss = shirg_tokens.reshape(-1)[:100].mean()
                     else:
                         loss = shirg_tokens.mean()
                     
@@ -1316,7 +1321,8 @@ class ComprehensiveValidator:
             
             # Create patches from original image
             patches = original_images.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
-            patches = patches.contiguous().view(batch_size, 3, -1, patch_size, patch_size)
+            # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient compatibility
+            patches = patches.contiguous().reshape(batch_size, 3, -1, patch_size, patch_size)
             patches = patches.permute(0, 2, 1, 3, 4)  # [B, N_patches, C, patch_h, patch_w]
             patch_features = patches.mean(dim=(2, 3, 4))  # [B, N_patches] - average patch intensity
             
@@ -1329,7 +1335,8 @@ class ComprehensiveValidator:
                 pool_ratio = num_tokens // num_patches
                 if pool_ratio * num_patches == num_tokens:
                     # Perfect divisor - use reshape and mean
-                    token_features = extracted_tokens.view(batch_size, num_patches, pool_ratio, -1).mean(dim=(2, 3))
+                    # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient compatibility
+                    token_features = extracted_tokens.reshape(batch_size, num_patches, pool_ratio, -1).mean(dim=(2, 3))
                 else:
                     # Use adaptive pooling
                     token_features = F.adaptive_avg_pool1d(
@@ -1339,7 +1346,8 @@ class ComprehensiveValidator:
                 # Patches have higher resolution - pool to match tokens
                 pool_ratio = num_patches // num_tokens
                 if pool_ratio * num_tokens == num_patches:
-                    patch_features = patch_features.view(batch_size, num_tokens, pool_ratio).mean(dim=-1)
+                    # SHIRG-FIX: 2025-07-28 - Replace view with reshape for gradient compatibility
+                    patch_features = patch_features.reshape(batch_size, num_tokens, pool_ratio).mean(dim=-1)
                 else:
                     patch_features = F.adaptive_avg_pool1d(
                         patch_features.unsqueeze(1), num_tokens
