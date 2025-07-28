@@ -111,12 +111,29 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG LoRA: Enable gradients for coordinate embedding layer
         self.coord_rotary.requires_grad_(True)
         
-        # SHIRG LoRA: Enable gradients for SigLIP attention layers (blocks 0-7)
+        # SHIRG LoRA: Enable gradients for SigLIP attention layers (blocks 0-7) 
         if hasattr(self.vision_tower.vision_model.encoder, 'layers'):
             for i in range(min(8, len(self.vision_tower.vision_model.encoder.layers))):
-                if hasattr(self.vision_tower.vision_model.encoder.layers[i], 'self_attn'):
-                    self.vision_tower.vision_model.encoder.layers[i].self_attn.requires_grad_(True)
+                layer = self.vision_tower.vision_model.encoder.layers[i]
+                if hasattr(layer, 'self_attn'):
+                    # Enable gradients for all attention parameters
+                    for param in layer.self_attn.parameters():
+                        param.requires_grad_(True)
                     rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
+        
+        # SHIRG-FIX: 2025-07-28 - Enable gradients for embeddings to ensure proper gradient flow
+        # ISSUE: Embeddings frozen, preventing gradient flow back to inputs
+        # SOLUTION: Enable gradients on patch embeddings and position embeddings
+        if hasattr(self.vision_tower.vision_model, 'embeddings'):
+            embeddings = self.vision_tower.vision_model.embeddings
+            # Enable patch embedding gradients
+            if hasattr(embeddings, 'patch_embedding'):
+                embeddings.patch_embedding.requires_grad_(True)
+                rank0_print("SHIRG LoRA: Enabled gradients for patch embeddings")
+            # Enable position embedding gradients
+            if hasattr(embeddings, 'position_embedding'):
+                embeddings.position_embedding.requires_grad_(True)
+                rank0_print("SHIRG LoRA: Enabled gradients for position embeddings")
 
         self.is_loaded = True
 
@@ -178,11 +195,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Use already normalized hidden states from vision model
-                # ISSUE: Double normalization (once in vision model, once here) causing high magnitudes
-                # SOLUTION: Use the already processed last_hidden_state which includes post_layernorm
-                # LAVIDA IMPACT: Maintains correct token magnitudes for downstream processing
-                image_feature = image_forward_out.last_hidden_state.to(image.dtype)
+                # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+                # ISSUE: Using last_hidden_state (post-normalized) causes different token magnitudes than expected
+                # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa behavior
+                # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa token processing
+                image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
                 
                 # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
                 expected_tokens = (384 // 14) ** 2  # 729
@@ -195,11 +212,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 images.to(device=self.device, dtype=self.dtype), 
                 output_hidden_states=True
             )
-            # SHIRG-FIX: 2025-07-28 - Use already normalized hidden states from vision model
-            # ISSUE: Double normalization (once in vision model, once here) causing high magnitudes  
-            # SOLUTION: Use the already processed last_hidden_state which includes post_layernorm
-            # LAVIDA IMPACT: Maintains correct token magnitudes for downstream processing
-            image_features = image_forward_outs.last_hidden_state.to(images.dtype)
+            # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+            # ISSUE: Using last_hidden_state (post-normalized) causes different token magnitudes than expected
+            # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa behavior  
+            # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa token processing
+            image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
             
             # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
             expected_tokens = (384 // 14) ** 2  # 729

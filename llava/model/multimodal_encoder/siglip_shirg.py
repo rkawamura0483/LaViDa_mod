@@ -282,12 +282,12 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model  
-                    # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10)
-                    # SOLUTION: Use last_hidden_state which already includes post_layernorm
-                    # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
-                    # SHIRG IMPACT: Fixes information density and token selection quality
-                    image_feature = image_forward_out.last_hidden_state.to(image.dtype)
+                    # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+                    # ISSUE: Need to match original LaViDa token magnitude behavior exactly
+                    # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
+                    # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
+                    # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
+                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -296,12 +296,12 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model
-                # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10) 
-                # SOLUTION: Use last_hidden_state which already includes post_layernorm
-                # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
-                # SHIRG IMPACT: Fixes information density and token selection quality
-                hi_detail_tokens = image_forward_outs.last_hidden_state.to(images.dtype)
+                # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+                # ISSUE: Need to match original LaViDa token magnitude behavior exactly
+                # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
+                # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
+                # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
+                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
         
         # Validate token dimensions
         if len(hi_detail_tokens.shape) == 3:
@@ -432,12 +432,12 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model  
-                    # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10)
-                    # SOLUTION: Use last_hidden_state which already includes post_layernorm
-                    # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
-                    # SHIRG IMPACT: Fixes information density and token selection quality
-                    image_feature = image_forward_out.last_hidden_state.to(image.dtype)
+                    # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+                    # ISSUE: Need to match original LaViDa token magnitude behavior exactly
+                    # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
+                    # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
+                    # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
+                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -445,12 +445,12 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model
-                # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10) 
-                # SOLUTION: Use last_hidden_state which already includes post_layernorm
-                # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
-                # SHIRG IMPACT: Fixes information density and token selection quality
-                hi_detail_tokens = image_forward_outs.last_hidden_state.to(images.dtype)
+                # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
+                # ISSUE: Need to match original LaViDa token magnitude behavior exactly
+                # SOLUTION: Use hidden_states[-1] (raw features) to match original LaViDa
+                # LAVIDA IMPACT: Maintains exact compatibility with original LaViDa processing
+                # SHIRG IMPACT: Fixes token magnitude issues for proper selection quality
+                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
         
         # Validate expected token count (2304 for 672×672)
         expected_tokens = (672 // 14) ** 2  # 2304
