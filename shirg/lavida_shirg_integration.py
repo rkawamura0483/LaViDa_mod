@@ -42,8 +42,6 @@ except ImportError as e:
     print(f"⚠️ LaViDa imports not available: {e}")
     LAVIDA_AVAILABLE = False
 
-from shirg_selector import SHIRGSelector, create_shirg_selector
-
 class CoordinateEmbedding(nn.Module):
     """
     SHIRG-X: Centroid coordinate embedding layer
@@ -229,17 +227,17 @@ class LaViDaSHIRGWrapper:
                 nn.Softmax(dim=-1)
             )
             
-            # Move SHIRG-X components to correct device and dtype
-            if torch.cuda.is_available():
-                self.coord_embedding = self.coord_embedding.cuda().to(self.torch_dtype)
-                self.text_vision_aligner = self.text_vision_aligner.cuda().to(self.torch_dtype)
-                self.adaptive_k_head = self.adaptive_k_head.cuda().to(self.torch_dtype)
-                
-                # Add adaptive_k_head to vision tower for accessibility
-                if hasattr(self.model, 'get_vision_tower'):
-                    vision_tower = self.model.get_vision_tower()
-                    if vision_tower:
-                        vision_tower.adaptive_k_head = self.adaptive_k_head
+            # SHIRG-X-FIX: 2025-07-28 - Ensure all SHIRG-X components have consistent device/dtype
+            # ISSUE: SHIRG-X components may end up on different devices or with mismatched dtypes
+            # SOLUTION: Centralized device/dtype management for all SHIRG-X components
+            # RESEARCH IMPACT: Prevents tensor device/dtype mismatch errors during SHIRG-X processing
+            self._ensure_shirg_x_device_consistency()
+            
+            # Add adaptive_k_head to vision tower for accessibility
+            if hasattr(self.model, 'get_vision_tower'):
+                vision_tower = self.model.get_vision_tower()
+                if vision_tower:
+                    vision_tower.adaptive_k_head = self.adaptive_k_head
             
             # Setup conversation template
             self._setup_conversation_template()
@@ -277,6 +275,52 @@ class LaViDaSHIRGWrapper:
         self.model.config.shirg_alpha = self.shirg_config['alpha']
         
         print("✅ Applied LaViDa configuration fixes")
+    
+    def _ensure_shirg_x_device_consistency(self):
+        """
+        SHIRG-X-FIX: 2025-07-28 - Centralized device/dtype consistency for all SHIRG-X components
+        ISSUE: SHIRG-X components (coord_embedding, text_vision_aligner, adaptive_k_head) may be on different devices
+        SOLUTION: Move all components to model's device with correct dtype
+        RESEARCH IMPACT: Prevents device/dtype mismatch errors during SHIRG-X forward passes
+        """
+        # Get target device and dtype from the main model
+        target_device = self.model.device if hasattr(self.model, 'device') else 'cuda' if torch.cuda.is_available() else 'cpu'
+        target_dtype = self.torch_dtype
+        
+        # List of SHIRG-X components to synchronize
+        shirg_x_components = [
+            ('coord_embedding', self.coord_embedding),
+            ('text_vision_aligner', self.text_vision_aligner), 
+            ('adaptive_k_head', self.adaptive_k_head)
+        ]
+        
+        for component_name, component in shirg_x_components:
+            if component is not None:
+                try:
+                    # Move component to target device and dtype
+                    component = component.to(device=target_device, dtype=target_dtype)
+                    
+                    # Update the reference
+                    setattr(self, component_name, component)
+                    
+                    if self.shirg_config.get('debug', False):
+                        print(f"✅ {component_name} moved to {target_device} with dtype {target_dtype}")
+                        
+                except Exception as e:
+                    print(f"⚠️ Failed to move {component_name} to {target_device}: {e}")
+        
+        # Special handling for vision tower components
+        if hasattr(self.model, 'get_vision_tower'):
+            vision_tower = self.model.get_vision_tower()
+            if vision_tower and hasattr(vision_tower, 'adaptive_k_head'):
+                try:
+                    vision_tower.adaptive_k_head = vision_tower.adaptive_k_head.to(
+                        device=target_device, dtype=target_dtype
+                    )
+                    if self.shirg_config.get('debug', False):
+                        print(f"✅ Vision tower adaptive_k_head moved to {target_device}")
+                except Exception as e:
+                    print(f"⚠️ Failed to move vision tower adaptive_k_head: {e}")
     
     def _setup_conversation_template(self):
         """Setup LaViDa conversation template with fallback"""
@@ -372,11 +416,65 @@ class LaViDaSHIRGWrapper:
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🔍 Using SHIRG-X dual-scale processing")
                                 
-                                dual_scale_features, coord_embeddings = vision_tower.forward_with_shirg_x(
-                                    images, 
-                                    text_embeddings=wrapper._current_question_tokens,
-                                    budget=wrapper.shirg_config.get('budget', 768)
-                                )
+                                # SHIRG-X-FIX: 2025-07-28 - Robust parameter handling for forward_with_shirg_x
+                                # ISSUE: Need to handle various parameter configurations safely
+                                # SOLUTION: Validate parameters and provide safe defaults
+                                # RESEARCH IMPACT: Ensures SHIRG-X method is called correctly in all scenarios
+                                
+                                try:
+                                    # Get budget from config with validation
+                                    budget = wrapper.shirg_config.get('budget', 768)
+                                    if budget not in [512, 768, 1024]:
+                                        if wrapper.shirg_config.get('debug', False):
+                                            print(f"⚠️ Invalid budget {budget}, using 768")
+                                        budget = 768
+                                    
+                                    # Ensure text embeddings are properly formatted
+                                    text_embeddings = wrapper._current_question_tokens
+                                    if text_embeddings is not None:
+                                        # Validate text embeddings shape and dtype
+                                        if text_embeddings.dim() != 3:
+                                            if wrapper.shirg_config.get('debug', False):
+                                                print(f"⚠️ Reshaping text embeddings: {text_embeddings.shape}")
+                                            text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
+                                        
+                                        # Ensure text embeddings are on correct device
+                                        if text_embeddings.device != images.device:
+                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
+                                    
+                                    # SHIRG-X-FIX: 2025-07-28 - Pre-process device/dtype consistency check
+                                    # ISSUE: Need to ensure all components are ready before SHIRG-X processing
+                                    # SOLUTION: Final consistency check right before SHIRG-X call
+                                    # RESEARCH IMPACT: Prevents tensor operation failures during SHIRG-X forward pass
+                                    if hasattr(wrapper, '_ensure_shirg_x_device_consistency'):
+                                        wrapper._ensure_shirg_x_device_consistency()
+                                    
+                                    # SHIRG-X-FIX: 2025-07-28 - Monitor GPU memory before token processing
+                                    # ISSUE: SHIRG-X processes 3.4x more tokens which could cause OOM
+                                    # SOLUTION: Check memory before processing and warn if approaching limits
+                                    # RESEARCH IMPACT: Prevents OOM failures during SHIRG-X dual-scale processing
+                                    if hasattr(wrapper, 'check_gpu_memory_shirg_x'):
+                                        memory_info = wrapper.check_gpu_memory_shirg_x("before SHIRG-X")
+                                        if memory_info.get("level") == "critical":
+                                            # Try to free some memory before proceeding
+                                            torch.cuda.empty_cache()
+                                            print("🧹 Cleared CUDA cache before SHIRG-X processing")
+                                    
+                                    # Call SHIRG-X with validated parameters
+                                    dual_scale_features, coord_embeddings = vision_tower.forward_with_shirg_x(
+                                        images=images, 
+                                        text_embeddings=text_embeddings,
+                                        budget=budget
+                                    )
+                                    
+                                    # Monitor memory after SHIRG-X processing
+                                    if hasattr(wrapper, 'check_gpu_memory_shirg_x'):
+                                        wrapper.check_gpu_memory_shirg_x("after SHIRG-X")
+                                    
+                                except Exception as shirg_x_error:
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"❌ SHIRG-X forward_with_shirg_x failed: {shirg_x_error}")
+                                    raise shirg_x_error
                                 
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🎯 SHIRG-X dual-scale: {dual_scale_features.shape}")
@@ -675,33 +773,36 @@ class LaViDaSHIRGWrapper:
                     with torch.no_grad():
                         question_embeddings = self.model.get_model().embed_tokens(question_tokens)  # [1, seq_len, 4096]
                         
-                        # SHIRG-X-FIX: 2025-07-28 - Use learned text-vision aligner for proper dimension alignment
-                        # ISSUE: Text embeddings (4096) and vision features (1152) have different dimensions
-                        # SOLUTION: Use dedicated learned alignment layer with proper initialization
-                        # RESEARCH IMPACT: Preserves semantic meaning while enabling cross-modal similarity computation
+                        # SHIRG-X-FIX: 2025-07-28 - Consolidated text-vision alignment using learned aligner only
+                        # ISSUE: Multiple fallback mechanisms cause inconsistent text-vision alignment
+                        # SOLUTION: Use only the learned text_vision_aligner for consistent behavior
+                        # RESEARCH IMPACT: Ensures stable cross-modal similarity computation for SHIRG-X
                         
                         text_dim = question_embeddings.shape[-1]  # 4096 (LLaDA text embedding size)
                         vision_dim = 1152  # SigLIP hidden size
                         
                         if text_dim != vision_dim:
-                            # Use the learned text-vision aligner
-                            if hasattr(self, 'text_vision_aligner'):
-                                question_embeddings = self.text_vision_aligner(question_embeddings)
-                                
-                                if self.shirg_config.get('debug', False):
-                                    print(f"✅ Using learned text-vision aligner: {text_dim} -> {vision_dim}")
-                            else:
-                                # Fallback: simple linear projection
-                                if not hasattr(self, '_fallback_text_projector'):
-                                    self._fallback_text_projector = torch.nn.Linear(
-                                        text_dim, vision_dim, bias=False
-                                    ).to(device=question_embeddings.device, dtype=question_embeddings.dtype)
-                                    torch.nn.init.xavier_uniform_(self._fallback_text_projector.weight)
-                                    
-                                    if self.shirg_config.get('debug', False):
-                                        print(f"⚠️ Using fallback projection: {text_dim} -> {vision_dim}")
-                                
-                                question_embeddings = self._fallback_text_projector(question_embeddings)
+                            # Always use the learned text-vision aligner (initialized in load_model)
+                            if not hasattr(self, 'text_vision_aligner'):
+                                raise RuntimeError("text_vision_aligner not initialized. Call load_model() first.")
+                            
+                            # Ensure aligner is on correct device/dtype
+                            if (self.text_vision_aligner.align_layer.weight.device != question_embeddings.device or
+                                self.text_vision_aligner.align_layer.weight.dtype != question_embeddings.dtype):
+                                self.text_vision_aligner = self.text_vision_aligner.to(
+                                    device=question_embeddings.device, 
+                                    dtype=question_embeddings.dtype
+                                )
+                            
+                            # Apply learned alignment
+                            question_embeddings = self.text_vision_aligner(question_embeddings)
+                            
+                            if self.shirg_config.get('debug', False):
+                                print(f"✅ Text-vision alignment: {text_dim} -> {vision_dim} (learned aligner)")
+                                print(f"   Input shape: {question_embeddings.shape}")
+                        else:
+                            if self.shirg_config.get('debug', False):
+                                print(f"✅ No alignment needed: text_dim == vision_dim ({text_dim})")
                     
                     # Store for SHIRG access during encode_images
                     self._current_question_tokens = question_embeddings
@@ -887,6 +988,58 @@ class LaViDaSHIRGWrapper:
             torch.cuda.synchronize()
             
         print("✅ LaViDa-SHIRG model cleanup complete")
+
+    def check_gpu_memory_shirg_x(self, context="general"):
+        """
+        SHIRG-X-FIX: 2025-07-28 - GPU memory monitoring for 40GB constraint
+        ISSUE: SHIRG-X processes 2,448 tokens vs LaViDa's 729 = 3.4x memory increase
+        SOLUTION: Proactive memory monitoring with warnings and cleanup suggestions
+        RESEARCH IMPACT: Prevents OOM failures during SHIRG-X token processing
+        
+        Args:
+            context: Description of current operation for logging
+            
+        Returns:
+            memory_info: Dictionary with memory statistics
+        """
+        if not torch.cuda.is_available():
+            return {"available": False, "warning": "CUDA not available"}
+        
+        # Get memory statistics
+        allocated_gb = torch.cuda.memory_allocated() / 1e9
+        reserved_gb = torch.cuda.memory_reserved() / 1e9
+        total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        free_gb = total_gb - allocated_gb
+        
+        memory_info = {
+            "allocated_gb": allocated_gb,
+            "reserved_gb": reserved_gb,
+            "total_gb": total_gb,
+            "free_gb": free_gb,
+            "usage_percent": (allocated_gb / total_gb) * 100,
+            "context": context
+        }
+        
+        # SHIRG-X specific thresholds (conservatively allow for 3.4x token increase)
+        warning_threshold = 30.0  # Warn at 30GB (75% of 40GB)
+        critical_threshold = 35.0  # Critical at 35GB (87.5% of 40GB)
+        
+        if allocated_gb > critical_threshold:
+            print(f"🚨 CRITICAL GPU Memory ({context}): {allocated_gb:.1f}GB / {total_gb:.1f}GB ({memory_info['usage_percent']:.1f}%)")
+            print(f"   ⚠️ SHIRG-X may cause OOM with 3.4x token increase!")
+            print(f"   💡 Consider: torch.cuda.empty_cache() or reducing batch size")
+            memory_info["level"] = "critical"
+            
+        elif allocated_gb > warning_threshold:
+            print(f"⚠️ High GPU Memory ({context}): {allocated_gb:.1f}GB / {total_gb:.1f}GB ({memory_info['usage_percent']:.1f}%)")
+            print(f"   📊 SHIRG-X processes {2448} tokens vs LaViDa's {729} (3.4x increase)")
+            memory_info["level"] = "warning"
+            
+        elif self.shirg_config.get('debug', False):
+            print(f"✅ GPU Memory ({context}): {allocated_gb:.1f}GB / {total_gb:.1f}GB ({memory_info['usage_percent']:.1f}%)")
+            memory_info["level"] = "normal"
+        
+        return memory_info
 
 
 def create_lavida_shirg_model(shirg_config: Optional[Dict[str, Any]] = None) -> LaViDaSHIRGWrapper:

@@ -814,7 +814,21 @@ class SigLipVisionTower(nn.Module):
         extraction_time = (time.time() - start_time) * 1000
         if torch.cuda.is_available():
             current_memory = torch.cuda.memory_allocated() / 1e9
-            rank0_print(f"SHIRG-X: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB")
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            usage_percent = (current_memory / total_memory) * 100
+            
+            # SHIRG-X-FIX: 2025-07-28 - Enhanced memory monitoring for dual-scale extraction
+            # ISSUE: Need to track memory usage during 2,304 + 144 token processing
+            # SOLUTION: Detailed memory reporting with warnings for high usage
+            # RESEARCH IMPACT: Helps identify memory bottlenecks in SHIRG-X pipeline
+            
+            if current_memory > 35.0:  # Critical threshold
+                rank0_print(f"🚨 SHIRG-X: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB/{total_memory:.1f}GB ({usage_percent:.1f}%) - CRITICAL!")
+                rank0_print(f"   ⚠️ Risk of OOM with additional coordinate processing!")
+            elif current_memory > 30.0:  # Warning threshold
+                rank0_print(f"⚠️ SHIRG-X: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB/{total_memory:.1f}GB ({usage_percent:.1f}%) - HIGH")
+            else:
+                rank0_print(f"SHIRG-X: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB ({usage_percent:.1f}%)")
         
         return hi_detail_tokens, lo_res_scaffold
 
