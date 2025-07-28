@@ -169,7 +169,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                     output_hidden_states=True
                 )
-                image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization
+                # ISSUE: Raw hidden states have incorrect magnitudes
+                # SOLUTION: Apply post_layernorm from vision model
+                # LAVIDA IMPACT: Ensures proper token normalization for LaViDa processing
+                raw_features = image_forward_out.hidden_states[-1]
+                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                    image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
+                else:
+                    image_feature = raw_features.to(image.dtype)
                 
                 # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
                 expected_tokens = (384 // 14) ** 2  # 729
@@ -182,7 +190,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 images.to(device=self.device, dtype=self.dtype), 
                 output_hidden_states=True
             )
-            image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
+            # SHIRG-FIX: 2025-07-28 - Apply post layer normalization
+            # ISSUE: Raw hidden states have incorrect magnitudes
+            # SOLUTION: Apply post_layernorm from vision model
+            # LAVIDA IMPACT: Ensures proper token normalization for LaViDa processing
+            raw_features = image_forward_outs.hidden_states[-1]
+            if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                image_features = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
+            else:
+                image_features = raw_features.to(images.dtype)
             
             # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
             expected_tokens = (384 // 14) ** 2  # 729

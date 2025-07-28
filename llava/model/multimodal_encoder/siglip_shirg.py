@@ -63,21 +63,34 @@ class RotaryCoordinateEmbedding(nn.Module):
         inv_freq = self.inv_freq.to(coords.device)
         
         # X-axis rotary encoding
-        x_freqs = torch.outer(x_pos.flatten(), inv_freq).view(B, N, half_dim)
+        # SHIRG-FIX: 2025-07-28 - Fix tensor reshape error in rotary encoding
+        # ISSUE: torch.outer creates wrong shape for batched input, causing "shape invalid for input size" error
+        # SOLUTION: Use einsum for proper batch-aware computation
+        # LAVIDA IMPACT: Maintains gradient flow for LoRA training
+        # SHIRG IMPACT: Fixes coordinate embedding generation for token selection
+        x_freqs = torch.einsum('bni,j->bnj', x_pos, inv_freq)  # [B, N, half_dim/2]
         x_sin = torch.sin(x_freqs)
         x_cos = torch.cos(x_freqs)
         
         # Y-axis rotary encoding  
-        y_freqs = torch.outer(y_pos.flatten(), inv_freq).view(B, N, half_dim)
+        y_freqs = torch.einsum('bni,j->bnj', y_pos, inv_freq)  # [B, N, half_dim/2]
         y_sin = torch.sin(y_freqs)
         y_cos = torch.cos(y_freqs)
         
         # Combine rotary components
-        rotary_x = torch.cat([x_sin, x_cos], dim=-1)  # [B, N, embed_dim]
-        rotary_y = torch.cat([y_sin, y_cos], dim=-1)  # [B, N, embed_dim]
+        # SHIRG-FIX: 2025-07-28 - Correct rotary embedding dimensions
+        # ISSUE: Concatenating sin/cos produces wrong dimension (half of embed_dim, not full)
+        # SOLUTION: Each rotary component is half_dim/2, so concatenation gives half_dim
+        # LAVIDA IMPACT: Ensures correct embedding dimensions for projection layers
+        # SHIRG IMPACT: Fixes coordinate embedding shape for proper token augmentation
+        rotary_x = torch.cat([x_sin, x_cos], dim=-1)  # [B, N, half_dim]
+        rotary_y = torch.cat([y_sin, y_cos], dim=-1)  # [B, N, half_dim]
+        
+        # Combine X and Y rotary embeddings to get full embed_dim
+        rotary_combined = torch.cat([rotary_x, rotary_y], dim=-1)  # [B, N, embed_dim]
         
         # Add rotary encoding to coordinate projection
-        rotary_embeds = coord_embeds + 0.1 * (rotary_x + rotary_y)
+        rotary_embeds = coord_embeds + 0.1 * rotary_combined
         
         return rotary_embeds
 
@@ -258,7 +271,16 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                    # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
+                    # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
+                    # SOLUTION: Apply post_layernorm like the original SigLIP implementation
+                    # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                    # SHIRG IMPACT: Fixes information density and token selection quality
+                    raw_features = image_forward_out.hidden_states[-1]
+                    if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                        image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
+                    else:
+                        image_feature = raw_features.to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -267,7 +289,16 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
+                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
+                # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
+                # SOLUTION: Apply post_layernorm like the original SigLIP implementation
+                # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                # SHIRG IMPACT: Fixes information density and token selection quality
+                raw_features = image_forward_outs.hidden_states[-1]
+                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                    hi_detail_tokens = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
+                else:
+                    hi_detail_tokens = raw_features.to(images.dtype)
         
         # Validate token dimensions
         if len(hi_detail_tokens.shape) == 3:
@@ -288,7 +319,12 @@ class SigLipShirgExtensions:
             grid_size = int(math.sqrt(N))  # Use floor value
         
         # Reshape to spatial grid
-        spatial_tokens = hi_detail_tokens.view(B, grid_size, grid_size, D)  # [B, 48, 48, D]
+        # SHIRG-FIX: 2025-07-28 - Ensure tensor is contiguous for view operation
+        # ISSUE: Non-contiguous tensor causes "view size is not compatible" error during gradient flow
+        # SOLUTION: Make tensor contiguous before view operation
+        # LAVIDA IMPACT: Ensures gradient flow works properly for LoRA training
+        # SHIRG IMPACT: Fixes gradient computation through spatial reshaping
+        spatial_tokens = hi_detail_tokens.contiguous().view(B, grid_size, grid_size, D)  # [B, 48, 48, D]
         
         # Apply 8×8 average pooling to create 6×6 scaffold grid (36 tokens)
         # But we want 64 tokens (8×8), so use 6×6 pooling on 48×48 to get 8×8
@@ -303,7 +339,12 @@ class SigLipShirgExtensions:
         ).permute(0, 2, 3, 1)  # [B, 8, 8, D]
         
         # Flatten scaffold: [B, 8, 8, D] → [B, 64, D]
-        lo_res_scaffold = lo_res_spatial.view(B, scaffold_grid_size * scaffold_grid_size, D)
+        # SHIRG-FIX: 2025-07-28 - Ensure tensor is contiguous for view operation
+        # ISSUE: Permute operations make tensor non-contiguous
+        # SOLUTION: Make tensor contiguous before view
+        # LAVIDA IMPACT: Maintains gradient flow through scaffold tokens
+        # SHIRG IMPACT: Ensures proper scaffold token generation
+        lo_res_scaffold = lo_res_spatial.contiguous().view(B, scaffold_grid_size * scaffold_grid_size, D)
         
         # Validate lo-res scaffold count
         expected_scaffold = scaffold_grid_size * scaffold_grid_size  # 64 tokens
@@ -388,7 +429,16 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
+                    # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
+                    # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
+                    # SOLUTION: Apply post_layernorm like the original SigLIP implementation
+                    # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                    # SHIRG IMPACT: Fixes information density and token selection quality
+                    raw_features = image_forward_out.hidden_states[-1]
+                    if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                        image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
+                    else:
+                        image_feature = raw_features.to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -396,7 +446,16 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                hi_detail_tokens = image_forward_outs.hidden_states[-1].to(images.dtype)
+                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
+                # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
+                # SOLUTION: Apply post_layernorm like the original SigLIP implementation
+                # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                # SHIRG IMPACT: Fixes information density and token selection quality
+                raw_features = image_forward_outs.hidden_states[-1]
+                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                    hi_detail_tokens = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
+                else:
+                    hi_detail_tokens = raw_features.to(images.dtype)
         
         # Validate expected token count (2304 for 672×672)
         expected_tokens = (672 // 14) ** 2  # 2304
@@ -719,7 +778,8 @@ class SigLipShirgExtensions:
         B, N, D = tokens.shape
         
         # Reshape to spatial grid
-        spatial_tokens = tokens.view(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
+        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for gradient flow
+        spatial_tokens = tokens.contiguous().view(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
         
         # Compute local variance using 3×3 convolution as proxy for neighbor distance
         kernel = torch.ones(1, 1, 3, 3, device=tokens.device) / 9.0
@@ -733,7 +793,8 @@ class SigLipShirgExtensions:
         local_variance = F.conv2d(variance, kernel, padding=1, groups=D)
         
         # Average across feature dimensions and reshape
-        neighbor_distances = local_variance.mean(dim=1).view(B, -1)  # [B, N]
+        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operation
+        neighbor_distances = local_variance.mean(dim=1).contiguous().view(B, -1)  # [B, N]
         
         return neighbor_distances
 
@@ -758,8 +819,9 @@ class SigLipShirgExtensions:
         H = W = int(math.sqrt(N))
         
         # Reshape for spatial operations
-        spatial_tokens = tokens.view(B, H, W, D)
-        spatial_scores = scores.view(B, H, W)
+        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensors for view operations
+        spatial_tokens = tokens.contiguous().view(B, H, W, D)
+        spatial_scores = scores.contiguous().view(B, H, W)
         
         # Apply 3×3 smoothing filter to tokens based on score similarities
         smoothed_tokens = F.avg_pool2d(
@@ -777,7 +839,8 @@ class SigLipShirgExtensions:
         merged_spatial = (1 - blend_weight) * spatial_tokens + blend_weight * smoothed_tokens
         
         # Reshape back
-        merged_tokens = merged_spatial.view(B, N, D)
+        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operation
+        merged_tokens = merged_spatial.contiguous().view(B, N, D)
         merged_coords = coords  # Coordinates remain unchanged in this simplified version
         
         return merged_tokens, merged_coords
