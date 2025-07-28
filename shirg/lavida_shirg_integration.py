@@ -253,8 +253,8 @@ class LaViDaSHIRGWrapper:
             self.model.model.set_activation_checkpointing(None)
             self.model.requires_grad_(False)
             
-            # Initialize SHIRG selector
-            self.shirg_selector = create_shirg_selector(self.shirg_config)
+            # SHIRG selector is already integrated into the vision tower
+            # No separate selector needed - SHIRG is implemented in SigLipShirgExtensions
             
             
             # SHIRG-X-FIX: Initialize text-vision aligner for dimension compatibility
