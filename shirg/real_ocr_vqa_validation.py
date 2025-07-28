@@ -6,6 +6,7 @@ Test SHIRG token selection on actual OCR/VQA dataset images with questions
 
 import os
 import sys
+import math
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -1176,11 +1177,19 @@ class RealOCRVQAValidator:
         """Extract actual SHIRG token selection metadata from vision tower"""
         
         try:
+            print("DEBUG: Starting metadata extraction...")
+            step = 0
             # Process image to get vision tokens (same as SHIRG inference)
+            step += 1
+            print(f"DEBUG: Step {step} - Resizing image...")
             shirg_image = image.resize((672, 672), Image.Resampling.LANCZOS)
             
             # Create custom image processor for 672×672
+            step += 1
+            print(f"DEBUG: Step {step} - Creating custom image processor...")
             from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
+            step += 1
+            print(f"DEBUG: Step {step} - Initializing SigLipImageProcessor...")
             shirg_image_processor = SigLipImageProcessor(
                 image_mean=self.image_processor.image_mean,
                 image_std=self.image_processor.image_std,
@@ -1219,10 +1228,19 @@ class RealOCRVQAValidator:
                     question_embeddings = None
             
             # Extract high-resolution tokens through vision tower
+            step += 1
+            print(f"DEBUG: Step {step} - Getting vision tower...")
             vision_tower = self.model.get_vision_tower()
+            step += 1
+            print(f"DEBUG: Step {step} - Checking vision tower methods...")
             if vision_tower and hasattr(vision_tower, 'extract_shirg_x_tokens'):
+                step += 1
+                print(f"DEBUG: Step {step} - Calling extract_shirg_x_tokens...")
+                print(f"DEBUG: image_tensor shape: {image_tensor[0].unsqueeze(0).shape}")
                 # Get dual-scale tokens using the existing SHIRG implementation
                 hi_detail_tokens, lo_res_scaffold = vision_tower.extract_shirg_x_tokens(image_tensor[0].unsqueeze(0))
+                step += 1
+                print(f"DEBUG: Step {step} - Successfully extracted tokens: hi_detail={hi_detail_tokens.shape}, scaffold={lo_res_scaffold.shape}")
                 
                 # Use the existing SHIRG distance-aware selection to get real selection metadata
                 if hasattr(vision_tower, 'distance_aware_selection'):
@@ -1231,11 +1249,6 @@ class RealOCRVQAValidator:
                         # Compute importance scores using existing SHIRG methodology
                         B, N, D = hi_detail_tokens.shape
                         H = W = int(math.sqrt(N))  # Should be 48x48 for 2304 tokens
-                        
-                        # TENSOR-FIX: 2025-07-28 - Add required math import and fix tensor operations
-                        # ISSUE: math module not imported in local scope, tensor operations may fail
-                        # SOLUTION: Import math locally and add proper tensor validation
-                        import math
                         
                         # Use the existing SHIRG importance scoring implementation
                         if question_embeddings is not None and isinstance(question_embeddings, torch.Tensor) and question_embeddings.dim() >= 2:
@@ -1329,6 +1342,9 @@ class RealOCRVQAValidator:
                         
         except Exception as e:
             print(f"⚠️ SHIRG metadata extraction failed: {e}")
+            import traceback
+            print(f"Full traceback:")
+            traceback.print_exc()
             return None
         
         return None
