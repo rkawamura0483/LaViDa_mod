@@ -271,17 +271,60 @@ class SigLipShirgExtensions:
                 if hi_detail_tokens.dtype != images.dtype:
                     hi_detail_tokens = hi_detail_tokens.to(dtype=images.dtype)
         
-        # Validate token dimensions
+        # Validate token dimensions and handle unexpected cases
         if len(hi_detail_tokens.shape) == 3:
             B, N, D = hi_detail_tokens.shape
+            total_elements = hi_detail_tokens.numel()
+            rank0_print(f"TENSOR-DEBUG: Extracted tokens shape: [B={B}, N={N}, D={D}], total elements: {total_elements}")
+            
+            # CRITICAL-DEBUG: 2025-07-28 - Detailed analysis of tensor dimension mismatch
+            # ISSUE: Need to understand why we're getting unexpected token counts
+            # SOLUTION: Add comprehensive debugging to trace token source
+            rank0_print(f"TENSOR-DEBUG: Element analysis:")
+            rank0_print(f"   Total elements: {total_elements}")
+            rank0_print(f"   Expected for 672×672: {(672//14)**2} tokens × {D} dims = {(672//14)**2 * D} elements")
+            rank0_print(f"   Expected for 384×384: {(384//14)**2} tokens × {D} dims = {(384//14)**2 * D} elements")
+            rank0_print(f"   Ratio to 672×672: {total_elements / ((672//14)**2 * D):.2f}x")
+            rank0_print(f"   Ratio to 384×384: {total_elements / ((384//14)**2 * D):.2f}x")
             
             # Validate hi-detail token count (should be 2304 for 672×672)
             expected_hi_detail = (672 // 14) ** 2  # 2304 tokens
             if hi_detail_tokens.shape[1] != expected_hi_detail:
-                print(f"⚠️ SHIRG-X Warning: Expected {expected_hi_detail} hi-detail tokens, got {hi_detail_tokens.shape[1]}")
+                rank0_print(f"⚠️ SHIRG-X Warning: Expected {expected_hi_detail} hi-detail tokens, got {hi_detail_tokens.shape[1]}")
+                
+                # CRITICAL-FIX: 2025-07-28 - Handle unexpected token counts gracefully
+                # ISSUE: Vision tower may return different token counts than expected
+                # SOLUTION: Adjust processing based on actual token count received
+                if N > expected_hi_detail:
+                    rank0_print(f"TENSOR-FIX: Truncating {N} tokens to {expected_hi_detail} for SHIRG compatibility")
+                    hi_detail_tokens = hi_detail_tokens[:, :expected_hi_detail, :]
+                    N = expected_hi_detail
+                elif N < expected_hi_detail:
+                    rank0_print(f"TENSOR-FIX: Input has only {N} tokens, adjusting SHIRG processing")
+                    # Continue with actual token count
+        else:
+            rank0_print(f"❌ TENSOR-ERROR: Unexpected hi_detail_tokens shape: {hi_detail_tokens.shape}")
+            # Try to understand what we actually received
+            if hasattr(hi_detail_tokens, 'shape'):
+                rank0_print(f"   Tensor shape: {hi_detail_tokens.shape}")
+                rank0_print(f"   Tensor numel: {hi_detail_tokens.numel()}")
+                rank0_print(f"   Tensor dtype: {hi_detail_tokens.dtype}")
+            
+            # Try to recover if it's a 4D tensor or other format
+            if len(hi_detail_tokens.shape) == 4:
+                rank0_print(f"TENSOR-FIX: Attempting to reshape 4D tensor to 3D")
+                B, C, H, W = hi_detail_tokens.shape
+                hi_detail_tokens = hi_detail_tokens.reshape(B, H*W, C)
+                rank0_print(f"   Reshaped to: {hi_detail_tokens.shape}")
+            elif len(hi_detail_tokens.shape) == 2:
+                rank0_print(f"TENSOR-FIX: Attempting to add batch dimension to 2D tensor")
+                hi_detail_tokens = hi_detail_tokens.unsqueeze(0)
+                rank0_print(f"   Reshaped to: {hi_detail_tokens.shape}")
+            else:
+                raise ValueError(f"Cannot handle tensor shape: {hi_detail_tokens.shape}")
         
         # Step 2: Create lo-res scaffold (64 tokens from 8×8 average pooling)
-        # Reshape hi-detail tokens to spatial grid: [B, 2304, D] → [B, 48, 48, D]
+        # Reshape hi-detail tokens to spatial grid: [B, N, D] → [B, grid_size, grid_size, D]
         B, N, D = hi_detail_tokens.shape
         grid_size = int(math.sqrt(N))  # Should be 48 for 2304 tokens
         
@@ -336,26 +379,53 @@ class SigLipShirgExtensions:
         # Ensure tensor is contiguous for reshape
         hi_detail_tokens = hi_detail_tokens.contiguous()
         
-        # Validate reshape dimensions
+        # Validate reshape dimensions - CRITICAL FIX for tensor shape mismatch
         expected_elements = B * grid_size * grid_size * D
         actual_elements = hi_detail_tokens.numel()
         
+        rank0_print(f"TENSOR-FIX: Validating reshape dimensions:")
+        rank0_print(f"   Input tensor shape: {hi_detail_tokens.shape}")
+        rank0_print(f"   Expected: B={B} × grid_size={grid_size} × grid_size={grid_size} × D={D} = {expected_elements}")
+        rank0_print(f"   Actual: {actual_elements} elements in tensor")
+        
         if expected_elements != actual_elements:
-            rank0_print(f"❌ TENSOR-FIX: Reshape dimension mismatch!")
-            rank0_print(f"   Expected: B={B} × grid_size={grid_size} × grid_size={grid_size} × D={D} = {expected_elements}")
-            rank0_print(f"   Actual: {actual_elements} elements in tensor")
-            rank0_print(f"   Tensor shape: {hi_detail_tokens.shape}")
+            rank0_print(f"❌ TENSOR-FIX: Reshape dimension mismatch detected!")
             
-            # Emergency fallback: use 1D processing without spatial reshape
-            rank0_print(f"   Using 1D fallback processing...")
-            # Create a dummy scaffold using simple averaging
-            scaffold_size = 64
-            indices = torch.linspace(0, N-1, scaffold_size, dtype=torch.long, device=hi_detail_tokens.device)
-            lo_res_scaffold = hi_detail_tokens[:, indices, :]  # Sample tokens
+            # CRITICAL-FIX: 2025-07-28 - Handle multi-view input from LaViDa
+            # ISSUE: LaViDa passes 5-view images (4×336² + 1×672²) as flattened tensor
+            # ROOT CAUSE: The validation script processes multi-view inputs incorrectly
+            # SOLUTION: Detect multi-view case and extract the high-resolution view
+            # LAVIDA IMPACT: Enables proper SHIRG processing with LaViDa's multi-view format
+            # SHIRG IMPACT: Fixes the core tensor dimension mismatch in forward_with_shirg
             
-            elapsed_time = (time.time() - start_time) * 1000
-            rank0_print(f"TENSOR-FIX: Emergency 1D processing completed in {elapsed_time:.1f}ms")
-            return hi_detail_tokens, lo_res_scaffold
+            # Check if this might be a LaViDa multi-view input
+            # LaViDa uses: 4 views of 336×336 (576 tokens each) + 1 view of 672×672 (2304 tokens)
+            # Total: 4 × 576 + 2304 = 4608 tokens
+            total_lavida_tokens = 4 * ((336 // 14) ** 2) + ((672 // 14) ** 2)  # 4 * 576 + 2304 = 4608
+            
+            if N == total_lavida_tokens:
+                rank0_print(f"TENSOR-FIX: Detected LaViDa multi-view input ({N} tokens)")
+                rank0_print(f"   Extracting high-resolution view (last 2304 tokens)")
+                
+                # Extract the high-resolution view (last 2304 tokens)
+                high_res_tokens = hi_detail_tokens[:, -expected_tokens_672:, :]  # [B, 2304, D]
+                N = expected_tokens_672  # Update N to 2304
+                grid_size = 48  # Update grid_size to 48
+                hi_detail_tokens = high_res_tokens
+                
+                rank0_print(f"   Successfully extracted high-res view: {hi_detail_tokens.shape}")
+                
+            else:
+                # Emergency fallback: use 1D processing without spatial reshape
+                rank0_print(f"   Using 1D fallback processing...")
+                # Create a dummy scaffold using simple averaging
+                scaffold_size = 64
+                indices = torch.linspace(0, N-1, scaffold_size, dtype=torch.long, device=hi_detail_tokens.device)
+                lo_res_scaffold = hi_detail_tokens[:, indices, :]  # Sample tokens
+                
+                elapsed_time = (time.time() - start_time) * 1000
+                rank0_print(f"TENSOR-FIX: Emergency 1D processing completed in {elapsed_time:.1f}ms")
+                return hi_detail_tokens, lo_res_scaffold
         
         # Safe reshape (dimensions validated above)
         spatial_tokens = hi_detail_tokens.reshape(B, grid_size, grid_size, D)

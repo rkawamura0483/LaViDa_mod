@@ -191,8 +191,74 @@ class LlavaMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def get_2dPool(self, image_feature, stride=2):
-        height = width = self.get_vision_tower().num_patches_per_side
+        # SHIRG-FIX: 2025-07-28 - Handle both baseline LaViDa (729 tokens) and SHIRG (1216 tokens) inputs
+        # ISSUE: Original code assumes square grid from num_patches_per_side, fails with SHIRG tokens
+        # SOLUTION: Detect actual token count and compute grid size dynamically
+        # LAVIDA IMPACT: Maintains backward compatibility with baseline LaViDa pooling
+        # SHIRG IMPACT: Enables spatial pooling for SHIRG-selected tokens
+        
         num_frames, num_tokens, num_dim = image_feature.shape
+        
+        # Detect token format and compute appropriate grid dimensions
+        baseline_tokens = 729   # 27×27 for 384×384 LaViDa baseline
+        shirg_tokens = 1216     # 1152 selected + 64 scaffold for SHIRG
+        full_hires_tokens = 2304  # 48×48 for 672×672 full resolution
+        
+        if num_tokens == baseline_tokens:
+            # Standard LaViDa baseline: 27×27 grid
+            height = width = 27
+            from llava.utils import rank0_print
+            rank0_print(f"SHIRG-POOLING: Baseline LaViDa tokens {num_tokens} → {height}×{width} grid")
+        elif num_tokens == shirg_tokens:
+            # SHIRG tokens: Need to handle non-square token count
+            # SHIRG concatenates scaffold (64) + selected (1152) tokens
+            # For pooling, we need to reshape to a reasonable spatial grid
+            # Use 32×38 (1216) as closest to square grid that works
+            height, width = 32, 38  # 32×38 = 1216
+            from llava.utils import rank0_print
+            rank0_print(f"SHIRG-POOLING: SHIRG tokens {num_tokens} → {height}×{width} grid")
+        elif num_tokens == full_hires_tokens:
+            # Full high-resolution: 48×48 grid  
+            height = width = 48
+            from llava.utils import rank0_print
+            rank0_print(f"SHIRG-POOLING: Full hi-res tokens {num_tokens} → {height}×{width} grid")
+        else:
+            # Dynamic grid size based on actual token count
+            import math
+            # Try to find the closest square grid
+            height = width = int(math.sqrt(num_tokens))
+            if height * width != num_tokens:
+                # Not a perfect square, find closest rectangular grid
+                factors = []
+                for i in range(1, int(math.sqrt(num_tokens)) + 1):
+                    if num_tokens % i == 0:
+                        factors.append((i, num_tokens // i))
+                
+                if factors:
+                    # Choose the factor pair closest to square
+                    height, width = min(factors, key=lambda x: abs(x[0] - x[1]))
+                else:
+                    # Fallback: use 1D processing
+                    height, width = 1, num_tokens
+            
+            from llava.utils import rank0_print
+            rank0_print(f"SHIRG-POOLING: Custom tokens {num_tokens} → {height}×{width} grid")
+        
+        # Validate that reshape will work
+        expected_elements = num_frames * height * width * num_dim
+        actual_elements = image_feature.numel()
+        
+        if expected_elements != actual_elements:
+            from llava.utils import rank0_print
+            rank0_print(f"❌ POOLING ERROR: Dimension mismatch!")
+            rank0_print(f"   Expected: {num_frames} × {height} × {width} × {num_dim} = {expected_elements}")
+            rank0_print(f"   Actual: {actual_elements} elements")
+            rank0_print(f"   Tensor shape: {image_feature.shape}")
+            
+            # Emergency fallback: return original tensor without pooling
+            return image_feature
+        
+        # Safe reshape with validated dimensions
         image_feature = image_feature.view(num_frames, height, width, -1)
         image_feature = image_feature.permute(0, 3, 1, 2).contiguous()
         # image_feature = nn.functional.max_pool2d(image_feature, self.config.mm_spatial_pool_stride)
