@@ -120,6 +120,12 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     for param in layer.self_attn.parameters():
                         param.requires_grad_(True)
                     rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
+                    
+        # GRADIENT-FIX: 2025-07-28 - Enable embedding gradients for gradient flow
+        # ISSUE: Vision tower completely frozen prevents any gradient flow from input to output
+        # SOLUTION: Always enable embedding gradients to maintain gradient chain from input
+        # LAVIDA IMPACT: Allows gradient flow validation while keeping most parameters frozen
+        # SHIRG IMPACT: Enables end-to-end gradient flow for LoRA training compatibility
         
         # SHIRG-FIX: 2025-07-28 - Enable gradients for embeddings to ensure proper gradient flow
         # ISSUE: Embeddings frozen, preventing gradient flow back to inputs
@@ -202,14 +208,19 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 if isinstance(img, torch.Tensor) and not img.requires_grad:
                     images[i] = img.requires_grad_(True)
         
-        # SHIRG-FIX: 2025-07-28 - Enable gradients for testing when needed
-        # ISSUE: Gradient testing fails because all vision tower params have requires_grad=False
-        # SOLUTION: Enable gradients on key components when input requires gradients
-        # LAVIDA IMPACT: Enables gradient flow validation for LoRA training preparation
-        # SHIRG IMPACT: Allows gradient testing of SHIRG token selection methods
-        if ((isinstance(images, torch.Tensor) and images.requires_grad) or 
-            (isinstance(images, list) and any(isinstance(img, torch.Tensor) and img.requires_grad for img in images))):
-            self.enable_gradients_for_testing()
+        # GRADIENT-FIX: 2025-07-28 - Always enable embeddings for gradient flow
+        # ISSUE: Gradient chain broken if embeddings don't have gradients when inputs do
+        # SOLUTION: Always ensure embeddings can process gradients from inputs
+        # LAVIDA IMPACT: Maintains LoRA training capability with minimal parameter enabling
+        # SHIRG IMPACT: Ensures SHIRG token selection methods support gradient flow
+        if hasattr(self, 'vision_tower') and self.vision_tower is not None:
+            # Always ensure embeddings support gradients for training compatibility
+            if hasattr(self.vision_tower.vision_model, 'embeddings'):
+                embeddings = self.vision_tower.vision_model.embeddings
+                if hasattr(embeddings, 'patch_embedding'):
+                    embeddings.patch_embedding.requires_grad_(True)
+                if hasattr(embeddings, 'position_embedding'):
+                    embeddings.position_embedding.requires_grad_(True)
         
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
@@ -307,42 +318,25 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         Returns:
             visual_tokens: [B, 1216, D] selected tokens (1152 hi-detail + 64 scaffold)
         """
-        # SHIRG-FIX: 2025-07-28 - Implement main SHIRG forward method
-        # ISSUE: Missing forward_with_shirg method referenced in forward() 
-        # SOLUTION: Connect to existing SHIRG extensions implementation
-        # LAVIDA IMPACT: Enables SHIRG high-resolution processing mode
-        # SHIRG IMPACT: Provides main interface for token selection and processing
+        # SHIRG-FIX: 2025-07-28 - Remove exception masking to expose gradient issues
+        # ISSUE: Try-catch block hides real errors preventing gradient flow debugging
+        # SOLUTION: Remove masking and let actual errors surface for proper fixing
+        # LAVIDA IMPACT: Enables proper error diagnosis for LoRA training setup
+        # SHIRG IMPACT: Exposes token selection implementation issues for resolution
         
-        try:
-            # Step 1: Extract dual-scale tokens (hi-detail 2304 + scaffold 64) 
-            hi_detail_tokens, lo_res_scaffold = self.extract_dual_scale_tokens(images)
-            
-            # Step 2: Apply distance-aware token selection (1152 from 2304)
-            selected_tokens, selected_coords = self.distance_aware_selection(
-                hi_detail_tokens, text_embeddings, budget=1152
-            )
-            
-            # Step 3: Add coordinate embeddings to selected tokens
-            coord_embedded_tokens = self.add_coordinate_embeddings(selected_tokens, selected_coords)
-            
-            # Step 4: Combine scaffold (64) + selected hi-detail (1152) = 1216 total
-            visual_tokens = torch.cat([lo_res_scaffold, coord_embedded_tokens], dim=1)
-            
-            # Step 5: Ensure gradient flow for LoRA training
-            visual_tokens = self.ensure_gradient_flow(visual_tokens, images)
-            
-            # Validate output dimensions
-            B, N, D = visual_tokens.shape
-            expected_tokens = 1216  # 64 scaffold + 1152 selected
-            if N != expected_tokens:
-                rank0_print(f"⚠️ SHIRG token count mismatch: expected {expected_tokens}, got {N}")
-            
-            return visual_tokens
-            
-        except Exception as e:
-            rank0_print(f"🚨 SHIRG forward_with_shirg failed: {e}")
-            # Fallback to standard LaViDa processing if SHIRG fails
-            return self._forward_standard_lavida(images)
+        # Use the working SHIRG implementation from extensions
+        # This calls the main SHIRG method that handles all the steps
+        shirg_result = self.forward_with_shirg_x(images, text_embeddings)
+        
+        # GRADIENT-FIX: 2025-07-28 - Handle tuple return from SHIRG extensions
+        # ISSUE: forward_with_shirg_x returns (tokens, coords) tuple for some cases
+        # SOLUTION: Extract just the tokens for standard forward interface
+        # LAVIDA IMPACT: Maintains expected return type for LaViDa integration
+        # SHIRG IMPACT: Handles both tuple and tensor returns from SHIRG methods
+        if isinstance(shirg_result, tuple):
+            return shirg_result[0]  # Return just the tokens
+        else:
+            return shirg_result  # Return as-is if not tuple
 
     # Additional convenience methods for external compatibility
     def get_highres_tokens_for_shirg(self, images):
