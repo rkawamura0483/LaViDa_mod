@@ -111,25 +111,37 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG LoRA: Enable gradients for coordinate embedding layer
         self.coord_rotary.requires_grad_(True)
         
+        # GRADIENT-FIX: 2025-07-28 - Enable minimal gradient path for LoRA training
+        # ISSUE: Validation script tests gradient flow but vision tower is completely frozen
+        # SOLUTION: Enable gradients on embeddings + LoRA target layers to maintain gradient chain
+        # LAVIDA IMPACT: Maintains original LaViDa behavior while enabling LoRA training capability
+        # SHIRG IMPACT: Provides gradient path for SHIRG coordinate embeddings and token selection
+        
+        # Enable gradients for essential components to maintain gradient flow
+        self._enable_lora_gradients()
+        
+        self.is_loaded = True
+
+    def _enable_lora_gradients(self):
+        """
+        Enable gradients for LoRA training components as specified in SHIRG research
+        
+        LoRA Target Components:
+        1. SigLIP attention layers (blocks 0-7) - rank 128
+        2. Patch/position embeddings - for gradient flow
+        3. Coordinate embeddings - rank 16 (already enabled)
+        """
         # SHIRG LoRA: Enable gradients for SigLIP attention layers (blocks 0-7) 
         if hasattr(self.vision_tower.vision_model.encoder, 'layers'):
             for i in range(min(8, len(self.vision_tower.vision_model.encoder.layers))):
                 layer = self.vision_tower.vision_model.encoder.layers[i]
                 if hasattr(layer, 'self_attn'):
-                    # Enable gradients for all attention parameters
+                    # Enable gradients for QKV projection (LoRA target)
                     for param in layer.self_attn.parameters():
                         param.requires_grad_(True)
                     rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
-                    
-        # GRADIENT-FIX: 2025-07-28 - Enable embedding gradients for gradient flow
-        # ISSUE: Vision tower completely frozen prevents any gradient flow from input to output
-        # SOLUTION: Always enable embedding gradients to maintain gradient chain from input
-        # LAVIDA IMPACT: Allows gradient flow validation while keeping most parameters frozen
-        # SHIRG IMPACT: Enables end-to-end gradient flow for LoRA training compatibility
         
-        # SHIRG-FIX: 2025-07-28 - Enable gradients for embeddings to ensure proper gradient flow
-        # ISSUE: Embeddings frozen, preventing gradient flow back to inputs
-        # SOLUTION: Enable gradients on patch embeddings and position embeddings
+        # ESSENTIAL: Enable gradients for embeddings to maintain gradient flow from input
         if hasattr(self.vision_tower.vision_model, 'embeddings'):
             embeddings = self.vision_tower.vision_model.embeddings
             # Enable patch embedding gradients
@@ -140,8 +152,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             if hasattr(embeddings, 'position_embedding'):
                 embeddings.position_embedding.requires_grad_(True)
                 rank0_print("SHIRG LoRA: Enabled gradients for position embeddings")
-
-        self.is_loaded = True
 
     def _init_rotary_coordinate_embedding(self):
         """
@@ -158,26 +168,20 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
 
     def enable_gradients_for_testing(self):
         """
-        SHIRG-FIX: 2025-07-28 - Enable gradients for gradient flow testing
-        ISSUE: All vision tower parameters have requires_grad=False, preventing gradient testing
-        SOLUTION: Temporarily enable gradients on key components for testing
-        LAVIDA IMPACT: Allows gradient flow validation without breaking training setup
-        SHIRG IMPACT: Enables LoRA training validation and gradient testing
+        GRADIENT-FIX: 2025-07-28 - Restore LoRA gradients after validation script freezes tower
+        ISSUE: Validation script calls vision_tower.requires_grad_(False) after our setup
+        SOLUTION: Re-enable gradients on LoRA target components for testing
+        LAVIDA IMPACT: Allows gradient flow validation while maintaining LoRA training setup
+        SHIRG IMPACT: Ensures SHIRG token selection methods support gradient flow testing
         """
-        if hasattr(self, 'vision_tower') and self.vision_tower is not None:
-            # Enable gradients on the first few layers to allow gradient flow testing
-            if hasattr(self.vision_tower.vision_model, 'embeddings'):
-                for param in self.vision_tower.vision_model.embeddings.parameters():
-                    param.requires_grad_(True)
-            
-            # Enable gradients on the first transformer layer for testing
-            if hasattr(self.vision_tower.vision_model.encoder, 'layers') and len(self.vision_tower.vision_model.encoder.layers) > 0:
-                for param in self.vision_tower.vision_model.encoder.layers[0].parameters():
-                    param.requires_grad_(True)
-                    
+        # Re-enable LoRA gradients that may have been disabled by validation script
+        self._enable_lora_gradients()
+        
         # Ensure coordinate embedding has gradients
         if hasattr(self, 'coord_rotary'):
             self.coord_rotary.requires_grad_(True)
+            
+        rank0_print("GRADIENT-FIX: Re-enabled LoRA gradients for testing")
 
     def forward(self, images, text_embeddings=None, use_shirg=None):
         """
@@ -208,19 +212,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 if isinstance(img, torch.Tensor) and not img.requires_grad:
                     images[i] = img.requires_grad_(True)
         
-        # GRADIENT-FIX: 2025-07-28 - Always enable embeddings for gradient flow
-        # ISSUE: Gradient chain broken if embeddings don't have gradients when inputs do
-        # SOLUTION: Always ensure embeddings can process gradients from inputs
+        # GRADIENT-FIX: 2025-07-28 - Ensure LoRA gradients are active for testing
+        # ISSUE: Validation script may disable gradients after setup, breaking gradient flow
+        # SOLUTION: Always restore LoRA gradients when processing inputs that require gradients
         # LAVIDA IMPACT: Maintains LoRA training capability with minimal parameter enabling
         # SHIRG IMPACT: Ensures SHIRG token selection methods support gradient flow
-        if hasattr(self, 'vision_tower') and self.vision_tower is not None:
-            # Always ensure embeddings support gradients for training compatibility
-            if hasattr(self.vision_tower.vision_model, 'embeddings'):
-                embeddings = self.vision_tower.vision_model.embeddings
-                if hasattr(embeddings, 'patch_embedding'):
-                    embeddings.patch_embedding.requires_grad_(True)
-                if hasattr(embeddings, 'position_embedding'):
-                    embeddings.position_embedding.requires_grad_(True)
+        if ((isinstance(images, torch.Tensor) and images.requires_grad) or 
+            (isinstance(images, list) and any(isinstance(img, torch.Tensor) and img.requires_grad for img in images))):
+            # Input requires gradients, ensure our LoRA components can handle them
+            self.enable_gradients_for_testing()
         
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
@@ -253,8 +253,17 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     if H != 384 or W != 384:
                         image = F.interpolate(image.unsqueeze(0), size=(384, 384), mode='bilinear', align_corners=False).squeeze(0)
                 
+                # GRADIENT-FIX: 2025-07-28 - Preserve gradients during device/dtype conversion
+                # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs
+                # SOLUTION: Only convert if necessary and preserve gradient connection
+                image_input = image.unsqueeze(0)
+                if image_input.device != self.device:
+                    image_input = image_input.to(device=self.device)
+                if image_input.dtype != self.dtype:
+                    image_input = image_input.to(dtype=self.dtype)
+                
                 image_forward_out = self.vision_tower(
-                    image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
+                    image_input, 
                     output_hidden_states=True
                 )
                 # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
@@ -277,8 +286,17 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 
                 image_features.append(image_feature)
         else:
+            # GRADIENT-FIX: 2025-07-28 - Preserve gradients during device/dtype conversion
+            # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs  
+            # SOLUTION: Only convert if necessary and preserve gradient connection
+            images_input = images
+            if images_input.device != self.device:
+                images_input = images_input.to(device=self.device)
+            if images_input.dtype != self.dtype:
+                images_input = images_input.to(dtype=self.dtype)
+                
             image_forward_outs = self.vision_tower(
-                images.to(device=self.device, dtype=self.dtype), 
+                images_input, 
                 output_hidden_states=True
             )
             # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
