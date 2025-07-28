@@ -128,7 +128,12 @@ class RealOCRVQAValidator:
             
             print(f"   Loading with device_map={device_map_setting}, torch_dtype={torch_dtype_setting}")
             
-            self.tokenizer, self.model, self.image_processor, self.max_length = load_pretrained_model(
+            # SHIRG-FIX: 2025-07-28 - Fix variable name mismatch in unpacking
+            # ISSUE: load_pretrained_model returns context_len not max_length
+            # SOLUTION: Use correct variable name for context length
+            # LAVIDA IMPACT: Fixes model loading in validation script
+            # SHIRG IMPACT: Enables proper SHIRG validation to proceed
+            self.tokenizer, self.model, self.image_processor, context_len = load_pretrained_model(
                 self.pretrained_path, 
                 None, 
                 self.model_name, 
@@ -136,6 +141,7 @@ class RealOCRVQAValidator:
                 torch_dtype=torch_dtype_setting,
                 **vision_kwargs  # Pass vision kwargs as keyword arguments
             )
+            self.max_length = context_len  # Store context length
             
             # Configure for inference
             self.model.eval()
