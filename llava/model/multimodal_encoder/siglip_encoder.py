@@ -695,6 +695,435 @@ class SigLipVisionTower(nn.Module):
 
         return image_features
 
+    def forward_with_shirg_x(self, images, text_embeddings=None, budget=768):
+        """
+        SHIRG-X: Dual-Scale Spatially Aware Token Selection
+        
+        SHIRG-X-FIX: 2025-07-28 - Implement dual-scale architecture with coordinate embedding
+        ISSUE: Original SHIRG loses spatial fidelity with token pruning
+        SOLUTION: Dual-scale processing (hi-detail + lo-res scaffold) with distance-aware scoring
+        LAVIDA IMPACT: Preserves global geometry while enabling high-detail selection
+        SHIRG IMPACT: Implements SHIRG-X research with spatial coordinate embedding
+        
+        Args:
+            images: Input images [B, C, H, W]
+            text_embeddings: Text embeddings for relevance scoring (optional)
+            budget: Number of hi-detail tokens to select (512, 768, 1024)
+            
+        Returns:
+            dual_scale_tokens: [B, budget+144, D] hi-detail + lo-res scaffold tokens
+            coord_embeddings: [B, budget, 4] centroid coordinates for selected tokens
+        """
+        # SHIRG-X Step 1: Extract dual-scale tokens
+        hi_detail_tokens, lo_res_scaffold = self.extract_shirg_x_tokens(images)
+        
+        # SHIRG-X Step 1.5: Adaptive-K budget prediction (if enabled)
+        if hasattr(self, 'adaptive_k_head') and budget is None:
+            # Use adaptive budget prediction
+            adaptive_budgets = self.compute_adaptive_k_budget(hi_detail_tokens)
+            target_tokens = adaptive_budgets[0].item()  # Use first batch's budget for simplicity
+            
+            if hasattr(self, '_debug_enabled') and self._debug_enabled:
+                print(f"🎯 SHIRG-X adaptive budget: {target_tokens} (from entropy analysis)")
+        else:
+            # Use fixed budget
+            target_tokens = budget if budget is not None else 768
+        
+        # SHIRG-X Step 2: Apply distance-aware token selection to hi-detail tokens
+        selected_hi_detail, coord_coords = self.shirg_x_selection(
+            hi_detail_tokens, text_embeddings, target_tokens
+        )
+        
+        # SHIRG-X Step 3: Combine hi-detail + lo-res scaffold
+        dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
+        
+        return dual_scale_tokens.to(images.dtype if hasattr(images, 'dtype') else torch.float32), coord_coords
+
+    def extract_shirg_x_tokens(self, images):
+        """
+        SHIRG-X: Extract dual-scale tokens (hi-detail + lo-res scaffold)
+        
+        SHIRG-X-FIX: 2025-07-28 - Dual-scale token extraction for spatial preservation
+        ISSUE: Single-scale selection loses global geometry information
+        SOLUTION: Hi-detail tokens (2,304 from 672²) + lo-res scaffold (144 from 12×12 pooling)
+        RESEARCH IMPACT: Preserves spatial relationships while enabling fine-grained selection
+        
+        Args:
+            images: Input images [B, C, H, W]
+            
+        Returns:
+            hi_detail_tokens: [B, 2304, D] high-resolution tokens from 672×672
+            lo_res_scaffold: [B, 144, D] lo-res scaffold tokens (12×12 avg pooling)
+        """
+        import torch.nn.functional as F
+        import time
+        
+        start_time = time.time()
+        
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        
+        batch_size = images.shape[0]
+        
+        # Device and dtype alignment
+        target_device = self.device
+        target_dtype = self.dtype
+        
+        if images.device != target_device or images.dtype != target_dtype:
+            images = images.to(device=target_device, dtype=target_dtype, non_blocking=True)
+        
+        # Extract hi-detail tokens (2,304 from 672×672)
+        high_res_size = 672
+        high_res_images = F.interpolate(
+            images, 
+            size=(high_res_size, high_res_size), 
+            mode='bilinear', 
+            align_corners=False, 
+            antialias=False
+        )
+        
+        # Ensure cache is ready
+        self._ensure_highres_cache_ready()
+        
+        # Forward through vision transformer
+        with torch.set_grad_enabled(True):
+            if high_res_images.requires_grad:
+                high_res_images.retain_grad()
+            
+            outputs = self.vision_tower(
+                high_res_images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True
+            )
+        
+        # Get hi-detail tokens after encoder
+        raw_tokens = outputs.hidden_states[-1]  # [B, 2304, D]
+        normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
+        hi_detail_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
+        
+        # Create lo-res scaffold through 4×4 average pooling
+        # Reshape hi-detail tokens to spatial grid (48×48)
+        H = W = 48  # 672/14 = 48
+        D = hi_detail_tokens.shape[-1]
+        spatial_features = hi_detail_tokens.view(batch_size, H, W, D)
+        
+        # Apply 4×4 average pooling to get 12×12 = 144 scaffold tokens
+        lo_res_scaffold = F.avg_pool2d(
+            spatial_features.permute(0, 3, 1, 2),  # [B, D, H, W]
+            kernel_size=4, stride=4
+        ).permute(0, 2, 3, 1).flatten(1, 2)  # [B, 144, D]
+        
+        extraction_time = (time.time() - start_time) * 1000
+        if torch.cuda.is_available():
+            current_memory = torch.cuda.memory_allocated() / 1e9
+            rank0_print(f"SHIRG-X: Extracted {hi_detail_tokens.shape[1]} hi-detail + {lo_res_scaffold.shape[1]} scaffold tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB")
+        
+        return hi_detail_tokens, lo_res_scaffold
+
+    def compute_patch_centroids(self, H=48, W=48):
+        """
+        SHIRG-X: Compute normalized (x, y, h, w) coordinates for each patch
+        
+        Args:
+            H: Grid height (default 48 for 672×672 images)
+            W: Grid width (default 48 for 672×672 images)
+            
+        Returns:
+            patch_coords: [N, 4] normalized coordinates (x, y, h, w)
+        """
+        patch_coords = []
+        patch_h = 1.0 / H
+        patch_w = 1.0 / W
+        
+        for i in range(H):
+            for j in range(W):
+                # Normalized coordinates
+                x = (j + 0.5) / W  # Center x
+                y = (i + 0.5) / H  # Center y
+                h = patch_h       # Patch height
+                w = patch_w       # Patch width
+                patch_coords.append([x, y, h, w])
+        
+        return torch.tensor(patch_coords, dtype=torch.float32)
+
+    def shirg_x_selection(self, hi_detail_tokens, text_embeddings=None, budget=768):
+        """
+        SHIRG-X: Distance-aware token selection with token merging
+        
+        SHIRG-X-FIX: 2025-07-28 - Distance-aware importance scoring (TopV-style)
+        ISSUE: Attention-based scoring ignores spatial relationships
+        SOLUTION: s_i = 0.7*Sim_i - 0.2*||p_i-p_j||_2 - 0.1*||p_i-c||_2
+        RESEARCH IMPACT: Preserves spatial coherence while maintaining semantic relevance
+        
+        Args:
+            hi_detail_tokens: [B, N, D] high-resolution tokens (N=2304)
+            text_embeddings: [B, L, D] text embeddings for relevance scoring
+            budget: Number of tokens to select
+            
+        Returns:
+            selected_tokens: [B, budget, D] selected hi-detail tokens
+            coord_coords: [B, budget, 4] centroid coordinates of selected tokens
+        """
+        B, N, D = hi_detail_tokens.shape
+        H = W = int(N ** 0.5)  # 48×48 grid
+        
+        # Compute patch centroids
+        patch_coords = self.compute_patch_centroids(H, W).to(hi_detail_tokens.device)
+        
+        # 1. Compute similarity scores with text (if available)
+        if text_embeddings is not None:
+            similarity_scores = torch.max(
+                torch.matmul(hi_detail_tokens, text_embeddings.transpose(-2, -1)), 
+                dim=-1
+            )[0]  # [B, N]
+        else:
+            # Fallback: use feature magnitude as proxy
+            similarity_scores = torch.norm(hi_detail_tokens, dim=-1)  # [B, N]
+        
+        # 2. Compute distance-aware importance scores (TopV-style)
+        center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
+        
+        # Distance to image center
+        center_distances = torch.norm(
+            patch_coords[:, :2] - center_coord, dim=1
+        )  # [N]
+        
+        # SHIRG-X-FIX: 2025-07-28 - Complete distance-aware scoring formula
+        # ISSUE: Missing neighbor distance term from SHIRG-X specification
+        # SOLUTION: Add efficient neighbor distance computation using spatial convolution
+        # RESEARCH IMPACT: Implements full SHIRG-X distance-aware scoring formula
+        
+        # Neighbor distance term - use local variance as proxy for spatial coherence
+        neighbor_distances = self.compute_neighbor_distances(hi_detail_tokens, H, W)  # [B, N]
+        
+        # Complete SHIRG-X distance-aware scoring: s_i = 0.7*Sim_i - 0.2*||p_i-p_j||_2 - 0.1*||p_i-c||_2
+        importance_scores = (
+            0.7 * similarity_scores - 
+            0.2 * neighbor_distances -
+            0.1 * center_distances.unsqueeze(0).expand(B, -1)
+        )  # [B, N]
+        
+        # 3. Token merge for neighboring low-score tokens (ToMe-style)
+        # Simplified implementation - merge tokens with score difference < ε = 0.05
+        merged_tokens, merged_coords = self.merge_neighboring_tokens(
+            hi_detail_tokens, patch_coords, importance_scores, epsilon=0.05
+        )
+        
+        # 4. Select top-K tokens
+        if merged_tokens.shape[1] > budget:
+            _, top_indices = torch.topk(importance_scores, budget, dim=1)
+            selected_tokens = torch.gather(
+                merged_tokens, 1,
+                top_indices.unsqueeze(-1).expand(-1, -1, merged_tokens.shape[-1])
+            )
+            # Get coordinates for selected tokens (handle all batches)
+            selected_coords = []
+            for b in range(B):
+                batch_coords = patch_coords[top_indices[b]]  # [budget, 4]
+                selected_coords.append(batch_coords)
+            selected_coords = torch.stack(selected_coords, dim=0)  # [B, budget, 4]
+        else:
+            selected_tokens = merged_tokens
+            if merged_coords.dim() == 2:
+                selected_coords = merged_coords.unsqueeze(0).expand(B, -1, -1)
+            else:
+                selected_coords = merged_coords
+        
+        return selected_tokens, selected_coords
+
+    def compute_neighbor_distances(self, tokens, H, W):
+        """
+        SHIRG-X-FIX: 2025-07-28 - Compute neighbor distance term for spatial coherence
+        ISSUE: Missing ||p_i-p_j||_2 term in SHIRG-X distance-aware scoring
+        SOLUTION: Use spatial convolution to compute local feature variance as neighbor distance proxy
+        RESEARCH IMPACT: Enables full SHIRG-X distance-aware scoring formula
+        
+        Args:
+            tokens: [B, N, D] token features  
+            H, W: Spatial grid dimensions (48, 48)
+            
+        Returns:
+            neighbor_distances: [B, N] neighbor distance scores
+        """
+        B, N, D = tokens.shape
+        
+        # Reshape tokens to spatial grid [B, D, H, W]
+        spatial_tokens = tokens.view(B, H, W, D).permute(0, 3, 1, 2)
+        
+        # Compute local variance using 3x3 convolution (approximates neighbor distances)
+        # This is computationally efficient compared to pairwise distance computation
+        kernel_3x3 = torch.ones(1, 1, 3, 3, device=tokens.device, dtype=tokens.dtype) / 9.0
+        kernel_3x3 = kernel_3x3.expand(D, 1, 3, 3)
+        
+        # Apply depthwise convolution to compute local means
+        local_means = F.conv2d(spatial_tokens, kernel_3x3, padding=1, groups=D)  # [B, D, H, W]
+        
+        # Compute variance (distance from local neighborhood mean)
+        local_variance = ((spatial_tokens - local_means) ** 2).mean(dim=1)  # [B, H, W]
+        
+        # Flatten back to token sequence
+        neighbor_distances = local_variance.view(B, N)
+        
+        # Normalize to [0, 1] range for stable scoring
+        neighbor_distances = (neighbor_distances - neighbor_distances.min(dim=1, keepdim=True)[0]) / \
+                           (neighbor_distances.max(dim=1, keepdim=True)[0] - neighbor_distances.min(dim=1, keepdim=True)[0] + 1e-8)
+        
+        return neighbor_distances
+
+    def compute_adaptive_k_budget(self, hi_detail_tokens):
+        """
+        SHIRG-X: Instance-adaptive keep-rate prediction
+        
+        Predicts optimal token budget K ∈ {512, 768, 1024} from patch-wise entropy
+        following ATP-LLaVA methodology for instance-specific token allocation.
+        
+        Args:
+            hi_detail_tokens: [B, N, D] high-resolution tokens
+            
+        Returns:
+            adaptive_budgets: [B] predicted budgets for each instance
+        """
+        batch_size, num_tokens, embed_dim = hi_detail_tokens.shape
+        
+        # Compute patch-wise entropy as complexity measure
+        patch_entropy = self.compute_patch_entropy(hi_detail_tokens)  # [B]
+        
+        # Get adaptive-K gating head (if available)
+        if hasattr(self, 'adaptive_k_head'):
+            # Predict budget probabilities
+            budget_probs = self.adaptive_k_head(patch_entropy.unsqueeze(-1))  # [B, 3]
+            # Convert to budget values
+            budget_options = torch.tensor([512, 768, 1024], device=hi_detail_tokens.device)
+            adaptive_budgets = torch.sum(budget_probs * budget_options.float(), dim=-1).round().long()
+        else:
+            # Fallback: use entropy-based heuristic
+            # High entropy (complex images) → more tokens
+            # Low entropy (simple images) → fewer tokens
+            normalized_entropy = (patch_entropy - patch_entropy.min()) / (patch_entropy.max() - patch_entropy.min() + 1e-8)
+            
+            # Map entropy to budget ranges
+            adaptive_budgets = torch.where(
+                normalized_entropy > 0.7, 1024,  # Complex images
+                torch.where(normalized_entropy > 0.3, 768, 512)  # Medium/simple images
+            )
+        
+        return adaptive_budgets
+
+    def compute_patch_entropy(self, tokens):
+        """
+        Compute patch-wise entropy for adaptive-K prediction
+        
+        Args:
+            tokens: [B, N, D] patch tokens
+            
+        Returns:
+            entropy: [B] entropy values per batch
+        """
+        # Compute feature variance as entropy proxy
+        patch_variance = torch.var(tokens, dim=-1)  # [B, N]
+        # Global entropy (mean variance across patches)
+        global_entropy = torch.mean(patch_variance, dim=1)  # [B]
+        return global_entropy
+
+    def merge_neighboring_tokens(self, tokens, coords, scores, epsilon=0.05):
+        """
+        SHIRG-X: Merge neighboring tokens with similar scores (ToMe-style)
+        
+        SHIRG-X-FIX: 2025-07-28 - Implement token merging with area-weighted centroids
+        ISSUE: Need to merge similar neighboring tokens to preserve spatial coherence
+        SOLUTION: ToMe-style merging with coordinate-aware similarity and area weighting
+        RESEARCH IMPACT: Preserves spatial relationships while reducing token count
+        
+        Args:
+            tokens: [B, N, D] token features
+            coords: [N, 4] patch coordinates (x, y, h, w)
+            scores: [B, N] importance scores
+            epsilon: Score difference threshold for merging
+            
+        Returns:
+            merged_tokens: [B, M, D] tokens after merging (M <= N)
+            merged_coords: [M, 4] coordinates after merging
+        """
+        B, N, D = tokens.shape
+        H = W = int(N ** 0.5)  # 48×48 grid assumed
+        
+        # For efficiency, implement simplified spatial merging
+        # Group tokens by spatial proximity and score similarity
+        
+        # Convert to spatial grid for neighbor detection
+        grid_indices = torch.arange(N).view(H, W).to(tokens.device)
+        
+        merged_indices = []
+        merge_groups = []
+        used = torch.zeros(N, dtype=torch.bool, device=tokens.device)
+        
+        for i in range(H):
+            for j in range(W):
+                current_idx = grid_indices[i, j].item()
+                
+                if used[current_idx]:
+                    continue
+                    
+                # Find neighbors within epsilon score difference
+                group = [current_idx]
+                used[current_idx] = True
+                
+                # Check 4-connected neighbors
+                for di, dj in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < H and 0 <= nj < W:
+                        neighbor_idx = grid_indices[ni, nj].item()
+                        if not used[neighbor_idx]:
+                            # Check score similarity across all batches
+                            score_diff = torch.abs(scores[:, current_idx] - scores[:, neighbor_idx])
+                            if torch.all(score_diff < epsilon):
+                                group.append(neighbor_idx)
+                                used[neighbor_idx] = True
+                
+                merged_indices.append(group[0])  # Keep representative token
+                merge_groups.append(group)
+        
+        # Create merged tokens and coordinates
+        if len(merged_indices) < N:
+            # Merging occurred
+            merged_tokens = tokens[:, merged_indices, :]  # [B, M, D]
+            
+            # Compute area-weighted centroids for merged coordinates
+            merged_coords_list = []
+            for group in merge_groups:
+                if len(group) == 1:
+                    # No merging - keep original coordinate
+                    merged_coords_list.append(coords[group[0]])
+                else:
+                    # SHIRG-X-FIX: 2025-07-28 - Proper area-weighted centroid merging
+                    # ISSUE: Simple mean doesn't preserve area information
+                    # SOLUTION: Weight by patch area (h*w) for accurate spatial merging
+                    # RESEARCH IMPACT: Preserves spatial relationships during token merging
+                    
+                    group_coords = coords[group]  # [group_size, 4]
+                    # Extract areas (h * w)
+                    areas = group_coords[:, 2] * group_coords[:, 3]  # [group_size]
+                    total_area = torch.sum(areas)
+                    
+                    # Area-weighted average for position (x, y)
+                    weighted_x = torch.sum(group_coords[:, 0] * areas) / total_area
+                    weighted_y = torch.sum(group_coords[:, 1] * areas) / total_area
+                    
+                    # Combined area (sum of individual areas)
+                    combined_h = torch.sqrt(total_area)  # Approximate combined height
+                    combined_w = total_area / combined_h  # Approximate combined width
+                    
+                    merged_coord = torch.tensor([weighted_x, weighted_y, combined_h, combined_w], 
+                                              device=coords.device, dtype=coords.dtype)
+                    merged_coords_list.append(merged_coord)
+            
+            merged_coords = torch.stack(merged_coords_list, dim=0)  # [M, 4]
+        else:
+            # No merging occurred
+            merged_tokens = tokens
+            merged_coords = coords
+            
+        return merged_tokens, merged_coords
+
     def forward_with_shirg(self, images, target_tokens=980, text_embeddings=None):
         """
         Forward pass with SHIRG-v2 token selection (ACTUAL research implementation)

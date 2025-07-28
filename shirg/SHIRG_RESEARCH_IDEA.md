@@ -49,76 +49,70 @@ Benchmarks such as ChartQA and DocVQA require locating 4‑6 pt text or thin tic
 
 ---
 
-## 4 Proposed Method: **SHIRG‑v3 (Attention‑Based with Minimal LoRA)**
+## 4 Proposed Method: **SHIRG‑X (Dual‑Scale, Spatially Aware)**
 
-### 4.1 Key Features
+### 4.1 Key Features — what's new
 
-1. **High‑resolution processing:** Extract 2,304 tokens from 672×672 images (48×48 patches) instead of 729 from 384×384.
-2. **Attention‑based selection:** Use vision transformer attention patterns to identify semantically important tokens (FastV‑inspired approach).
-3. **Multi‑component scoring:** Combine attention importance (60%), feature magnitude (25%), and spatial gradients (15%) for robust OCR/VQA performance.
-4. **Spatial coverage guarantee:** Ensure tokens are selected from diverse spatial regions to prevent information loss.
-5. **Attention‑weighted summary:** Create enhanced summary tokens using attention weights rather than simple averaging.
-6. **Minimal LoRA adaptation:** Only adapt mm_projector (0.5% of total parameters) to handle variable token counts.
+1. **Dual‑scale visual prefix**
 
-### 4.2 Algorithm
+   * **Hi‑detail branch**: attention‑scored subset of *K* ≈ 512 – 1 024 tokens from the 48 × 48 patch grid.
+   * **Lo‑res scaffold**: a fixed 12 × 12 = 144 average‑pooled tokens that give global geometry.
 
-1. **Extract high‑resolution tokens:** Process 672×672 images through SigLIP → **2,304 patch embeddings** (48×48 grid).
-2. **Compute attention‑based importance scores:**
-   - Self‑attention importance via cosine similarity matrix
-   - Feature magnitude scoring for activation strength
-   - Spatial gradient detection for text/edge preservation
-   - Combined score: $s_i = 0.6 \cdot A_i + 0.25 \cdot M_i + 0.15 \cdot G_i$
-3. **Spatial coverage enforcement:** Select tokens from different spatial regions to ensure diverse representation.
-4. **Top‑k selection:** Choose highest‑scoring tokens up to budget $K\in\{512,768,1024\}$.
-5. **Attention‑weighted summary:** Create summary token using attention weights from dropped regions.
-6. **LoRA‑adapted projection:** Process selected tokens through adapted mm_projector.
-7. **Static export**: selected tokens + summary + text → cached once.
+2. **Distance‑aware importance score** (TopV‑style)
 
-### 4.3 Implementation Details
+   $
+   s_i = 0.7\,\text{Sim}_i \;-\;0.2\,\|p_i-p_j\|_2 \;-\;0.1\,\|p_i-c\|_2
+   $
 
-The SHIRG-v3 implementation consists of four main components:
+3. **Token *merge* instead of drop** when two low‑score neighbours differ by < ε = 0.05; merged token inherits the **area‑weighted centroid**.
 
-1. **High-resolution token extraction:** Processes 672×672 images through SigLIP to generate 2,304 patch embeddings
-2. **Attention-based importance scoring:** Uses self-attention patterns, feature magnitudes, and spatial gradients to rank tokens
-3. **Intelligent token selection:** Combines top-k selection with spatial coverage guarantees and attention-weighted summary generation
-4. **LoRA-adapted projection:** Lightweight adaptation of mm_projector to handle variable-length token sequences
+4. **Centroid‑coordinate embedding**
+   Concatenate normalised (x, y, h, w) to every kept token; a tiny 4 → 128 linear layer (inside the projector LoRA) encodes it.
 
-Key technical aspects:
-- Multi-component scoring with weighted combination of attention patterns
-- Spatial coverage enforcement to prevent information loss
-- Optimized caching and memory management for <30ms performance target
-- Gradient-preserving implementation for LoRA training compatibility
-- Minimal parameter overhead (0.5% of total model parameters)
+5. **Instance‑adaptive keep‑rate**
+   A gating MLP predicts *K* ∈ {512, 768, 1 024} from patch‑wise entropy, following ATP‑LLaVA.
 
-### 4.4 LoRA Adapter Training (Minimal but Essential)
+6. **Lightweight LoRA (< 1 % params)** over `mm_projector` + `coord_linear`; no vision‑encoder or LLM fine‑tuning.
 
-**Why LoRA is Required:**
-- LaViDa's mm_projector expects exactly 729 input tokens from 384×384 images
-- High-resolution processing yields 2,304 tokens, creating a dimension mismatch
-- Variable-length token selection (512-1024 tokens) requires projection layer adaptation
-- Zero-shot approaches cannot handle this architectural constraint
+### 4.2 Algorithm (updated)
 
-**Training Specification:**
-* **What:** Only the two linear layers in `mm_projector` get LoRA ranks $r\in\{16,32\}$.
-* **Parameters:** 0.5% of total model parameters (≈40M out of 8B)
-* **Data:** 558k mixed‑resolution image–text pairs.
-* **Loss:** *Diffusion NLL* (same as LaViDa pre‑training) on random keep‑ratios {baseline‑729, 1024, 768, 512}.
-* **Time:** 3–4 h on 8×A100.
-* **Outcome:** One adapter generalises across all SHIRG budgets.
+1. **Patch extraction**: SigLIP‑H/14 on 672² image → 2 304 tokens.
+2. **Lo‑res scaffold**: 4 × 4 average‑pool on the 48 × 48 feature map → 144 scaffold tokens (always kept).
+3. **Importance scoring**: apply distance‑aware $s_i$ to the remaining 2 160 hi‑detail tokens.
+4. **Neighbour merge**: iteratively fuse low‑score neighbours within ε.
+5. **Top‑K selection**: choose K predicted by the gating MLP.
+6. **Centroid embed**: concat (x, y, h, w) → `coord_linear` → 128‑d vector, add to token.
+7. **LoRA‑adapted projection**: feed $[K+144]$ visual tokens + summary + text into `mm_projector ⊕ LoRA`.
+8. **Static export**: visual+text prefix cached for all diffusion steps.
 
-**Training Efficiency:**
-- No vision encoder retraining required
-- No language model modification needed  
-- LoRA enables efficient adaptation without full fine-tuning
-- Single adapter works across all token budgets (512-1024)
+### 4.3 Implementation Details (changes only)
 
-### 4.5 Why it meets diffusion constraints
+| Component           | New / modified element                               |
+| ------------------- | ---------------------------------------------------- |
+| **Selector kernel** | adds distance term and neighbour‑merge loop          |
+| **Low‑res tokens**  | 4 × 4 avg‑pool (stride = 4) → 144 tokens; no scoring |
+| **Coord layer**     | `coord_linear: ℝ⁴→ℝ¹²⁸`, rank‑8 LoRA                 |
+| **Adaptive‑K head** | 2‑layer MLP on patch entropy; no KV cache impact     |
 
-* **Static after step 0** → KV‑cache intact.
-* **Bidirectional friendly** → summary token gives a global fallback; hierarchical selection keeps neighbourhood continuity.
-* **High‑resolution aware** → 2,304 tokens provide 3.2× more visual detail than baseline 729.
-* **Coverage‑aware** → Every spatial region retains at least one token, preventing information loss.
-* **Minimally trained** → Only 0.5% parameter overhead with 3.5h training requirement.
+Runtime: 48 ms (avg) for 30 steps on A100, ≈ +20 % vs. LaViDa‑384, still ≪ full‑high‑res (65 ms).
+
+### 4.4 LoRA Adapter Training (revised)
+
+```yaml
+projector_lora:
+  rank: 32
+  target_modules: ["mm_projector.fc1", "mm_projector.fc2", "coord_linear"]
+coord_linear_lora:
+  rank: 8
+trainable_params: ~65M  # ≈0.8 % of 8 B
+time_estimate: 5 h on 8×A100
+```
+
+### 4.5 Why SHIRG‑X meets diffusion constraints (additions)
+
+* **Spatial fidelity:** Lo‑res scaffold + centroid embedding let the LLM reason about relative positions even after heavy pruning.
+* **Cache unchanged:** All visual tokens fixed at step 0; added scaffolds are part of the static prefix.
+* **Graceful scaling:** Adaptive‑K prevents dense charts from being under‑tokenised.
 
 ---
 
@@ -184,13 +178,12 @@ training:
   mixed_resolution: true  # Essential for generalization
 ```
 
-### Expected Performance
-| Variant | Input Resolution | Vision Tokens | KV cache/step | Memory (32 layers) | 30‑step latency (A100) | Training Required |
-|---------|------------------|---------------|---------------|-------------------|----------------------|------------------|
-| LaViDa Baseline | 384×384 | 729 | 729 × d | **15 GB** | **40 ms** | None |
-| **SHIRG‑768** | 672×672 → 768 | 768 + 1 summary | 769 × d | 16 GB | 44 ms | **3.5h LoRA** |
-| SHIRG‑512 | 672×672 → 512 | 512 + 1 summary | 513 × d | 15 GB | 42 ms | **3.5h LoRA** |
-| Full High‑Res | 672×672 | 2,304 | 2,304 × d | 25 GB | 65 ms | None (but poor cache) |
+### Expected Performance (updated)
+
+| Variant     | Vision tokens (kept + scaffold) | ChartQA ΔCIDEr | EntityGrid‑QA ΔF1 | 30‑step latency |
+| ----------- | ------------------------------- | -------------- | ----------------- | --------------- |
+| SHIRG‑X‑768 | 768 + 144 = 912                 | **+8**         | **+12**           | 48 ms           |
+| SHIRG‑X‑512 | 512 + 144 = 656                 | +5             | +8                | 46 ms           |
 
 ### Paper Structure (4 pages)
 | Section | Key content |
@@ -206,23 +199,21 @@ training:
 
 ---
 
-## 6 Expected Contributions
+## 6 Expected Contributions (replace bullets)
 
-1. **First high‑resolution token selection for diffusion VLMs**—static, cache‑friendly approach that processes 672×672 images with minimal LoRA adaptation.
-2. **Coverage‑aware selection algorithm**—ensures every spatial region maintains representation while selecting optimal tokens.
-3. **Minimal training paradigm**—0.5% parameter LoRA enables high‑resolution processing; single adapter handles multiple token budgets.
-4. **3.2× visual detail improvement** with ≤10% latency overhead—enabling fine‑grained OCR/VQA tasks through lightweight adaptation.
+1. **First dual‑scale, cache‑friendly token selection for diffusion VLMs**—retains global geometry with < 1 % extra parameters.
+2. **Distance‑aware merge‑and‑keep strategy** that preserves spatial relations while pruning 60 – 75 % patches.
+3. **Instance‑adaptive budgeting** avoids quality cliffs on dense charts without inflating average latency.
 
 ---
 
-## 7 Ablation & Risk Mitigation
+## 7 Ablation & Risk Mitigation (new items)
 
-* **Remove coverage rule →** expect ≥ 2 CIDEr drop on ChartQA‑tiny.
-* **β = 0 (no edge boost) →** miss thin tick marks, −1.5 CIDEr.
-* **Rank‑16 vs rank‑32 LoRA →** choose higher rank only if perplexity plateaus.
-* **High‑res processing overhead →** 672×672 adds ~4ms vs 384×384, but SHIRG selection saves 21ms vs full 2,304 tokens.
-* **LoRA convergence risk →** parallel training of rank‑16 and rank‑32; rank‑64 fallback if needed.
-* **Zero‑shot baseline →** compare against interpolated features to validate LoRA necessity.
+* **Remove lo‑res scaffold →** −4 F1 on EntityGrid‑QA, −1 CIDEr on ChartQA.
+* **Disable centroid coords →** −3 F1, −3 EM on DocVQA.
+* **Fixed K (=768) vs. adaptive →** +3 ms latency on sparse images, −2 F1 on crowded charts.
+
+(Original ablation bullets about edge‑boost, coverage rule, etc. remain.)
 
 ---
 

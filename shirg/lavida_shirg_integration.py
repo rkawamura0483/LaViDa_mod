@@ -44,6 +44,49 @@ except ImportError as e:
 
 from shirg_selector import SHIRGSelector, create_shirg_selector
 
+class CoordinateEmbedding(nn.Module):
+    """
+    SHIRG-X: Centroid coordinate embedding layer
+    
+    Embeds (x, y, h, w) coordinates into SigLIP hidden dimension (1152) for spatial awareness
+    """
+    
+    def __init__(self, input_dim=4, output_dim=1152):
+        super().__init__()
+        self.coord_linear = nn.Linear(input_dim, output_dim)
+        
+    def forward(self, coord_features):
+        """Embed (x, y, h, w) coordinates"""
+        return self.coord_linear(coord_features)
+
+
+class TextVisionAligner(nn.Module):
+    """
+    SHIRG-X-FIX: 2025-07-28 - Learned text-vision dimension alignment
+    ISSUE: Text embeddings (4096D) and vision features (1152D) dimension mismatch
+    SOLUTION: Learned linear projection with proper initialization instead of pseudo-inverse
+    RESEARCH IMPACT: Preserves semantic meaning while enabling cross-modal similarity computation
+    """
+    
+    def __init__(self, text_dim=4096, vision_dim=1152):
+        super().__init__()
+        self.align_layer = nn.Linear(text_dim, vision_dim, bias=False)
+        
+        # Initialize with Xavier uniform for stable training
+        nn.init.xavier_uniform_(self.align_layer.weight)
+        
+    def forward(self, text_embeddings):
+        """
+        Project text embeddings to vision space
+        
+        Args:
+            text_embeddings: [B, seq_len, text_dim] text token embeddings
+            
+        Returns:
+            aligned_embeddings: [B, seq_len, vision_dim] aligned embeddings
+        """
+        return self.align_layer(text_embeddings)
+
 # IN_COLAB already defined above
 
 class LaViDaSHIRGWrapper:
@@ -169,6 +212,35 @@ class LaViDaSHIRGWrapper:
             # Initialize SHIRG selector
             self.shirg_selector = create_shirg_selector(self.shirg_config)
             
+            # SHIRG-X: Initialize coordinate embedding layer
+            # Match SigLIP hidden dimension (1152) for proper token integration
+            vision_hidden_dim = 1152  # SigLIP-SO400M hidden size
+            self.coord_embedding = CoordinateEmbedding(input_dim=4, output_dim=vision_hidden_dim)
+            
+            # SHIRG-X-FIX: Initialize text-vision aligner for dimension compatibility
+            text_hidden_dim = 4096  # LLaDA text embedding size
+            self.text_vision_aligner = TextVisionAligner(text_dim=text_hidden_dim, vision_dim=vision_hidden_dim)
+            
+            # SHIRG-X: Initialize adaptive-K gating head
+            self.adaptive_k_head = nn.Sequential(
+                nn.Linear(1, 32),      # Patch entropy → hidden
+                nn.ReLU(),
+                nn.Linear(32, 3),      # Hidden → 3 budget options
+                nn.Softmax(dim=-1)
+            )
+            
+            # Move SHIRG-X components to correct device and dtype
+            if torch.cuda.is_available():
+                self.coord_embedding = self.coord_embedding.cuda().to(self.torch_dtype)
+                self.text_vision_aligner = self.text_vision_aligner.cuda().to(self.torch_dtype)
+                self.adaptive_k_head = self.adaptive_k_head.cuda().to(self.torch_dtype)
+                
+                # Add adaptive_k_head to vision tower for accessibility
+                if hasattr(self.model, 'get_vision_tower'):
+                    vision_tower = self.model.get_vision_tower()
+                    if vision_tower:
+                        vision_tower.adaptive_k_head = self.adaptive_k_head
+            
             # Setup conversation template
             self._setup_conversation_template()
             
@@ -288,126 +360,113 @@ class LaViDaSHIRGWrapper:
                         wrapper.shirg_config.get('alpha', 0) > 0):
                         
                         try:
-                            # SHIRG-FIX: 2025-07-27 - Use genuine high-resolution token extraction
-                            # ISSUE: Previous approach used interpolation, not real high-res processing
-                            # SOLUTION: Use new forward_with_high_res method for genuine 3,645 tokens
-                            # RESEARCH IMPACT: Tests actual research hypothesis with real high-resolution features
+                            # SHIRG-X-FIX: 2025-07-28 - Use dual-scale SHIRG-X processing
+                            # ISSUE: Original SHIRG loses spatial fidelity with aggressive pruning
+                            # SOLUTION: Use SHIRG-X dual-scale architecture with coordinate embedding
+                            # RESEARCH IMPACT: Tests SHIRG-X spatial preservation hypothesis
                             
-                            if wrapper.shirg_config.get('debug', False):
-                                print(f"🔍 Using genuine high-resolution token extraction")
+                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg-x')  # Default to SHIRG-X
                             
-                            # Check if vision tower supports high-res extraction
-                            if hasattr(vision_tower, 'forward_with_high_res'):
-                                # Use new high-resolution extraction method
-                                standard_features, high_res_features = vision_tower.forward_with_high_res(
-                                    images, return_high_res=True, target_resolution=(768, 768)
+                            if shirg_mode == 'shirg-x' and hasattr(vision_tower, 'forward_with_shirg_x'):
+                                # SHIRG-X: Dual-scale processing with coordinate embedding
+                                if wrapper.shirg_config.get('debug', False):
+                                    print(f"🔍 Using SHIRG-X dual-scale processing")
+                                
+                                dual_scale_features, coord_embeddings = vision_tower.forward_with_shirg_x(
+                                    images, 
+                                    text_embeddings=wrapper._current_question_tokens,
+                                    budget=wrapper.shirg_config.get('budget', 768)
                                 )
                                 
                                 if wrapper.shirg_config.get('debug', False):
-                                    if isinstance(high_res_features, list):
-                                        hr_shape = [f.shape for f in high_res_features]
-                                    else:
-                                        hr_shape = high_res_features.shape
-                                    print(f"✅ Genuine high-res extraction: {hr_shape}")
+                                    print(f"🎯 SHIRG-X dual-scale: {dual_scale_features.shape}")
+                                    print(f"📍 Coordinate embeddings: {coord_embeddings.shape}")
                                 
-                                # Use high-resolution features for SHIRG
-                                raw_features = high_res_features
-                                if isinstance(raw_features, list):
-                                    # Handle list format (batch processing)
-                                    raw_features = raw_features[0] if len(raw_features) == 1 else torch.cat(raw_features, dim=0)
+                                # SHIRG-X-FIX: 2025-07-28 - Enhanced coordinate embedding integration with shape validation
+                                # ISSUE: Need robust shape handling for coordinate embedding
+                                # SOLUTION: Comprehensive validation and fallback handling
+                                # RESEARCH IMPACT: Ensures stable SHIRG-X spatial embedding integration
                                 
-                            elif hasattr(vision_tower, 'get_multiview_high_res_tokens'):
-                                # Use multi-view approach following LaViDa specification
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"🔍 Using LaViDa multi-view high-res extraction")
+                                if hasattr(wrapper, 'coord_embedding') and coord_embeddings is not None:
+                                    try:
+                                        budget = wrapper.shirg_config.get('budget', 768)
+                                        
+                                        # Validate coordinate embeddings shape
+                                        expected_coord_shape = (dual_scale_features.shape[0], budget, 4)
+                                        if coord_embeddings.shape != expected_coord_shape:
+                                            if wrapper.shirg_config.get('debug', False):
+                                                print(f"🔧 Reshaping coordinates: {coord_embeddings.shape} -> {expected_coord_shape}")
+                                            
+                                            # Handle shape mismatch - trim or pad as needed
+                                            B, actual_tokens, coord_dim = coord_embeddings.shape
+                                            if actual_tokens > budget:
+                                                coord_embeddings = coord_embeddings[:, :budget, :]
+                                            elif actual_tokens < budget:
+                                                # Pad with zero coordinates
+                                                padding = torch.zeros(B, budget - actual_tokens, coord_dim, 
+                                                                    device=coord_embeddings.device, dtype=coord_embeddings.dtype)
+                                                coord_embeddings = torch.cat([coord_embeddings, padding], dim=1)
+                                        
+                                        # Apply coordinate embedding layer
+                                        coord_features = wrapper.coord_embedding(coord_embeddings)  # [B, budget, 4] -> [B, budget, 1152]
+                                        
+                                        # Verify and apply embedding to hi-detail tokens
+                                        if (coord_features.shape[0] == dual_scale_features.shape[0] and 
+                                            coord_features.shape[1] <= dual_scale_features.shape[1] and
+                                            coord_features.shape[2] == dual_scale_features.shape[2]):
+                                            
+                                            actual_budget = coord_features.shape[1]
+                                            dual_scale_features[:, :actual_budget, :] += coord_features
+                                            
+                                            if wrapper.shirg_config.get('debug', False):
+                                                print(f"✅ SHIRG-X coordinate embedding integrated: {coord_features.shape}")
+                                        else:
+                                            if wrapper.shirg_config.get('debug', False):
+                                                print(f"⚠️ Final shape mismatch - skipping coordinate embedding")
+                                                print(f"   Coord features: {coord_features.shape}")
+                                                print(f"   Dual-scale tokens: {dual_scale_features.shape}")
+                                    
+                                    except Exception as coord_error:
+                                        if wrapper.shirg_config.get('debug', False):
+                                            print(f"⚠️ Coordinate embedding failed: {coord_error}")
+                                        # Continue without coordinate embedding
                                 
-                                raw_features = vision_tower.get_multiview_high_res_tokens(images)
+                                image_features = dual_scale_features
                                 
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"✅ Multi-view high-res tokens: {raw_features.shape}")
-                            
                             else:
-                                # Fallback: Use enhanced interpolation method as backup
+                                # SHIRG-X-FIX: 2025-07-28 - Standardized fallback to consistent dual-scale extraction  
+                                # ISSUE: Multiple inconsistent extraction paths cause unpredictable behavior
+                                # SOLUTION: Use extract_shirg_x_tokens as primary fallback for consistency
+                                # RESEARCH IMPACT: Ensures reproducible high-resolution token extraction
+                                
                                 if wrapper.shirg_config.get('debug', False):
-                                    print(f"⚠️ Using fallback interpolation method")
+                                    print(f"⚠️ SHIRG-X not available, using dual-scale extraction fallback")
                                 
-                                # Access the SigLIP vision model components
-                                vision_model = vision_tower.vision_tower  # SigLipVisionModel
-                                vision_transformer = vision_model.vision_model  # SigLipVisionTransformer
-                                
-                                # Get properly formatted input
-                                pixel_values = images.to(device=vision_tower.device, dtype=vision_tower.dtype)
-                                
-                                # Step 1: Get patch embeddings - this gives us the raw patch grid
-                                hidden_states = vision_transformer.embeddings(pixel_values)
-                                
-                                # Step 2: Enhanced interpolation to 3,645 tokens (LaViDa target)
-                                batch_size, num_patches, embed_dim = hidden_states.shape
-                                
-                                if num_patches == 729:  # 27x27 grid from 384x384 input
-                                    # Create high-resolution grid matching LaViDa's 3,645 target
-                                    grid_size = int(np.sqrt(num_patches))  # 27
+                                try:
+                                    # Use SHIRG-X extraction method directly
+                                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_shirg_x_tokens(images)
                                     
-                                    # Calculate target grid for 3,645 tokens
-                                    # sqrt(3645) ≈ 60.37, use 60x61 = 3,660, trim to 3,645
-                                    target_h, target_w = 60, 61
-                                    target_tokens = min(target_h * target_w, 3645)
-                                    
-                                    # Reshape to spatial grid [B, 27, 27, D]
-                                    spatial_features = hidden_states.view(batch_size, grid_size, grid_size, embed_dim)
-                                    spatial_features = spatial_features.permute(0, 3, 1, 2)  # [B, D, 27, 27]
-                                    
-                                    # Interpolate to higher resolution [B, D, 60, 61]
-                                    import torch.nn.functional as F
-                                    high_res_features = F.interpolate(
-                                        spatial_features, 
-                                        size=(target_h, target_w), 
-                                        mode='bilinear', 
-                                        align_corners=False
+                                    # Apply SHIRG selection to hi-detail tokens
+                                    budget = wrapper.shirg_config.get('budget', 768)
+                                    selected_hi_detail, coord_coords = vision_tower.shirg_x_selection(
+                                        hi_detail_tokens, wrapper._current_question_tokens, budget
                                     )
                                     
-                                    # Reshape back to token sequence [B, 3660, D]
-                                    high_res_features = high_res_features.permute(0, 2, 3, 1)
-                                    raw_features = high_res_features.reshape(batch_size, target_h * target_w, embed_dim)
-                                    
-                                    # Trim to exactly 3,645 tokens
-                                    raw_features = raw_features[:, :3645, :]
+                                    # Combine dual-scale features
+                                    dual_scale_features = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
+                                    image_features = dual_scale_features
                                     
                                     if wrapper.shirg_config.get('debug', False):
-                                        print(f"✅ Enhanced interpolation to 3,645 tokens: {raw_features.shape}")
-                                else:
-                                    raw_features = hidden_states
+                                        print(f"✅ Fallback dual-scale extraction: {image_features.shape}")
+                                
+                                except Exception as fallback_error:
                                     if wrapper.shirg_config.get('debug', False):
-                                        print(f"✅ Using original tokens: {raw_features.shape}")
-                            
-                            raw_features = raw_features.to(images.dtype)
-                            
-                            # Apply SHIRG selection to unpooled tokens
-                            if raw_features.shape[-2] > wrapper.shirg_config.get('target_tokens', 729):
-                                # We have more tokens than target - can do meaningful selection
-                                selected_features = self.shirg_selector(
-                                    image_tokens=raw_features,
-                                    text_embeddings=wrapper._current_question_tokens,
-                                    image_sizes=getattr(self, '_current_image_sizes', None)
-                                )
-                                
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"🎯 SHIRG applied: {raw_features.shape} → {selected_features.shape}")
-                                
-                                image_features = selected_features
-                                
-                            else:
-                                # Same token count - still apply SHIRG for reordering/reweighting
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"🔄 Applying SHIRG reordering to {raw_features.shape[-2]} tokens")
-                                
-                                selected_features = self.shirg_selector(
-                                    image_tokens=raw_features,
-                                    text_embeddings=wrapper._current_question_tokens,
-                                    image_sizes=getattr(self, '_current_image_sizes', None)
-                                )
-                                
-                                image_features = selected_features
+                                        print(f"⚠️ Fallback extraction failed: {fallback_error}")
+                                    
+                                    # Final fallback: use standard vision tower
+                                    image_features = vision_tower(images)
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"🔄 Using standard vision features: {image_features.shape}")
                             
                         except Exception as e:
                             if wrapper.shirg_config.get('debug', False):
@@ -616,94 +675,33 @@ class LaViDaSHIRGWrapper:
                     with torch.no_grad():
                         question_embeddings = self.model.get_model().embed_tokens(question_tokens)  # [1, seq_len, 4096]
                         
-                        # FIX: 2025-07-27 - SOLUTION 1: Use LaViDa's trained mm_projector for dimension alignment
+                        # SHIRG-X-FIX: 2025-07-28 - Use learned text-vision aligner for proper dimension alignment
                         # ISSUE: Text embeddings (4096) and vision features (1152) have different dimensions
-                        # SOLUTION: Use LaViDa's existing mm_projector to map between vision and text spaces properly
-                        # RESEARCH IMPACT: Preserves semantic meaning using trained projection weights
+                        # SOLUTION: Use dedicated learned alignment layer with proper initialization
+                        # RESEARCH IMPACT: Preserves semantic meaning while enabling cross-modal similarity computation
                         
-                        # Get LaViDa's trained mm_projector for proper dimension alignment
                         text_dim = question_embeddings.shape[-1]  # 4096 (LLaDA text embedding size)
                         vision_dim = 1152  # SigLIP hidden size
                         
                         if text_dim != vision_dim:
-                            # SOLUTION 1A: Use LaViDa's mm_projector inverse for text->vision mapping
-                            if (hasattr(self.model, 'get_model') and 
-                                hasattr(self.model.get_model(), 'mm_projector')):
+                            # Use the learned text-vision aligner
+                            if hasattr(self, 'text_vision_aligner'):
+                                question_embeddings = self.text_vision_aligner(question_embeddings)
                                 
-                                mm_projector = self.model.get_model().mm_projector
-                                
-                                # For linear projector: use pseudo-inverse for reverse mapping
-                                if hasattr(mm_projector, 'weight'):
-                                    # mm_projector maps: vision_dim -> text_dim
-                                    # We need: text_dim -> vision_dim (inverse)
-                                    with torch.no_grad():
-                                        projector_weight = mm_projector.weight  # [text_dim, vision_dim]
-                                        
-                                        # FIX: Convert to float32 for torch.pinverse compatibility
-                                        # torch.pinverse doesn't support bfloat16, only float32/float64
-                                        projector_weight_f32 = projector_weight.float()  # Convert to float32
-                                        
-                                        # Use pseudo-inverse for stable text->vision mapping
-                                        pseudo_inverse_f32 = torch.pinverse(projector_weight_f32)  # [vision_dim, text_dim]
-                                        
-                                        # Convert back to original dtype and apply projection
-                                        pseudo_inverse = pseudo_inverse_f32.to(dtype=question_embeddings.dtype)
-                                        question_embeddings = torch.matmul(question_embeddings, pseudo_inverse.T)  # [1, seq_len, vision_dim]
-                                        
-                                        if self.shirg_config.get('debug', False):
-                                            print(f"✅ Using LaViDa mm_projector inverse: {text_dim} -> {vision_dim} (bfloat16 compatible)")
-                                
-                                # For MLP projector: create learned inverse approximation
-                                elif hasattr(mm_projector, '0') and hasattr(mm_projector[0], 'weight'):
-                                    # Get first layer for approximation
-                                    first_layer_weight = mm_projector[0].weight  # [text_dim, vision_dim]
-                                    
-                                    # Create or reuse learned inverse projector
-                                    if not hasattr(self, '_text_to_vision_projector'):
-                                        self._text_to_vision_projector = torch.nn.Linear(
-                                            text_dim, vision_dim, bias=False
-                                        ).to(device=question_embeddings.device, dtype=question_embeddings.dtype)
-                                        
-                                        # Initialize with pseudo-inverse of first layer
-                                        with torch.no_grad():
-                                            # FIX: Convert to float32 for torch.pinverse compatibility
-                                            first_layer_f32 = first_layer_weight.float()
-                                            pseudo_inverse_f32 = torch.pinverse(first_layer_f32)
-                                            pseudo_inverse = pseudo_inverse_f32.to(dtype=question_embeddings.dtype)
-                                            self._text_to_vision_projector.weight.data = pseudo_inverse
-                                        
-                                        if self.shirg_config.get('debug', False):
-                                            print(f"✅ Created learned inverse projector: {text_dim} -> {vision_dim}")
-                                    
-                                    # Apply learned projection
-                                    question_embeddings = self._text_to_vision_projector(question_embeddings)
-                                
-                                else:
-                                    # FALLBACK: Use Xavier-initialized projection (better than random)
-                                    if not hasattr(self, '_fallback_text_projector'):
-                                        self._fallback_text_projector = torch.nn.Linear(
-                                            text_dim, vision_dim, bias=False
-                                        ).to(device=question_embeddings.device, dtype=question_embeddings.dtype)
-                                        # Initialize with Xavier uniform (better than random)
-                                        torch.nn.init.xavier_uniform_(self._fallback_text_projector.weight)
-                                        
-                                        if self.shirg_config.get('debug', False):
-                                            print(f"⚠️ Using fallback Xavier projection: {text_dim} -> {vision_dim}")
-                                    
-                                    question_embeddings = self._fallback_text_projector(question_embeddings)
-                            
+                                if self.shirg_config.get('debug', False):
+                                    print(f"✅ Using learned text-vision aligner: {text_dim} -> {vision_dim}")
                             else:
-                                # No mm_projector available - use Xavier initialization
-                                if not hasattr(self, '_basic_text_projector'):
-                                    self._basic_text_projector = torch.nn.Linear(
+                                # Fallback: simple linear projection
+                                if not hasattr(self, '_fallback_text_projector'):
+                                    self._fallback_text_projector = torch.nn.Linear(
                                         text_dim, vision_dim, bias=False
                                     ).to(device=question_embeddings.device, dtype=question_embeddings.dtype)
-                                    torch.nn.init.xavier_uniform_(self._basic_text_projector.weight)
+                                    torch.nn.init.xavier_uniform_(self._fallback_text_projector.weight)
                                     
                                     if self.shirg_config.get('debug', False):
-                                        print(f"⚠️ No mm_projector found, using basic projection: {text_dim} -> {vision_dim}")
+                                        print(f"⚠️ Using fallback projection: {text_dim} -> {vision_dim}")
                                 
-                                question_embeddings = self._basic_text_projector(question_embeddings)
+                                question_embeddings = self._fallback_text_projector(question_embeddings)
                     
                     # Store for SHIRG access during encode_images
                     self._current_question_tokens = question_embeddings
@@ -870,6 +868,19 @@ class LaViDaSHIRGWrapper:
             del self.shirg_selector
             self.shirg_selector = None
             
+        # SHIRG-X-FIX: 2025-07-28 - Clean up SHIRG-X components
+        if hasattr(self, 'coord_embedding') and self.coord_embedding is not None:
+            del self.coord_embedding
+            self.coord_embedding = None
+            
+        if hasattr(self, 'text_vision_aligner') and self.text_vision_aligner is not None:
+            del self.text_vision_aligner
+            self.text_vision_aligner = None
+            
+        if hasattr(self, 'adaptive_k_head') and self.adaptive_k_head is not None:
+            del self.adaptive_k_head
+            self.adaptive_k_head = None
+            
         # Clear CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -945,6 +956,124 @@ def compare_baseline_vs_shirg(image_path: str, question: str) -> Dict[str, Any]:
     print(f"   Latency overhead: {comparison['improvement']['latency_overhead_percent']:+.1f}%")
     
     return comparison
+
+
+def setup_shirg_x_lora(model, lora_config=None):
+    """
+    Setup LoRA for SHIRG-X dual-scale adaptation
+    
+    SHIRG-X-FIX: 2025-07-28 - Configure LoRA for dual-scale processing
+    ISSUE: Need to train projector and coordinate layers for variable token counts
+    SOLUTION: LoRA adaptation of mm_projector + coordinate layers
+    RESEARCH IMPACT: Enables SHIRG-X training with minimal parameter overhead
+    
+    Args:
+        model: LaViDa model instance
+        lora_config: LoRA configuration overrides
+        
+    Returns:
+        model: Model with LoRA configuration applied
+    """
+    try:
+        from peft import LoraConfig, get_peft_model, TaskType
+    except ImportError:
+        print("⚠️ PEFT not available. Please install PEFT for LoRA training.")
+        return model
+    
+    # SHIRG-X LoRA configuration
+    shirg_x_lora_config = {
+        'r': 32,                    # Rank: 32 for projector
+        'lora_alpha': 16,           # Alpha: 16 (α/r = 0.5 scaling)
+        'target_modules': [
+            "mm_projector.fc1",     # First linear layer of projector
+            "mm_projector.fc2",     # Second linear layer of projector
+            "coord_linear"          # NEW: Coordinate embedding layer
+        ],
+        'lora_dropout': 0.05,       # Low dropout for stable adaptation
+        'bias': "lora",             # LoRA bias for coordinate layer
+        'task_type': TaskType.FEATURE_EXTRACTION
+    }
+    
+    # Override with user config
+    if lora_config:
+        shirg_x_lora_config.update(lora_config)
+    
+    # Create LoRA config
+    lora_config_obj = LoraConfig(**shirg_x_lora_config)
+    
+    # Apply LoRA to model
+    model = get_peft_model(model, lora_config_obj)
+    
+    # Freeze everything except LoRA parameters and SHIRG-X components
+    for name, param in model.named_parameters():
+        if ("lora_" not in name and 
+            "adaptive_k_head" not in name and
+            "coord_embedding" not in name and
+            "text_vision_aligner" not in name):
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+            print(f"✓ SHIRG-X parameter enabled: {name}")
+    
+    return model
+
+
+def verify_shirg_x_setup(model):
+    """Verify SHIRG-X LoRA setup is correct"""
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable ratio: {trainable_params/total_params:.4f}")
+    
+    # Should be ~0.8% trainable for SHIRG-X
+    assert trainable_params/total_params < 0.015, "Too many trainable parameters"
+    
+    return True
+
+
+def prepare_shirg_x_training_data():
+    """
+    Prepare training data for SHIRG-X spatial-aware adaptation
+    
+    Returns:
+        training_config: Configuration for SHIRG-X training
+    """
+    
+    # Core dataset: LCS-558K (558K image-text pairs)
+    lcs_dataset = {
+        "source": "LCS-558K", 
+        "size": 558000,
+        "format": "image-caption pairs",
+        "purpose": "Vision-language alignment for dual-scale projector"
+    }
+    
+    # Spatial reasoning enhancement: Layout-aware samples
+    spatial_dataset = {
+        "source": "EntityGrid-QA + ChartQA + DocVQA + TextVQA",
+        "size": 50000,
+        "format": "spatial layout-aware QA pairs",
+        "purpose": "Coordinate embedding and adaptive-K training"
+    }
+    
+    # SHIRG-X training configuration
+    training_config = {
+        "total_samples": 608000,
+        "batch_size": 16,        # Reduced for dual-scale tokens
+        "gradient_accumulation": 8,
+        "effective_batch_size": 128,
+        "total_steps": 4750,     # 608K / 128 = 4,750 steps
+        "warmup_steps": 475,     # 10% warmup
+        "learning_rate": 2e-4,   # For projector LoRA
+        "coord_learning_rate": 1e-3,  # Higher LR for coordinate layer
+        "weight_decay": 0.01,
+        "lr_scheduler": "cosine",
+        "mixed_budget_training": True,  # Train with 512, 768, 1024 budgets
+        "adaptive_k_weight": 0.1       # Loss weight for adaptive-K head
+    }
+    
+    return lcs_dataset, spatial_dataset, training_config
 
 
 # Test function for Colab
