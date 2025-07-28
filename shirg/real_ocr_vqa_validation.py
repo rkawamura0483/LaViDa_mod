@@ -122,6 +122,7 @@ class RealOCRVQAValidator:
             datasets_to_load = [
                 {
                     "name": "HuggingFaceM4/ChartQA",
+                    "config": "default",
                     "split": "test",
                     "samples": 3,
                     "type": "ChartQA",
@@ -129,6 +130,7 @@ class RealOCRVQAValidator:
                 },
                 {
                     "name": "lmms-lab/DocVQA", 
+                    "config": "DocVQA",
                     "split": "validation",
                     "samples": 3,
                     "type": "DocVQA",
@@ -136,6 +138,7 @@ class RealOCRVQAValidator:
                 },
                 {
                     "name": "howard-hou/OCR-VQA",
+                    "config": None,
                     "split": "validation", 
                     "samples": 2,
                     "type": "OCR-VQA",
@@ -149,12 +152,19 @@ class RealOCRVQAValidator:
                     print(f"🔄 Loading {dataset_info['name']} ({dataset_info['samples']} samples)...")
                     
                     # Load dataset with streaming to avoid large downloads
-                    dataset = load_dataset(
-                        dataset_info['name'], 
-                        split=dataset_info['split'],
-                        streaming=True,
-                        trust_remote_code=True
-                    )
+                    if dataset_info['config']:
+                        dataset = load_dataset(
+                            dataset_info['name'], 
+                            dataset_info['config'],
+                            split=dataset_info['split'],
+                            streaming=True
+                        )
+                    else:
+                        dataset = load_dataset(
+                            dataset_info['name'], 
+                            split=dataset_info['split'],
+                            streaming=True
+                        )
                     
                     # Take first N samples
                     samples_taken = 0
@@ -163,18 +173,43 @@ class RealOCRVQAValidator:
                             break
                             
                         try:
-                            # Extract image and question
-                            if 'image' in example and example['image'] is not None:
-                                image = example['image']
+                            # Extract image and question with dataset-specific field handling
+                            image = None
+                            if dataset_info['type'] == 'DocVQA':
+                                # DocVQA has field structure: DocVQA/image
+                                if 'DocVQA/image' in example and example['DocVQA/image'] is not None:
+                                    image = example['DocVQA/image']
+                                elif 'image' in example and example['image'] is not None:
+                                    image = example['image']
+                            else:
+                                # Other datasets use standard 'image' field
+                                if 'image' in example and example['image'] is not None:
+                                    image = example['image']
+                            
+                            if image is not None:
                                 
-                                # Handle different question formats
+                                # Handle different question formats based on dataset
                                 question = "What information is shown in this image?"
-                                if 'question' in example:
-                                    question = example['question']
-                                elif 'query' in example:
-                                    question = example['query'] 
-                                elif 'questions' in example and len(example['questions']) > 0:
-                                    question = example['questions'][0]
+                                if dataset_info['type'] == 'DocVQA':
+                                    # DocVQA has field structure: DocVQA/question
+                                    if 'DocVQA/question' in example:
+                                        question = example['DocVQA/question']
+                                    elif 'question' in example:
+                                        question = example['question']
+                                elif dataset_info['type'] == 'ChartQA':
+                                    # ChartQA uses 'query' field
+                                    if 'query' in example:
+                                        question = example['query']
+                                    elif 'question' in example:
+                                        question = example['question']
+                                else:
+                                    # OCR-VQA and others use 'question' field
+                                    if 'question' in example:
+                                        question = example['question']
+                                    elif 'query' in example:
+                                        question = example['query'] 
+                                    elif 'questions' in example and len(example['questions']) > 0:
+                                        question = example['questions'][0]
                                 
                                 # Resize for SHIRG processing
                                 processed_image = self._resize_for_shirg(image)
