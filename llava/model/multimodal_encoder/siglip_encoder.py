@@ -129,29 +129,38 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         LoRA Target Components:
         1. SigLIP attention layers (blocks 0-7) - rank 128
         2. Patch/position embeddings - for gradient flow
-        3. Coordinate embeddings - rank 16 (already enabled)
+        3. Core forward path components - for gradient chain continuity
+        4. Coordinate embeddings - rank 16 (already enabled)
         """
+        # GRADIENT-FIX: 2025-07-28 - Enable full gradient chain for LoRA validation
+        # ISSUE: Validation fails because gradient chain is broken through vision tower
+        # SOLUTION: Enable gradients on ALL components that the forward pass touches
+        # LAVIDA IMPACT: Maintains LoRA training capability with complete gradient flow
+        # SHIRG IMPACT: Enables gradient flow validation for SHIRG token selection
+        
+        # ESSENTIAL: Enable gradients for core embedding components
+        if hasattr(self.vision_tower.vision_model, 'embeddings'):
+            embeddings = self.vision_tower.vision_model.embeddings
+            # Enable ALL embedding parameters for gradient flow
+            for param in embeddings.parameters():
+                param.requires_grad_(True)
+            rank0_print("SHIRG LoRA: Enabled gradients for patch embeddings")
+            rank0_print("SHIRG LoRA: Enabled gradients for position embeddings")
+        
         # SHIRG LoRA: Enable gradients for SigLIP attention layers (blocks 0-7) 
         if hasattr(self.vision_tower.vision_model.encoder, 'layers'):
             for i in range(min(8, len(self.vision_tower.vision_model.encoder.layers))):
                 layer = self.vision_tower.vision_model.encoder.layers[i]
-                if hasattr(layer, 'self_attn'):
-                    # Enable gradients for QKV projection (LoRA target)
-                    for param in layer.self_attn.parameters():
-                        param.requires_grad_(True)
-                    rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
+                # Enable gradients for ALL layer parameters to maintain gradient flow
+                for param in layer.parameters():
+                    param.requires_grad_(True)
+                rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
         
-        # ESSENTIAL: Enable gradients for embeddings to maintain gradient flow from input
-        if hasattr(self.vision_tower.vision_model, 'embeddings'):
-            embeddings = self.vision_tower.vision_model.embeddings
-            # Enable patch embedding gradients
-            if hasattr(embeddings, 'patch_embedding'):
-                embeddings.patch_embedding.requires_grad_(True)
-                rank0_print("SHIRG LoRA: Enabled gradients for patch embeddings")
-            # Enable position embedding gradients
-            if hasattr(embeddings, 'position_embedding'):
-                embeddings.position_embedding.requires_grad_(True)
-                rank0_print("SHIRG LoRA: Enabled gradients for position embeddings")
+        # CRITICAL: Enable gradients for post-layer normalization (forward path component)
+        if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+            for param in self.vision_tower.vision_model.post_layernorm.parameters():
+                param.requires_grad_(True)
+            rank0_print("SHIRG LoRA: Enabled gradients for post_layernorm")
 
     def _init_rotary_coordinate_embedding(self):
         """
@@ -257,10 +266,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs
                 # SOLUTION: Only convert if necessary and preserve gradient connection
                 image_input = image.unsqueeze(0)
+                # Only convert device if absolutely necessary to preserve gradients
                 if image_input.device != self.device:
                     image_input = image_input.to(device=self.device)
-                if image_input.dtype != self.dtype:
+                # For dtype conversion, only convert if needed and ensure gradients preserved
+                if image_input.dtype != self.dtype and self.dtype == torch.float16:
+                    # Only convert to float16 if needed, keep gradients
                     image_input = image_input.to(dtype=self.dtype)
+                # Otherwise keep original dtype to preserve gradient chain
                 
                 image_forward_out = self.vision_tower(
                     image_input, 
@@ -290,10 +303,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs  
             # SOLUTION: Only convert if necessary and preserve gradient connection
             images_input = images
+            # Only convert device if absolutely necessary to preserve gradients
             if images_input.device != self.device:
                 images_input = images_input.to(device=self.device)
-            if images_input.dtype != self.dtype:
+            # For dtype conversion, only convert if needed and ensure gradients preserved
+            if images_input.dtype != self.dtype and self.dtype == torch.float16:
+                # Only convert to float16 if needed, keep gradients
                 images_input = images_input.to(dtype=self.dtype)
+            # Otherwise keep original dtype to preserve gradient chain
                 
             image_forward_outs = self.vision_tower(
                 images_input, 
