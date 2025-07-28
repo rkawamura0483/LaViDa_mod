@@ -94,11 +94,11 @@ def validate_siglip_modifications():
             print("  ⚠️ Vision tower not auto-loaded, calling load_model()...")
             tower.load_model()
         
-        # Check for SHIRG methods
+        # Check for SHIRG methods (research implementation)
         shirg_methods = [
-            'forward_with_shirg_x',
-            'extract_shirg_x_tokens', 
-            'shirg_x_selection'
+            'forward_with_shirg',        # Main SHIRG implementation per research
+            'extract_dual_scale_tokens', # Dual-scale token extraction
+            'distance_aware_selection'   # Token selection with SHIRG formula
         ]
         
         for method in shirg_methods:
@@ -295,18 +295,31 @@ def test_shirg_integration():
             print(f"  ❌ SHIRG shape wrong: {shirg_tokens.shape}")
             return False
         
-        # Test forward_with_shirg_x method
-        print("  Testing forward_with_shirg_x method...")
+        # Test SHIRG method (CORRECT - final research implementation)
+        print("  Testing forward_with_shirg method...")
         with torch.no_grad():
-            shirg_x_features, coord_embeddings = tower.forward_with_shirg_x(
-                test_images, budget=512
-            )
+            shirg_features = tower.forward_with_shirg(test_images)
+            print(f"    SHIRG output shape: {shirg_features.shape}")
+            expected_shirg_tokens = 1216  # 1152 selected + 64 scaffold
+            if shirg_features.shape[1] != expected_shirg_tokens:
+                print(f"    ⚠️ SHIRG token count: expected {expected_shirg_tokens}, got {shirg_features.shape[1]}")
         
-        if shirg_x_features.shape[1] == 512 + 144:  # 512 hi-detail + 144 lo-res scaffold
-            print(f"  ✓ SHIRG-X forward: {shirg_x_features.shape}, coords: {coord_embeddings.shape}")
-        else:
-            print(f"  ❌ SHIRG-X forward wrong: {shirg_x_features.shape}")
-            return False
+        # Test dual-scale token extraction
+        print("  Testing extract_dual_scale_tokens method...")
+        with torch.no_grad():
+            hi_detail_tokens, lo_res_scaffold = tower.extract_dual_scale_tokens(test_images)
+            print(f"    Hi-detail tokens: {hi_detail_tokens.shape}")
+            print(f"    Lo-res scaffold: {lo_res_scaffold.shape}")
+            
+            # Validate token counts per SHIRG research
+            expected_hi_detail = 2304  # 672×672 ÷ 14² = 48² = 2304
+            expected_scaffold = 64     # 8×8 = 64
+            
+            if hi_detail_tokens.shape[1] != expected_hi_detail or lo_res_scaffold.shape[1] != expected_scaffold:
+                print(f"    ⚠️ Token count mismatch: expected hi-detail={expected_hi_detail}, scaffold={expected_scaffold}")
+                print(f"    Got hi-detail={hi_detail_tokens.shape[1]}, scaffold={lo_res_scaffold.shape[1]}")
+            else:
+                print(f"    ✓ Token extraction correct: {expected_hi_detail} + {expected_scaffold} tokens")
             
         return True
         

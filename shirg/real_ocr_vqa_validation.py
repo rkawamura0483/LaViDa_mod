@@ -1293,13 +1293,13 @@ class RealOCRVQAValidator:
             vision_tower = self.model.get_vision_tower()
             step += 1
             print(f"DEBUG: Step {step} - Checking vision tower methods...")
-            if vision_tower and hasattr(vision_tower, 'extract_shirg_x_tokens'):
+            if vision_tower and hasattr(vision_tower, 'extract_dual_scale_tokens'):
                 step += 1
-                print(f"DEBUG: Step {step} - Calling extract_shirg_x_tokens...")
+                print(f"DEBUG: Step {step} - Calling extract_dual_scale_tokens...")
                 print(f"DEBUG: image_tensor[0] shape: {image_tensor[0].shape}")
                 
                 # TENSOR-FIX: 2025-07-28 - Correct tensor shape for SHIRG extraction
-                # ISSUE: extract_shirg_x_tokens expects [B, C, H, W] but receives incorrect shape
+                # ISSUE: extract_dual_scale_tokens expects [B, C, H, W] but receives incorrect shape
                 # SOLUTION: Use image_tensor[0] directly as it already has correct [1, C, H, W] shape
                 # LAVIDA IMPACT: Fixes SigLIP embeddings unpacking error
                 # SHIRG IMPACT: Enables proper high-resolution token extraction
@@ -1323,8 +1323,8 @@ class RealOCRVQAValidator:
                 
                 try:
                     # Try primary SHIRG extraction method
-                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_shirg_x_tokens(shirg_input)
-                    print(f"DEBUG: Successfully used extract_shirg_x_tokens")
+                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_dual_scale_tokens(shirg_input)
+                    print(f"DEBUG: Successfully used extract_dual_scale_tokens")
                 except Exception as primary_error:
                     print(f"⚠️ Primary SHIRG method failed: {primary_error}")
                     

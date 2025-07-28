@@ -51,33 +51,14 @@ class SigLipShirgExtensions:
         Returns:
             visual_tokens: [B, 1216, D] selected tokens (1152 hi-detail + 64 scaffold)
         """
-        # DTYPE-FIX: 2025-07-28 - Validate input dtype consistency before processing
-        # ISSUE: Mixed dtypes between inputs and vision tower cause forward pass failures
-        # SOLUTION: Ensure all inputs match vision tower dtype before SHIRG processing
-        # LAVIDA IMPACT: Prevents dtype mismatches in SHIRG token extraction
-        # SHIRG IMPACT: Ensures stable SHIRG forward pass with consistent dtypes
-        
-        # Get vision tower dtype for consistency
+        # Ensure input dtype consistency with vision tower
         tower_dtype = next(self.vision_tower.parameters()).dtype
-        
-        # Ensure input images match vision tower dtype
         if isinstance(images, torch.Tensor) and images.dtype != tower_dtype:
-            rank0_print(f"DTYPE-FIX: Converting input images from {images.dtype} to {tower_dtype}")
             images = images.to(dtype=tower_dtype)
         elif isinstance(images, list):
             for i, img in enumerate(images):
                 if isinstance(img, torch.Tensor) and img.dtype != tower_dtype:
-                    rank0_print(f"DTYPE-FIX: Converting input image {i} from {img.dtype} to {tower_dtype}")
                     images[i] = img.to(dtype=tower_dtype)
-        
-        # TENSOR-FIX: 2025-07-28 - CRITICAL: Complete SHIRG implementation with proper tensor flow
-        # ISSUE: The error occurs because SHIRG extracts 2304 tokens but LaViDa expects different counts
-        # ROOT CAUSE: Method tries to combine SHIRG and baseline processing incorrectly  
-        # SOLUTION: Implement complete SHIRG pipeline that outputs exactly 1216 tokens as per research
-        # LAVIDA IMPACT: Enables SHIRG to work with LaViDa's mm_projector expecting specific token counts
-        # SHIRG IMPACT: Fixes core tensor dimension mismatch preventing SHIRG from working
-        
-        rank0_print(f"SHIRG-DEBUG: Starting SHIRG forward with input shape: {images.shape if hasattr(images, 'shape') else 'list'}")
         
         try:
             # Step 1: Extract dual-scale tokens according to SHIRG methodology
@@ -99,64 +80,41 @@ class SigLipShirgExtensions:
             # CRITICAL: Order matters for cache compatibility - scaffold first, then selected
             visual_tokens = torch.cat([lo_res_scaffold, selected_tokens], dim=1)
             
-            # Verify SHIRG token count matches research specification
+            # Verify SHIRG token count matches research specification (1216 tokens)
             B, N, D = visual_tokens.shape
             expected_tokens = 1216  # 64 scaffold + 1152 selected per SHIRG methodology
-            rank0_print(f"SHIRG-DEBUG: Combined tokens shape: {visual_tokens.shape}, expected: [B, {expected_tokens}, D]")
             
             if N != expected_tokens:
-                rank0_print(f"⚠️ SHIRG token count mismatch: expected {expected_tokens}, got {N}")
-                
-                # CRITICAL-FIX: 2025-07-28 - Handle token count mismatch gracefully
-                # ISSUE: Token selection may not produce exactly 1152 tokens due to constraints
-                # SOLUTION: Pad or truncate to exactly 1216 tokens for mm_projector compatibility
-                # LAVIDA IMPACT: Ensures mm_projector receives expected token count
-                # SHIRG IMPACT: Maintains SHIRG functionality even with selection variations
-                
                 if N > expected_tokens:
-                    # Truncate excess tokens
                     visual_tokens = visual_tokens[:, :expected_tokens, :]
-                    rank0_print(f"SHIRG-FIX: Truncated tokens from {N} to {expected_tokens}")
                 elif N < expected_tokens:
-                    # Pad with zero tokens
                     padding_size = expected_tokens - N
                     padding = torch.zeros(B, padding_size, D, device=visual_tokens.device, dtype=visual_tokens.dtype)
                     visual_tokens = torch.cat([visual_tokens, padding], dim=1)
-                    rank0_print(f"SHIRG-FIX: Padded tokens from {N} to {expected_tokens}")
             
-            # Step 4: Ensure gradient flow for LoRA training compatibility
+            # Ensure gradient flow for LoRA training compatibility
             visual_tokens = self.ensure_gradient_flow(visual_tokens, images)
             
-            # Step 5: Final dtype consistency check for LaViDa integration
-            # DTYPE-FIX: 2025-07-28 - Ensure tokens match LaViDa's expected BFloat16 dtype
+            # Final dtype consistency check for LaViDa integration
             if torch.cuda.is_available() and visual_tokens.dtype != torch.bfloat16:
-                rank0_print(f"DTYPE-FIX: Converting SHIRG tokens from {visual_tokens.dtype} to BFloat16")
                 visual_tokens = visual_tokens.to(torch.bfloat16)
             
-            # Step 6: Validate cache compatibility per SHIRG research requirements
+            # Validate cache compatibility per SHIRG research requirements
             is_valid, message = self.validate_cache_compatibility(visual_tokens)
             if not is_valid:
                 rank0_print(f"⚠️ SHIRG cache validation failed: {message}")
-            else:
-                rank0_print(f"✅ SHIRG cache validation passed: {message}")
             
-            rank0_print(f"SHIRG-DEBUG: Final output shape: {visual_tokens.shape}")
             return visual_tokens
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")
             import traceback
-            rank0_print(f"SHIRG-DEBUG: Traceback: {traceback.format_exc()}")
+            rank0_print(f"Traceback: {traceback.format_exc()}")
             
-            # FALLBACK-FIX: 2025-07-28 - Proper fallback to baseline LaViDa processing
-            # ISSUE: Fallback calls non-existent method _forward_standard_lavida
-            # SOLUTION: Process images using standard LaViDa 384×384 pipeline
-            # LAVIDA IMPACT: Ensures validation can continue even if SHIRG fails
-            # SHIRG IMPACT: Provides graceful degradation for debugging
-            
+            # Fallback to baseline LaViDa processing
             rank0_print("SHIRG-FALLBACK: Using baseline LaViDa processing (384×384 → 729 tokens)")
             
-            # Process using standard LaViDa pipeline
+            # Resize to 384×384 for baseline processing
             if hasattr(images, 'shape') and len(images.shape) == 4:
                 B, C, H, W = images.shape
                 if H != 384 or W != 384:
@@ -179,77 +137,19 @@ class SigLipShirgExtensions:
                 image_forward_outs = self.vision_tower(images, output_hidden_states=True)
                 fallback_tokens = image_forward_outs.hidden_states[-1]
             
-            rank0_print(f"SHIRG-FALLBACK: Baseline tokens shape: {fallback_tokens.shape}")
             return fallback_tokens
     
-    def forward_with_shirg_x(self, images, budget=1152, text_embeddings=None):
-        """
-        SHIRG-X: Dual-Scale Spatially Aware Token Selection (Legacy)
-        
-        Args:
-            images: Input images [B, C, H, W]
-            budget: int - number of tokens to select (default 1152) 
-            text_embeddings: optional text embeddings for relevance scoring
-        """
-        # Handle parameter order confusion from validation calls
-        if isinstance(budget, torch.Tensor) and text_embeddings is None:
-            # forward_with_shirg_x(images, text_embeddings) - budget omitted
-            actual_text_embeddings = budget
-            actual_budget = 1152
-        elif isinstance(budget, int):
-            actual_text_embeddings = text_embeddings
-            actual_budget = budget
-        else:
-            # Fallback
-            actual_text_embeddings = None
-            actual_budget = 1152
-            
-        if actual_budget == 1152:
-            # Use optimized SHIRG-Fixed for standard case (55% keep-rate)
-            return self.forward_with_shirg_fixed(images, actual_text_embeddings), None
-        
-        # SHIRG-X Step 1: Extract dual-scale tokens
-        hi_detail_tokens, lo_res_scaffold = self.extract_shirg_x_tokens(images)
-        
-        # SHIRG-X Step 1.5: Adaptive-K budget prediction (if enabled)
-        if hasattr(self, 'adaptive_k_head') and actual_budget is None:
-            # Use adaptive budget prediction
-            adaptive_budgets = self.compute_adaptive_k_budget(hi_detail_tokens)
-            target_tokens = adaptive_budgets[0].item()  # Use first batch's budget for simplicity
-            
-            if hasattr(self, '_debug_enabled') and self._debug_enabled:
-                print(f"🎯 SHIRG-X adaptive budget: {target_tokens} (from entropy analysis)")
-        else:
-            # Use fixed budget
-            target_tokens = actual_budget if actual_budget is not None else 1152
-        
-        # SHIRG-X Step 2: Apply distance-aware token selection to hi-detail tokens
-        selected_hi_detail, coord_coords = self.shirg_x_selection(
-            hi_detail_tokens, actual_text_embeddings, target_tokens
-        )
-        
-        # SHIRG-X Step 3: Combine hi-detail + lo-res scaffold
-        dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
-        
-        # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
-        # DTYPE-FIX: 2025-07-28 - Ensure BFloat16 consistency with LaViDa model
-        # ISSUE: Target dtype should match LaViDa model expectations (BFloat16)
-        # SOLUTION: Use BFloat16 if available, otherwise use input dtype
-        target_dtype = torch.bfloat16 if torch.cuda.is_available() and hasattr(images, 'dtype') else (images.dtype if hasattr(images, 'dtype') else torch.float32)
-        if dual_scale_tokens.dtype != target_dtype:
-            dual_scale_tokens = dual_scale_tokens.to(dtype=target_dtype)
-        return dual_scale_tokens, coord_coords
 
-    def extract_shirg_x_tokens(self, images):
+    def extract_dual_scale_tokens(self, images):
         """
-        SHIRG-X: Extract dual-scale tokens for SHIRG research compatibility
+        SHIRG: Extract dual-scale tokens per research methodology (Section 3.3.1)
         
         Args:
             images: Input images [B, C, H, W]
             
         Returns:
             hi_detail_tokens: [B, 2304, D] high-resolution tokens from 672×672
-            lo_res_scaffold: [B, 64, D] low-resolution scaffold tokens
+            lo_res_scaffold: [B, 64, D] low-resolution scaffold tokens from 8×8 pooling
         """
         start_time = time.time()
         
@@ -263,7 +163,7 @@ class SigLipShirgExtensions:
             raise ValueError(f"Input images must be a tensor with shape attribute, got {type(images)}")
         
         original_shape = images.shape
-        rank0_print(f"SHIRG-DEBUG: extract_shirg_x_tokens input shape: {original_shape}")
+        rank0_print(f"SHIRG-DEBUG: extract_dual_scale_tokens input shape: {original_shape}")
         
         # Handle different tensor dimensions
         if len(images.shape) == 5:
@@ -765,100 +665,6 @@ class SigLipShirgExtensions:
         
         return hi_detail_tokens
 
-    def shirg_fixed_selection(self, hi_detail_tokens, text_embeddings=None):
-        """
-        SHIRG-Fixed: Optimized token selection with fixed K=1,152 and coverage guarantee
-        
-        TOKEN-SELECTION-FIX: 2025-07-28 - Fix static selection to be image-content-aware
-        ISSUE: Previous implementation used static similarity scoring producing identical patterns
-        SOLUTION: Use proper content-aware scoring with neighbor distances per SHIRG research
-        LAVIDA IMPACT: Enables adaptive token selection based on actual image content
-        SHIRG IMPACT: Fixes core research objective while maintaining performance targets
-        
-        Args:
-            hi_detail_tokens: [B, N, D] high-resolution tokens (N=2304)
-            text_embeddings: Optional text embeddings for relevance scoring
-            
-        Returns:
-            selected_tokens: [B, 1152, D] selected high-importance tokens
-        """
-        B, N, D = hi_detail_tokens.shape
-        
-        # Setup spatial processing parameters
-        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
-        H = W = int(math.sqrt(N))  # 48×48 grid for 2304 tokens
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Implement content-aware similarity scoring
-        # ISSUE: Previous static norm-based scoring ignored image content differences
-        # SOLUTION: Use feature variance + magnitude for content-aware importance
-        # RESEARCH IMPACT: Enables selection to adapt to different visual content per image
-        
-        if text_embeddings is not None and hasattr(text_embeddings, 'transpose'):
-            # Query-aware scoring using actual text-image similarity
-            similarity_scores = torch.matmul(
-                F.normalize(hi_detail_tokens, dim=-1),
-                F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
-            ).mean(dim=-1)  # [B, N]
-        else:
-            # Content-aware query-agnostic scoring: measure information richness
-            token_variance = torch.var(hi_detail_tokens, dim=-1)  # [B, N] - varies per image
-            token_magnitude = torch.mean(torch.abs(hi_detail_tokens), dim=-1)  # [B, N] - content strength
-            
-            # Combine variance (detail) + magnitude (strength) for content awareness
-            similarity_scores = 0.6 * F.normalize(token_variance, dim=-1) + 0.4 * F.normalize(token_magnitude, dim=-1)
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Implement proper neighbor distance computation
-        # ISSUE: Previous reduced-feature variance was not proper neighbor distance
-        # SOLUTION: Use efficient spatial neighbor distance computation
-        # RESEARCH IMPACT: Prevents clustering, ensures spatial diversity as per SHIRG
-        
-        neighbor_distances = self.compute_neighbor_distances_efficient(hi_detail_tokens, H, W)  # [B, N]
-        
-        # Vectorized center distance computation (kept for efficiency)
-        row_indices = torch.arange(H, device=hi_detail_tokens.device).view(H, 1).expand(H, W).flatten()
-        col_indices = torch.arange(W, device=hi_detail_tokens.device).view(1, W).expand(H, W).flatten()
-        
-        # Center coordinates
-        center_row, center_col = H // 2, W // 2
-        
-        # Vectorized distance computation
-        center_distances = torch.sqrt(
-            (row_indices - center_row).float() ** 2 + 
-            (col_indices - center_col).float() ** 2
-        ) / (H * 0.7)  # [N]
-        center_distances = center_distances.unsqueeze(0).expand(B, -1)  # [B, N]
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Apply complete SHIRG scoring formula with proper normalization
-        # ISSUE: Previous implementation had incorrect neighbor distance and normalization
-        # SOLUTION: Use exact SHIRG formula with proper component normalization
-        # RESEARCH IMPACT: Matches SHIRG methodology exactly as specified in research proposal
-        
-        # Normalize all components for stable combination
-        similarity_norm = F.normalize(similarity_scores, dim=-1)
-        neighbor_norm = F.normalize(neighbor_distances, dim=-1)
-        center_norm = F.normalize(center_distances, dim=-1)
-        
-        # Apply SHIRG distance-aware scoring formula
-        importance_scores = (
-            0.7 * similarity_norm -           # Content relevance (varies per image)
-            0.2 * neighbor_norm -             # Spatial diversity (prevents clustering)
-            0.1 * center_norm                 # Central bias (spatial balance)
-        )
-        
-        # Apply coverage guarantee to ensure spatial distribution
-        importance_scores = self.ensure_coverage_8x8_optimized(importance_scores, H, W)
-        
-        # Select top-K tokens (K=1152, 55% keep-rate)
-        K = 1152
-        selected_indices = torch.topk(importance_scores, K, dim=1).indices  # [B, K]
-        
-        # Gather selected tokens
-        selected_tokens = torch.gather(
-            hi_detail_tokens, 1, 
-            selected_indices.unsqueeze(-1).expand(-1, -1, D)
-        )  # [B, K, D]
-        
-        return selected_tokens
 
     def ensure_coverage_8x8_fixed(self, importance_scores, H, W):
         """
@@ -955,15 +761,6 @@ class SigLipShirgExtensions:
         
         return boosted_scores
 
-    def extract_dual_scale_tokens(self, images):
-        """
-        SHIRG: Extract dual-scale tokens (hi-detail + lo-res scaffold)
-        
-        Returns:
-            hi_detail_tokens: [B, 2304, D] from 672×672 processing
-            lo_res_scaffold: [B, 64, D] from 8×8 average pooling
-        """
-        return self.extract_shirg_x_tokens(images)
 
     def validate_cache_compatibility(self, visual_tokens):
         """
@@ -1236,138 +1033,7 @@ class SigLipShirgExtensions:
         return merged_tokens
 
 
-    def shirg_x_selection(self, hi_detail_tokens, text_embeddings=None, budget=1152):
-        """
-        SHIRG-X: Distance-aware token selection implementation
-        
-        TENSOR-FIX: 2025-07-28 - Fix tensor dimension consistency for concatenation
-        ISSUE: Method returns inconsistent tensor shapes causing concatenation errors
-        SOLUTION: Always return (selected_tokens, coord_embeddings) tuple with correct dimensions
-        LAVIDA IMPACT: Maintains proper tensor flow for LaViDa integration
-        SHIRG IMPACT: Fixes critical tensor dimension mismatch in forward_with_shirg_x
-        """
-        B, N, D = hi_detail_tokens.shape
-        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
-        H = W = int(math.sqrt(N))
-        
-        # Setup spatial parameters (no coordinate computation needed)
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Implement content-aware similarity scoring
-        # ISSUE: Previous implementation used static token norms producing identical patterns
-        # SOLUTION: Use feature variance + magnitude for image-content-aware scoring
-        # RESEARCH IMPACT: Enables selection to vary based on actual image content
-        
-        if text_embeddings is not None and isinstance(text_embeddings, torch.Tensor) and text_embeddings.dim() >= 2:
-            # Valid text embeddings tensor - use actual text-image similarity
-            similarity_scores = torch.matmul(
-                F.normalize(hi_detail_tokens, dim=-1),
-                F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
-            ).mean(dim=-1)
-        else:
-            # Content-aware query-agnostic scoring: use token information content
-            token_variance = torch.var(hi_detail_tokens, dim=-1)  # [B, N] - varies per image
-            token_magnitude = torch.mean(torch.abs(hi_detail_tokens), dim=-1)  # [B, N] - content strength
-            
-            # Combine variance (detail richness) + magnitude (feature strength)
-            similarity_scores = 0.6 * F.normalize(token_variance, dim=-1) + 0.4 * F.normalize(token_magnitude, dim=-1)
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Vectorized center distance computation for efficiency
-        # ISSUE: Previous loop-based computation was inefficient O(N) operation
-        # SOLUTION: Use vectorized grid operations for faster center distance computation
-        # PERFORMANCE IMPACT: Reduces computation time while maintaining accuracy
-        
-        indices = torch.arange(N, device=hi_detail_tokens.device, dtype=torch.float32)
-        rows = torch.div(indices, W, rounding_mode='floor')
-        cols = indices % W
-        center_row, center_col = H // 2, W // 2
-        center_distances = torch.sqrt((rows - center_row)**2 + (cols - center_col)**2)
-        center_distances = center_distances.unsqueeze(0).expand(B, -1) / (H * 0.7)  # [B, N]
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Implement proper neighbor distance computation
-        # ISSUE: Previous token variance was not proper neighbor distance per SHIRG research
-        # SOLUTION: Use efficient spatial neighbor distance computation
-        # RESEARCH IMPACT: Prevents clustering, ensures spatial diversity as specified in SHIRG
-        
-        neighbor_distances = self.compute_neighbor_distances_efficient(hi_detail_tokens, H, W)  # [B, N]
-        
-        # TOKEN-SELECTION-FIX: 2025-07-28 - Apply complete SHIRG scoring formula with proper normalization
-        # ISSUE: Previous implementation didn't normalize components before combination
-        # SOLUTION: Normalize all components for stable scoring combination
-        # RESEARCH IMPACT: Matches SHIRG methodology exactly as specified in proposal
-        
-        # Normalize all components for stable combination
-        similarity_norm = F.normalize(similarity_scores, dim=-1)
-        neighbor_norm = F.normalize(neighbor_distances, dim=-1)
-        center_norm = F.normalize(center_distances, dim=-1)
-        
-        # Apply SHIRG distance-aware scoring formula (Section 3.3.2)
-        importance_scores = (
-            0.7 * similarity_norm -           # Text-image similarity (content relevance)
-            0.2 * neighbor_norm -             # Distance to neighbors (spatial diversity)
-            0.1 * center_norm                 # Distance to center (central bias)
-        )
-        
-        # Top-K selection
-        selected_indices = torch.topk(importance_scores, budget, dim=1).indices
-        selected_tokens = torch.gather(
-            hi_detail_tokens, 1,
-            selected_indices.unsqueeze(-1).expand(-1, -1, D)
-        )
-        
-        # TENSOR-FIX: 2025-07-28 - Create placeholder coordinate embeddings to maintain API consistency
-        # ISSUE: forward_with_shirg_x expects (tokens, coords) tuple return
-        # SOLUTION: Return dummy coordinate embeddings with same batch size
-        # LAVIDA IMPACT: Maintains API compatibility without breaking tensor dimensions
-        # SHIRG IMPACT: Enables coordinate-free token selection while preserving interface
-        coord_embeddings = torch.zeros(B, budget, 4, device=hi_detail_tokens.device, dtype=hi_detail_tokens.dtype)
-        
-        return selected_tokens, coord_embeddings
 
-    def compute_patch_centroids(self, H=48, W=48):
-        """
-        SHIRG-X: Compute normalized (x, y, h, w) coordinates for each patch
-        """
-        return self.compute_patch_coordinates(H, W)
-
-    def compute_adaptive_k_budget(self, hi_detail_tokens):
-        """
-        SHIRG: Compute adaptive token budget based on image complexity
-        """
-        B, N, D = hi_detail_tokens.shape
-        
-        # Simple entropy-based budget computation
-        token_entropy = self.compute_patch_entropy(hi_detail_tokens)
-        
-        # Budget ranges from 768 (low complexity) to 1536 (high complexity)
-        min_budget, max_budget = 768, 1536
-        normalized_entropy = torch.clamp(token_entropy / 10.0, 0, 1)
-        adaptive_budgets = min_budget + (max_budget - min_budget) * normalized_entropy
-        
-        return adaptive_budgets.int()
-
-    def compute_patch_entropy(self, tokens):
-        """
-        SHIRG: Compute entropy-based complexity measure for patches
-        """
-        B, N, D = tokens.shape
-        
-        # Compute token variance as complexity proxy
-        token_variance = torch.var(tokens, dim=-1)  # [B, N]
-        patch_entropy = torch.mean(token_variance, dim=-1)  # [B]
-        
-        return patch_entropy
-
-    def forward_with_shirg_fixed(self, images, text_embeddings=None):
-        """
-        SHIRG-Fixed: Optimized implementation with fixed parameters
-        """
-        # Extract high-resolution tokens
-        hi_detail_tokens = self.extract_high_res_tokens_fixed(images)
-        
-        # Apply fixed token selection (K=1152)
-        selected_tokens = self.shirg_fixed_selection(hi_detail_tokens, text_embeddings)
-        
-        return selected_tokens
     
     def shirg_token_selection(self, tokens, budget=1152, text_embeddings=None):
         """
@@ -1375,7 +1041,7 @@ class SigLipShirgExtensions:
         
         Args:
             tokens: [B, N, D] input tokens
-            budget: int - number of tokens to select (or text_embeddings if passed as 2nd arg)
+            budget: int - number of tokens to select (default 1152 per research)
             text_embeddings: optional text embeddings for scoring
         """
         # Handle parameter order confusion from validation calls
@@ -1391,21 +1057,12 @@ class SigLipShirgExtensions:
             actual_text_embeddings = None
             actual_budget = 1152
             
-        # Use adaptive selection if budget differs from default
-        if actual_budget != 1152:
-            # Use distance-aware selection with custom budget
-            selected_tokens = self.distance_aware_selection(
-                tokens, actual_text_embeddings, budget=actual_budget
-            )
-        else:
-            # Use optimized fixed selection for default case
-            selected_tokens = self.shirg_fixed_selection(tokens, actual_text_embeddings)
+        # Use distance-aware selection (main SHIRG method)
+        selected_tokens = self.distance_aware_selection(
+            tokens, actual_text_embeddings, budget=actual_budget
+        )
         
-        # Add summary token for LaViDa compatibility
-        B, K, D = selected_tokens.shape
-        summary_token = selected_tokens.mean(dim=1).unsqueeze(1)  # [B, 1, D]
-        
-        return torch.cat([selected_tokens, summary_token], dim=1)  # [B, K+1, D]
+        return selected_tokens
     
     def _compute_edge_density_boost(self, tokens):
         """

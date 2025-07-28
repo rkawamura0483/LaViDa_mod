@@ -454,9 +454,46 @@ class LaViDaSHIRGWrapper:
                             # SOLUTION: Use SHIRG-X dual-scale architecture without coordinate embeddings
                             # RESEARCH IMPACT: Tests SHIRG-X spatial preservation hypothesis
                             
-                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg-fixed')  # Default to SHIRG-Fixed
+                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg')  # Default to main SHIRG method
                             
-                            if shirg_mode == 'shirg-fixed' and hasattr(vision_tower, 'forward_with_shirg_fixed'):
+                            if shirg_mode == 'shirg' and hasattr(vision_tower, 'forward_with_shirg'):
+                                # SHIRG: Main research implementation (1152 selected + 64 scaffold = 1216 tokens)
+                                if wrapper.shirg_config.get('debug', False):
+                                    print(f"🔍 Using main SHIRG processing (1152+64=1216 tokens)")
+                                
+                                try:
+                                    # Main SHIRG method with optional text embeddings
+                                    text_embeddings = wrapper._current_question_tokens
+                                    if text_embeddings is not None:
+                                        # Validate text embeddings shape and dtype
+                                        if text_embeddings.dim() != 3:
+                                            text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
+                                        # Ensure text embeddings are on correct device
+                                        if text_embeddings.device != images.device:
+                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
+                                    
+                                    # Call main SHIRG method
+                                    selected_features = vision_tower.forward_with_shirg(
+                                        images, text_embeddings=text_embeddings
+                                    )
+                                    
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"✅ SHIRG processing: {selected_features.shape}")
+                                    
+                                    return selected_features
+                                    
+                                except Exception as shirg_error:
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"❌ SHIRG forward_with_shirg failed: {shirg_error}")
+                                        import traceback
+                                        traceback.print_exc()
+                                    
+                                    # Fallback to baseline
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print("📉 Falling back to baseline LaViDa processing")
+                                    return vision_tower._forward_standard_lavida(images)
+                            
+                            elif shirg_mode == 'shirg-fixed' and hasattr(vision_tower, 'forward_with_shirg_fixed'):
                                 # SHIRG-Fixed: Consistent K=768 selection with coverage guarantee
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🔍 Using SHIRG-Fixed processing (K=768)")
@@ -488,76 +525,36 @@ class LaViDaSHIRGWrapper:
                                         print(f"❌ SHIRG-Fixed failed: {shirg_fixed_error}")
                                     raise shirg_fixed_error
                                     
-                            elif shirg_mode == 'shirg-x' and hasattr(vision_tower, 'forward_with_shirg_x'):
-                                # SHIRG-X: Dual-scale processing
+                            elif shirg_mode == 'shirg-x':
+                                # SHIRG-X mode deprecated, falling back to main SHIRG method
                                 if wrapper.shirg_config.get('debug', False):
-                                    print(f"🔍 Using SHIRG-X dual-scale processing")
-                                
-                                # SHIRG-X-FIX: 2025-07-28 - Robust parameter handling for forward_with_shirg_x
-                                # ISSUE: Need to handle various parameter configurations safely
-                                # SOLUTION: Validate parameters and provide safe defaults
-                                # RESEARCH IMPACT: Ensures SHIRG-X method is called correctly in all scenarios
+                                    print(f"⚠️ SHIRG-X mode deprecated, using main SHIRG method")
                                 
                                 try:
-                                    # Get budget from config with validation
-                                    budget = wrapper.shirg_config.get('budget', 768)
-                                    if budget not in [512, 768, 1024]:
-                                        if wrapper.shirg_config.get('debug', False):
-                                            print(f"⚠️ Invalid budget {budget}, using 768")
-                                        budget = 768
-                                    
-                                    # Ensure text embeddings are properly formatted
+                                    # Use main SHIRG method
                                     text_embeddings = wrapper._current_question_tokens
                                     if text_embeddings is not None:
-                                        # Validate text embeddings shape and dtype
                                         if text_embeddings.dim() != 3:
-                                            if wrapper.shirg_config.get('debug', False):
-                                                print(f"⚠️ Reshaping text embeddings: {text_embeddings.shape}")
                                             text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
-                                        
-                                        # Ensure text embeddings are on correct device
                                         if text_embeddings.device != images.device:
                                             text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
                                     
-                                    # SHIRG-X-FIX: 2025-07-28 - Pre-process device/dtype consistency check
-                                    # ISSUE: Need to ensure all components are ready before SHIRG-X processing
-                                    # SOLUTION: Final consistency check right before SHIRG-X call
-                                    # RESEARCH IMPACT: Prevents tensor operation failures during SHIRG-X forward pass
-                                    if hasattr(wrapper, '_ensure_shirg_x_device_consistency'):
-                                        wrapper._ensure_shirg_x_device_consistency()
-                                    
-                                    # SHIRG-X-FIX: 2025-07-28 - Monitor GPU memory before token processing
-                                    # ISSUE: SHIRG-X processes 3.4x more tokens which could cause OOM
-                                    # SOLUTION: Check memory before processing and warn if approaching limits
-                                    # RESEARCH IMPACT: Prevents OOM failures during SHIRG-X dual-scale processing
-                                    if hasattr(wrapper, 'check_gpu_memory_shirg_x'):
-                                        memory_info = wrapper.check_gpu_memory_shirg_x("before SHIRG-X")
-                                        if memory_info.get("level") == "critical":
-                                            # Try to free some memory before proceeding
-                                            torch.cuda.empty_cache()
-                                            print("🧹 Cleared CUDA cache before SHIRG-X processing")
-                                    
-                                    # Call SHIRG-X with validated parameters
-                                    dual_scale_features = vision_tower.forward_with_shirg_x(
-                                        images=images, 
-                                        text_embeddings=text_embeddings,
-                                        budget=budget
+                                    # Call main SHIRG method
+                                    image_features = vision_tower.forward_with_shirg(
+                                        images, text_embeddings=text_embeddings
                                     )
                                     
-                                    # Monitor memory after SHIRG-X processing
-                                    if hasattr(wrapper, 'check_gpu_memory_shirg_x'):
-                                        wrapper.check_gpu_memory_shirg_x("after SHIRG-X")
-                                    
-                                except Exception as shirg_x_error:
                                     if wrapper.shirg_config.get('debug', False):
-                                        print(f"❌ SHIRG-X forward_with_shirg_x failed: {shirg_x_error}")
-                                    raise shirg_x_error
-                                
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"🎯 SHIRG-X dual-scale: {dual_scale_features.shape}")
-                                
-                                
-                                image_features = dual_scale_features
+                                        print(f"✅ SHIRG processing (fallback): {image_features.shape}")
+                                    
+                                    return image_features
+                                    
+                                except Exception as shirg_error:
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"❌ SHIRG-X fallback failed: {shirg_error}")
+                                    
+                                    # Final fallback to baseline LaViDa processing
+                                    return vision_tower._forward_standard_lavida(images)
                                 
                             else:
                                 # SHIRG-X-FIX: 2025-07-28 - Standardized fallback to consistent dual-scale extraction  
@@ -570,16 +567,16 @@ class LaViDaSHIRGWrapper:
                                 
                                 try:
                                     # Use SHIRG-X extraction method directly
-                                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_shirg_x_tokens(images)
+                                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_dual_scale_tokens(images)
                                     
                                     # Apply SHIRG selection to hi-detail tokens
-                                    budget = wrapper.shirg_config.get('budget', 768)
-                                    selected_hi_detail = vision_tower.shirg_x_selection(
+                                    budget = wrapper.shirg_config.get('budget', 1152)  # SHIRG research default
+                                    selected_hi_detail = vision_tower.distance_aware_selection(
                                         hi_detail_tokens, wrapper._current_question_tokens, budget
                                     )
                                     
-                                    # Combine dual-scale features
-                                    dual_scale_features = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
+                                    # Combine dual-scale features (scaffold first, then selected)
+                                    dual_scale_features = torch.cat([lo_res_scaffold, selected_hi_detail], dim=1)
                                     image_features = dual_scale_features
                                     
                                     if wrapper.shirg_config.get('debug', False):

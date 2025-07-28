@@ -399,16 +399,16 @@ class ComprehensiveValidator:
                     # Test baseline tokens
                     baseline_tokens = self.tower.forward(test_images)
                     
-                    # Test SHIRG-X dual-scale extraction
-                    shirg_x_tokens, coord_embeddings = self.tower.forward_with_shirg_x(test_images, budget=768)
+                    # Test SHIRG dual-scale extraction (CORRECT METHOD)
+                    shirg_tokens = self.tower.forward_with_shirg(test_images)
                     
-                    # Extract hi-detail tokens for comparison
-                    hi_detail_tokens, lo_res_scaffold = self.tower.extract_shirg_x_tokens(test_images)
+                    # Extract dual-scale tokens for analysis
+                    hi_detail_tokens, lo_res_scaffold = self.tower.extract_dual_scale_tokens(test_images)
                 
                 # Semantic quality checks
                 self._validate_token_semantics(test_name, {
                     "baseline": baseline_tokens,
-                    "shirg_x": shirg_x_tokens, 
+                    "shirg": shirg_tokens,  # CORRECT SHIRG output
                     "hi_detail": hi_detail_tokens,
                     "lo_res_scaffold": lo_res_scaffold
                 }, details, metrics, issues)
@@ -838,17 +838,8 @@ class ComprehensiveValidator:
                     small_test = small_test.to(self.tower.device)
                 
                 with torch.enable_grad():
-                    # Test with minimal target tokens to reduce memory usage
-                    shirg_output = self.tower.forward_with_shirg(small_test)  # Use default SHIRG selection
-                    
-                    # GRADIENT-FIX: 2025-07-28 - Handle tuple return from forward_with_shirg
-                    # ISSUE: forward_with_shirg returns (tokens, coords) tuple, not just tokens
-                    # SOLUTION: Extract tokens from tuple for gradient computation
-                    # VALIDATION IMPACT: Fixes 'tuple' object has no attribute 'numel' error
-                    if isinstance(shirg_output, tuple):
-                        shirg_tokens = shirg_output[0]  # Extract tokens from (tokens, coords) tuple
-                    else:
-                        shirg_tokens = shirg_output
+                    # Test SHIRG method (returns tokens directly, not tuple)
+                    shirg_tokens = self.tower.forward_with_shirg(small_test)  # Use default SHIRG selection
                     
                     # Use only a small part for gradient computation
                     if shirg_tokens.numel() > 100:
@@ -2826,8 +2817,8 @@ class ComprehensiveValidator:
             return False
         
         required_methods = [
-            'forward_with_shirg_x', 'extract_shirg_x_tokens', 
-            'shirg_x_selection'
+            'extract_dual_scale_tokens', 
+            'distance_aware_selection'
         ]
         
         return all(hasattr(self.tower, method) for method in required_methods)

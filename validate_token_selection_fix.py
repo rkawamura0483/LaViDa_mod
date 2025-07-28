@@ -122,10 +122,10 @@ def test_token_selection_diversity():
             
             # Extract high-resolution tokens using SHIRG
             with torch.no_grad():
-                hi_detail_tokens, lo_res_scaffold = vision_tower.extract_shirg_x_tokens(image_tensor)
+                hi_detail_tokens, lo_res_scaffold = vision_tower.extract_dual_scale_tokens(image_tensor)
                 
                 # Apply SHIRG selection to see which tokens are selected
-                selected_tokens = vision_tower.shirg_fixed_selection(hi_detail_tokens)
+                selected_tokens = vision_tower.distance_aware_selection(hi_detail_tokens, budget=1152)
                 
                 # Get selection indices by comparing original vs selected
                 B, N, D = hi_detail_tokens.shape
