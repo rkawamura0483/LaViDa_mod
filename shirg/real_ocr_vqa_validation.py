@@ -82,36 +82,42 @@ class RealOCRVQAValidator:
         self.conv_template_name = "llada"
         
     def run_real_ocr_vqa_validation(self):
-        """Run validation on real OCR/VQA images"""
-        print("🔍 SHIRG REAL OCR/VQA IMAGE VALIDATION")
+        """Run validation on real OCR/VQA images with sequential model loading"""
+        print("🔍 SHIRG REAL OCR/VQA IMAGE VALIDATION (SEQUENTIAL)")
         print("=" * 60)
         
-        # Load both baseline and SHIRG models
-        self._load_baseline_model()
-        self._load_shirg_model()
+        # SEQUENTIAL-FIX: 2025-07-28 - Load models sequentially to prevent GPU OOM
+        # ISSUE: Loading both models simultaneously causes GPU memory exhaustion (39.5GB/39.56GB)
+        # SOLUTION: Load baseline first, run all inferences, clear memory, then load SHIRG
+        # MEMORY IMPACT: Reduces peak memory usage from 39.5GB to ~20GB per model
+        # RESEARCH IMPACT: Enables proper SHIRG vs baseline comparison within GPU constraints
         
-        # Get real OCR/VQA images with questions
+        # Get real OCR/VQA images with questions first
         ocr_vqa_samples = self._get_real_ocr_vqa_samples()
         
-        # Validate each image
-        results = {}
-        for sample_name, sample_data in ocr_vqa_samples.items():
-            print(f"\n📊 Analyzing: {sample_name}")
-            print(f"   Question: {sample_data['question']}")
-            print(f"   Type: {sample_data['type']}")
-            print(f"   Challenge: {sample_data['challenge']}")
+        # Phase 1: Run all baseline inferences
+        print("\n🔄 PHASE 1: BASELINE LaViDa INFERENCE")
+        print("=" * 40)
+        baseline_results = self._run_all_baseline_inferences(ocr_vqa_samples)
+        
+        # Clear baseline model from memory
+        self._unload_baseline_model()
+        self._clear_gpu_memory()
+        
+        # Phase 2: Run all SHIRG inferences
+        print("\n🔄 PHASE 2: SHIRG LaViDa INFERENCE")
+        print("=" * 40)
+        shirg_results = self._run_all_shirg_inferences(ocr_vqa_samples)
+        
+        # Combine results for analysis
+        results = self._combine_baseline_and_shirg_results(baseline_results, shirg_results, ocr_vqa_samples)
             
-            result = self._validate_single_image(sample_name, sample_data)
-            results[sample_name] = result
-            
-            # Print key metrics (with error handling)
+        # Print summary metrics
+        for sample_name, result in results.items():
             if 'error' in result:
-                print(f"   ❌ Error: {result['error']}")
+                print(f"   ❌ {sample_name}: {result['error']}")
             else:
-                print(f"   ✅ Baseline time: {result['baseline']['inference_time']:.3f}s")
-                print(f"   ✅ SHIRG time: {result['shirg']['inference_time']:.3f}s")
-                print(f"   📈 Token efficiency: {result['shirg']['selection_ratio']:.1%}")
-                print(f"   📋 Visualization: {result['visualization_path']}")
+                print(f"   ✅ {sample_name}: Baseline={result['baseline']['inference_time']:.3f}s, SHIRG={result['shirg']['inference_time']:.3f}s")
         
         # Save all results to single JSON file
         self._save_consolidated_results(results)
@@ -195,6 +201,254 @@ class RealOCRVQAValidator:
             print(f"❌ BASELINE model loading failed: {e}")
             print(f"   Make sure '{self.pretrained_path}' exists and contains LaViDa checkpoints")
             raise
+    
+    def _unload_baseline_model(self):
+        """Unload baseline model and free GPU memory"""
+        print("🗑️ Unloading baseline LaViDa model...")
+        
+        if torch.cuda.is_available():
+            memory_before = torch.cuda.memory_allocated() / (1024**3)
+            print(f"   Memory before unloading: {memory_before:.2f}GB")
+        
+        # Clear baseline model components
+        if self.baseline_model is not None:
+            del self.baseline_model
+            self.baseline_model = None
+        
+        if self.baseline_tokenizer is not None:
+            del self.baseline_tokenizer  
+            self.baseline_tokenizer = None
+            
+        if self.baseline_image_processor is not None:
+            del self.baseline_image_processor
+            self.baseline_image_processor = None
+            
+        if self.baseline_tower is not None:
+            del self.baseline_tower
+            self.baseline_tower = None
+        
+        if torch.cuda.is_available():
+            memory_after = torch.cuda.memory_allocated() / (1024**3)
+            memory_freed = memory_before - memory_after
+            print(f"   Memory after unloading: {memory_after:.2f}GB")
+            print(f"   Memory freed: {memory_freed:.2f}GB")
+        
+        print("✅ Baseline model unloaded successfully")
+    
+    def _unload_shirg_model(self):
+        """Unload SHIRG model and free GPU memory"""
+        print("🗑️ Unloading SHIRG LaViDa model...")
+        
+        if torch.cuda.is_available():
+            memory_before = torch.cuda.memory_allocated() / (1024**3)
+            print(f"   Memory before unloading: {memory_before:.2f}GB")
+        
+        # Clear SHIRG model components
+        if self.shirg_model is not None:
+            del self.shirg_model
+            self.shirg_model = None
+        
+        if self.shirg_tokenizer is not None:
+            del self.shirg_tokenizer
+            self.shirg_tokenizer = None
+            
+        if self.shirg_image_processor is not None:
+            del self.shirg_image_processor
+            self.shirg_image_processor = None
+            
+        if self.shirg_tower is not None:
+            del self.shirg_tower
+            self.shirg_tower = None
+        
+        if torch.cuda.is_available():
+            memory_after = torch.cuda.memory_allocated() / (1024**3)
+            memory_freed = memory_before - memory_after
+            print(f"   Memory after unloading: {memory_after:.2f}GB")
+            print(f"   Memory freed: {memory_freed:.2f}GB")
+        
+        print("✅ SHIRG model unloaded successfully")
+    
+    def _clear_gpu_memory(self):
+        """Force GPU memory cleanup"""
+        if torch.cuda.is_available():
+            print("🧠 Clearing GPU memory cache...")
+            memory_before = torch.cuda.memory_allocated() / (1024**3)
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            # Clear CUDA cache
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            
+            memory_after = torch.cuda.memory_allocated() / (1024**3)
+            memory_freed = memory_before - memory_after
+            
+            print(f"   Memory before cache clear: {memory_before:.2f}GB")
+            print(f"   Memory after cache clear: {memory_after:.2f}GB") 
+            print(f"   Cache memory freed: {memory_freed:.2f}GB")
+            
+            # Check available memory
+            total_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            free_memory = total_memory - memory_after
+            print(f"   Total GPU memory: {total_memory:.2f}GB")
+            print(f"   Free memory available: {free_memory:.2f}GB")
+    
+    def _run_all_baseline_inferences(self, ocr_vqa_samples):
+        """Run baseline LaViDa inference on all samples"""
+        
+        # Load baseline model first
+        self._load_baseline_model()
+        
+        baseline_results = {}
+        for sample_name, sample_data in ocr_vqa_samples.items():
+            print(f"\n📊 Baseline Analysis: {sample_name}")
+            print(f"   Question: {sample_data['question']}")
+            print(f"   Type: {sample_data['type']}")
+            
+            image = sample_data['image']
+            question = sample_data['question']
+            
+            try:
+                # Prepare LaViDa inputs (use baseline tokenizer)
+                conv = copy.deepcopy(conv_templates[self.conv_template_name])
+                prompt_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+                conv.append_message(conv.roles[0], prompt_question)
+                conv.append_message(conv.roles[1], None)
+                
+                prompt = conv.get_prompt()
+                input_ids = tokenizer_image_token(
+                    prompt, 
+                    self.baseline_tokenizer, 
+                    IMAGE_TOKEN_INDEX, 
+                    return_tensors='pt'
+                ).unsqueeze(0).to(self.device)
+                
+                # Run baseline inference
+                baseline_result = self._run_baseline_inference(image, input_ids, question)
+                baseline_results[sample_name] = baseline_result
+                
+                print(f"   ✅ Baseline time: {baseline_result.get('inference_time', 0):.3f}s")
+                
+            except Exception as e:
+                print(f"   ❌ Baseline error: {str(e)}")
+                baseline_results[sample_name] = {
+                    'error': str(e),
+                    'inference_time': 0,
+                    'memory_usage': 0
+                }
+        
+        return baseline_results
+    
+    def _run_all_shirg_inferences(self, ocr_vqa_samples):
+        """Run SHIRG LaViDa inference on all samples"""
+        
+        # Load SHIRG model
+        self._load_shirg_model()
+        
+        shirg_results = {}
+        for sample_name, sample_data in ocr_vqa_samples.items():
+            print(f"\n📊 SHIRG Analysis: {sample_name}")
+            print(f"   Question: {sample_data['question']}")
+            print(f"   Type: {sample_data['type']}")
+            
+            image = sample_data['image']
+            question = sample_data['question']
+            
+            try:
+                # Prepare LaViDa inputs (use SHIRG tokenizer)
+                conv = copy.deepcopy(conv_templates[self.conv_template_name])
+                prompt_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+                conv.append_message(conv.roles[0], prompt_question)
+                conv.append_message(conv.roles[1], None)
+                
+                prompt = conv.get_prompt()
+                input_ids = tokenizer_image_token(
+                    prompt, 
+                    self.shirg_tokenizer, 
+                    IMAGE_TOKEN_INDEX, 
+                    return_tensors='pt'
+                ).unsqueeze(0).to(self.device)
+                
+                # Run SHIRG inference
+                shirg_result = self._run_shirg_inference(image, input_ids, question)
+                shirg_results[sample_name] = shirg_result
+                
+                print(f"   ✅ SHIRG time: {shirg_result.get('inference_time', 0):.3f}s")
+                
+            except Exception as e:
+                print(f"   ❌ SHIRG error: {str(e)}")
+                shirg_results[sample_name] = {
+                    'error': str(e),
+                    'inference_time': 0,
+                    'memory_usage': 0,
+                    'tokens_total': 0,
+                    'tokens_selected': 0,
+                    'selection_ratio': 0.0
+                }
+        
+        # Clean up SHIRG model
+        self._unload_shirg_model()
+        self._clear_gpu_memory()
+        
+        return shirg_results
+    
+    def _combine_baseline_and_shirg_results(self, baseline_results, shirg_results, ocr_vqa_samples):
+        """Combine baseline and SHIRG results for analysis"""
+        
+        combined_results = {}
+        
+        for sample_name, sample_data in ocr_vqa_samples.items():
+            baseline_result = baseline_results.get(sample_name, {})
+            shirg_result = shirg_results.get(sample_name, {})
+            
+            # Check for errors
+            if 'error' in baseline_result or 'error' in shirg_result:
+                combined_results[sample_name] = {
+                    'error': f"Baseline: {baseline_result.get('error', 'OK')}, SHIRG: {shirg_result.get('error', 'OK')}",
+                    'baseline': baseline_result,
+                    'shirg': shirg_result
+                }
+                continue
+            
+            # Analyze results
+            analysis = self._analyze_baseline_vs_shirg(
+                sample_data['image'], baseline_result, shirg_result, sample_data['question']
+            )
+            
+            # Create visualization
+            viz_path = self._create_token_selection_visualization(
+                sample_name, sample_data['image'], baseline_result, shirg_result, sample_data['question']
+            )
+            
+            # Combine all results
+            combined_results[sample_name] = {
+                'sample_name': sample_name,
+                'question': sample_data['question'],
+                'ground_truth': sample_data.get('ground_truth', None),
+                'type': sample_data['type'],
+                'baseline': {
+                    'answer': baseline_result.get('output', ''),
+                    'inference_time': baseline_result.get('inference_time', 0),
+                    'memory_usage': baseline_result.get('memory_usage', 0),
+                    'tokens': baseline_result.get('tokens', 0),
+                    'method': baseline_result.get('method', 'baseline')
+                },
+                'shirg': {
+                    'answer': shirg_result.get('output', ''),
+                    'inference_time': shirg_result.get('inference_time', 0),
+                    'memory_usage': shirg_result.get('memory_usage', 0),
+                    'tokens_total': shirg_result.get('tokens_total', 0),
+                    'tokens_selected': shirg_result.get('tokens_selected', 0),
+                    'selection_ratio': shirg_result.get('selection_ratio', 0.0),
+                    'method': shirg_result.get('method', 'shirg')
+                },
+                'comparison': analysis,
+                'visualization_path': viz_path
+            }
+        
+        return combined_results
     
     def _load_shirg_model(self):
         """Load SHIRG-enhanced LaViDa model with integrated SHIRG extensions"""
@@ -793,21 +1047,54 @@ class RealOCRVQAValidator:
                 # SHIRG IMPACT: Enables clean baseline vs SHIRG comparison
                 
                 print(f"   BASELINE: Running generation with original LaViDa encoder")
-                output_ids = self.baseline_model.generate(
-                    input_ids,
-                    images=image_tensor,
-                    image_sizes=image_sizes,
-                    do_sample=False,
-                    temperature=0.1,
-                    max_new_tokens=64,
-                    block_length=64,
-                    step_ratio=0.5,  # 16 diffusion steps
-                    tokenizer=self.baseline_tokenizer,
-                    prefix_lm=True,
-                    verbose=False,
-                    schedule='shift'
-                    # No use_shirg parameter - baseline model doesn't support it
-                )
+                # BASELINE-GENERATION-FIX: 2025-07-28 - Handle CUDA OOM during generation  
+                # ISSUE: Baseline model may run out of GPU memory during generation
+                # SOLUTION: Add OOM handling with fallback to reduced parameters
+                # MEMORY IMPACT: Prevents crashes and allows graceful degradation
+                # RESEARCH IMPACT: Ensures baseline validation can complete even with memory pressure
+                
+                try:
+                    output_ids = self.baseline_model.generate(
+                        input_ids,
+                        images=image_tensor,
+                        image_sizes=image_sizes,
+                        do_sample=False,
+                        temperature=0.1,
+                        max_new_tokens=64,
+                        block_length=64,
+                        step_ratio=0.5,  # 16 diffusion steps
+                        tokenizer=self.baseline_tokenizer,
+                        prefix_lm=True,
+                        verbose=False,
+                        schedule='shift'
+                        # No use_shirg parameter - baseline model doesn't support it
+                    )
+                except torch.cuda.OutOfMemoryError as oom_error:
+                    print(f"   ⚠️ BASELINE OOM during generation: {oom_error}")
+                    print(f"   🔄 Attempting generation with reduced parameters...")
+                    
+                    # Clear cache and try with reduced parameters
+                    torch.cuda.empty_cache() 
+                    
+                    try:
+                        output_ids = self.baseline_model.generate(
+                            input_ids,
+                            images=image_tensor,
+                            image_sizes=image_sizes,
+                            do_sample=False,
+                            temperature=0.1,
+                            max_new_tokens=32,  # Reduced from 64
+                            block_length=32,   # Reduced from 64
+                            step_ratio=0.5,
+                            tokenizer=self.baseline_tokenizer,
+                            prefix_lm=True,
+                            verbose=False,
+                            schedule='shift'
+                        )
+                        print(f"   ✅ BASELINE generation succeeded with reduced parameters")
+                    except torch.cuda.OutOfMemoryError:
+                        print(f"   ❌ BASELINE generation failed even with reduced parameters")
+                        raise
                 
                 # Decode output using baseline tokenizer
                 output_text = self.baseline_tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
@@ -908,8 +1195,22 @@ class RealOCRVQAValidator:
                 
                 # Test SHIRG vision tower directly before generation
                 try:
+                    # SHIRG-FIX: 2025-07-28 - Convert image tensor list to single tensor
+                    # ISSUE: SHIRG tower expects single tensor but receives list from process_images()
+                    # SOLUTION: Stack image tensors into single batch tensor for SHIRG processing
+                    # LAVIDA IMPACT: Maintains LaViDa image processing pipeline compatibility
+                    # SHIRG IMPACT: Enables proper SHIRG token selection with correct tensor format
+                    
+                    if isinstance(image_tensor, list) and len(image_tensor) > 0:
+                        # Convert list of tensors to single batch tensor
+                        shirg_input_tensor = torch.stack(image_tensor, dim=0)
+                        print(f"   SHIRG-FIX: Converted list to tensor shape: {shirg_input_tensor.shape}")
+                    else:
+                        shirg_input_tensor = image_tensor
+                        print(f"   SHIRG-DEBUG: Using tensor input shape: {shirg_input_tensor.shape}")
+                    
                     shirg_vision_features = self.shirg_tower.forward(
-                        image_tensor, 
+                        shirg_input_tensor, 
                         text_embeddings=question_embeddings,
                         use_shirg=True
                     )
@@ -920,21 +1221,54 @@ class RealOCRVQAValidator:
                     # Continue with generation anyway
                     actual_shirg_tokens = None
                 
-                output_ids = self.shirg_model.generate(
-                    input_ids,
-                    images=image_tensor,
-                    image_sizes=image_sizes,
-                    do_sample=False,
-                    temperature=0.1,
-                    max_new_tokens=64,
-                    block_length=64,
-                    step_ratio=0.5,  # 16 diffusion steps
-                    tokenizer=self.shirg_tokenizer,
-                    prefix_lm=True,
-                    verbose=False,
-                    schedule='shift'
-                    # Note: use_shirg parameter may not be supported by generate()
-                )
+                # SHIRG-GENERATION-FIX: 2025-07-28 - Handle CUDA OOM during generation
+                # ISSUE: SHIRG model may run out of GPU memory during generation
+                # SOLUTION: Add OOM handling with fallback to reduced parameters
+                # MEMORY IMPACT: Prevents crashes and allows graceful degradation
+                # RESEARCH IMPACT: Ensures SHIRG validation can complete even with memory pressure
+                
+                try:
+                    output_ids = self.shirg_model.generate(
+                        input_ids,
+                        images=image_tensor,
+                        image_sizes=image_sizes,
+                        do_sample=False,
+                        temperature=0.1,
+                        max_new_tokens=64,
+                        block_length=64,
+                        step_ratio=0.5,  # 16 diffusion steps
+                        tokenizer=self.shirg_tokenizer,
+                        prefix_lm=True,
+                        verbose=False,
+                        schedule='shift'
+                        # Note: use_shirg parameter may not be supported by generate()
+                    )
+                except torch.cuda.OutOfMemoryError as oom_error:
+                    print(f"   ⚠️ SHIRG OOM during generation: {oom_error}")
+                    print(f"   🔄 Attempting generation with reduced parameters...")
+                    
+                    # Clear cache and try with reduced parameters
+                    torch.cuda.empty_cache()
+                    
+                    try:
+                        output_ids = self.shirg_model.generate(
+                            input_ids,
+                            images=image_tensor,
+                            image_sizes=image_sizes,
+                            do_sample=False,
+                            temperature=0.1,
+                            max_new_tokens=32,  # Reduced from 64
+                            block_length=32,   # Reduced from 64
+                            step_ratio=0.5,
+                            tokenizer=self.shirg_tokenizer,
+                            prefix_lm=True,
+                            verbose=False,
+                            schedule='shift'
+                        )
+                        print(f"   ✅ SHIRG generation succeeded with reduced parameters")
+                    except torch.cuda.OutOfMemoryError:
+                        print(f"   ❌ SHIRG generation failed even with reduced parameters")
+                        raise
                 
                 # Decode output using SHIRG tokenizer
                 output_text = self.shirg_tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
