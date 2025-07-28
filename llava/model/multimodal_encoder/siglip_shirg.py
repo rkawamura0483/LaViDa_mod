@@ -284,7 +284,14 @@ class SigLipShirgExtensions:
         # SOLUTION: Use automatic mixed precision (AMP) for vision tower forward pass
         # PERFORMANCE IMPACT: ~40% faster inference, ~30% memory reduction
         
-        # Process through vision tower to get high-resolution features
+        # POSITION-FIX: 2025-07-28 - CRITICAL: Handle position embedding interpolation for high-resolution
+        # ISSUE: SigLIP vision model trained on 384×384 (729 positions) but SHIRG needs 672×672 (2304 positions)
+        # ROOT CAUSE: Position embeddings tensor size mismatch in embeddings layer
+        # SOLUTION: Use interpolate_pos_encoding=True for high-resolution processing
+        # LAVIDA IMPACT: Enables SigLIP to handle arbitrary resolutions beyond training size
+        # SHIRG IMPACT: Fixes the core tensor dimension mismatch in vision model forward pass
+        
+        # Process through vision tower with position embedding interpolation
         with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
             if type(images) is list:
                 # Handle list of images
@@ -307,9 +314,11 @@ class SigLipShirgExtensions:
                         if original_requires_grad and not image_input.requires_grad:
                             image_input = image_input.requires_grad_(True)
                     
+                    # POSITION-FIX: Enable position embedding interpolation for high-resolution
                     image_forward_out = self.vision_tower(
                         image_input, 
-                        output_hidden_states=True
+                        output_hidden_states=True,
+                        interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
                     )
                     # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                     # ISSUE: Need to match original LaViDa token magnitude behavior exactly
@@ -341,9 +350,11 @@ class SigLipShirgExtensions:
                     if original_requires_grad and not images_input.requires_grad:
                         images_input = images_input.requires_grad_(True)
                 
+                # POSITION-FIX: Enable position embedding interpolation for high-resolution
                 image_forward_outs = self.vision_tower(
                     images_input, 
-                    output_hidden_states=True
+                    output_hidden_states=True,
+                    interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
                 )
                 # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                 # ISSUE: Need to match original LaViDa token magnitude behavior exactly
@@ -643,9 +654,11 @@ class SigLipShirgExtensions:
                         if original_requires_grad and not image_input.requires_grad:
                             image_input = image_input.requires_grad_(True)
                     
+                    # POSITION-FIX: Enable position embedding interpolation for high-resolution
                     image_forward_out = self.vision_tower(
                         image_input, 
-                        output_hidden_states=True
+                        output_hidden_states=True,
+                        interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
                     )
                     # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                     # ISSUE: Need to match original LaViDa token magnitude behavior exactly
@@ -676,9 +689,11 @@ class SigLipShirgExtensions:
                     if original_requires_grad and not images_input.requires_grad:
                         images_input = images_input.requires_grad_(True)
                 
+                # POSITION-FIX: Enable position embedding interpolation for high-resolution
                 image_forward_outs = self.vision_tower(
                     images_input, 
-                    output_hidden_states=True
+                    output_hidden_states=True,
+                    interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
                 )
                 # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                 # ISSUE: Need to match original LaViDa token magnitude behavior exactly
