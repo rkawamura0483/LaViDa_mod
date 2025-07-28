@@ -350,7 +350,7 @@ class ComprehensiveValidator:
                 recommendations.append("Check if tokens are collapsing to similar values")
             
             # Check semantic consistency
-            consistency_score = self._compute_semantic_consistency(baseline_tokens, shirg_tokens)
+            consistency_score = self._compute_semantic_consistency(baseline_tokens, shirg_x_tokens)
             metrics["semantic_consistency"] = consistency_score
             
             if consistency_score < 0.3:
