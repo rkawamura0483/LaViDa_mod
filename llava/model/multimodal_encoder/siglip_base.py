@@ -224,7 +224,12 @@ class SigLipVisionEmbeddings(nn.Module):
             # SHIRG IMPACT: Fixes LoRA training gradient computation
             
             # Reshape to 2D grid: [grid_size, grid_size, embed_dim] → [embed_dim, grid_size, grid_size]
-            orig_pos_embeds_2d = orig_pos_embeds.contiguous().view(grid_size, grid_size, self.embed_dim).permute(2, 0, 1).unsqueeze(0)
+            # SHIRG-FIX: 2025-07-28 - Use reshape instead of view for better gradient compatibility
+            # ISSUE: view() can fail during gradient computation if tensor is non-contiguous
+            # SOLUTION: Use reshape() which handles non-contiguous tensors automatically
+            # LAVIDA IMPACT: More robust gradient flow during LoRA training
+            # SHIRG IMPACT: Prevents view errors during position embedding interpolation
+            orig_pos_embeds_2d = orig_pos_embeds.reshape(grid_size, grid_size, self.embed_dim).permute(2, 0, 1).unsqueeze(0)
             
             # Move to target device and dtype
             orig_pos_embeds_2d = orig_pos_embeds_2d.to(device=device, dtype=dtype)
@@ -238,12 +243,12 @@ class SigLipVisionEmbeddings(nn.Module):
             )
             
             # Reshape back to token sequence: [1, embed_dim, target_grid_size, target_grid_size] → [1, num_tokens, embed_dim]
-            # SHIRG-FIX: 2025-07-28 - Make tensor contiguous after permute
-            # ISSUE: Permuted tensor is non-contiguous, causing view() error
-            # SOLUTION: Call contiguous() after permute before view
+            # SHIRG-FIX: 2025-07-28 - Use reshape for better gradient compatibility
+            # ISSUE: view() can fail during gradient computation with permuted tensors
+            # SOLUTION: Use reshape() which automatically handles non-contiguous cases
             # LAVIDA IMPACT: Ensures gradient flow compatibility
             # SHIRG IMPACT: Enables LoRA gradient computation
-            interp_pos_embeds = interp_pos_embeds_2d.permute(0, 2, 3, 1).contiguous().view(1, num_tokens, self.embed_dim)
+            interp_pos_embeds = interp_pos_embeds_2d.permute(0, 2, 3, 1).reshape(1, num_tokens, self.embed_dim)
             
             # Cache the result
             self._cached_pos_embeds_dict[cache_key] = interp_pos_embeds
@@ -285,14 +290,14 @@ class SigLipAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
-        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensors for gradient flow
-        # ISSUE: view() operations fail during gradient computation
-        # SOLUTION: Make tensors contiguous before reshape
+        # SHIRG-FIX: 2025-07-28 - Use reshape for gradient-safe tensor operations
+        # ISSUE: view() operations fail during gradient computation with non-contiguous tensors
+        # SOLUTION: Use reshape() which handles memory layout automatically
         # LAVIDA IMPACT: Maintains gradient flow through attention layers
         # SHIRG IMPACT: Enables LoRA training on attention weights
-        query_states = query_states.contiguous().view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.contiguous().view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.contiguous().view(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        query_states = query_states.reshape(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.reshape(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.reshape(batch_size, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
         k_v_seq_len = key_states.shape[-2]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) * self.scale
