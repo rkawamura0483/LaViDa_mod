@@ -174,8 +174,70 @@ class SigLipVisionEmbeddings(nn.Module):
         patch_embeds = self.patch_embedding(pixel_values)  # shape = [*, width, grid, grid]
         embeddings = patch_embeds.flatten(2).transpose(1, 2)
 
-        embeddings = embeddings + self.position_embedding(self.position_ids)
+        # Handle position embeddings with interpolation for different resolutions
+        batch_size, num_tokens, embed_dim = embeddings.shape
+        
+        if num_tokens == self.num_positions:
+            # Standard case: use original position embeddings
+            embeddings = embeddings + self.position_embedding(self.position_ids)
+        else:
+            # High-resolution case: interpolate position embeddings
+            embeddings = embeddings + self._get_interpolated_position_embeddings(num_tokens, embeddings.device, embeddings.dtype)
+        
         return embeddings
+    
+    def _get_interpolated_position_embeddings(self, num_tokens, device, dtype):
+        """
+        Interpolate position embeddings for different image resolutions
+        
+        Args:
+            num_tokens: Target number of tokens (e.g., 2304 for 672×672)
+            device: Target device
+            dtype: Target dtype
+            
+        Returns:
+            interpolated_pos_embeds: [1, num_tokens, embed_dim]
+        """
+        import torch.nn.functional as F
+        
+        target_grid_size = int(num_tokens ** 0.5)
+        
+        # Cache key for avoiding repeated computation
+        cache_key = f"pos_embeds_{target_grid_size}_{device}"
+        
+        if hasattr(self, '_cached_pos_embeds_dict') and cache_key in self._cached_pos_embeds_dict:
+            return self._cached_pos_embeds_dict[cache_key]
+        
+        # Initialize cache if needed
+        if not hasattr(self, '_cached_pos_embeds_dict'):
+            self._cached_pos_embeds_dict = {}
+        
+        # Get original position embeddings
+        orig_pos_embeds = self.position_embedding.weight  # [num_positions, embed_dim]
+        grid_size = int(self.num_positions ** 0.5)  # Original grid size (27 for 384×384)
+        
+        with torch.no_grad():
+            # Reshape to 2D grid: [grid_size, grid_size, embed_dim] → [embed_dim, grid_size, grid_size]
+            orig_pos_embeds_2d = orig_pos_embeds.view(grid_size, grid_size, self.embed_dim).permute(2, 0, 1).unsqueeze(0)
+            
+            # Move to target device and dtype
+            orig_pos_embeds_2d = orig_pos_embeds_2d.to(device=device, dtype=dtype)
+            
+            # Bicubic interpolation to target grid size
+            interp_pos_embeds_2d = F.interpolate(
+                orig_pos_embeds_2d, 
+                size=(target_grid_size, target_grid_size), 
+                mode='bicubic', 
+                align_corners=False
+            )
+            
+            # Reshape back to token sequence: [1, embed_dim, target_grid_size, target_grid_size] → [1, num_tokens, embed_dim]
+            interp_pos_embeds = interp_pos_embeds_2d.permute(0, 2, 3, 1).view(1, num_tokens, self.embed_dim)
+            
+            # Cache the result
+            self._cached_pos_embeds_dict[cache_key] = interp_pos_embeds
+            
+        return interp_pos_embeds
 
 
 class SigLipAttention(nn.Module):

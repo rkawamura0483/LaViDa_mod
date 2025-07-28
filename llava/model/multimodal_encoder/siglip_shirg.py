@@ -813,3 +813,106 @@ class SigLipShirgExtensions:
         Main SHIRG token selection interface
         """
         return self.shirg_fixed_selection(tokens, text_embeddings)
+    
+    def _compute_edge_density_boost(self, tokens):
+        """
+        SHIRG: Compute edge density boost for token importance scoring
+        
+        Helper method for analysis and validation purposes.
+        
+        Args:
+            tokens: [B, N, D] input tokens
+            
+        Returns:
+            edge_boost: [B, N] edge density scores
+        """
+        B, N, D = tokens.shape
+        H = W = int(math.sqrt(N))
+        
+        # Reshape to spatial grid for edge detection
+        spatial_tokens = tokens.view(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
+        
+        # Simple edge detection using Sobel-like filters
+        sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                              device=tokens.device, dtype=tokens.dtype).view(1, 1, 3, 3)
+        sobel_y = torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                              device=tokens.device, dtype=tokens.dtype).view(1, 1, 3, 3)
+        
+        # Apply edge filters (simplified - use first feature dimension)
+        first_dim = spatial_tokens[:, 0:1, :, :]  # [B, 1, H, W]
+        
+        edges_x = F.conv2d(first_dim, sobel_x, padding=1)
+        edges_y = F.conv2d(first_dim, sobel_y, padding=1)
+        
+        # Compute edge magnitude
+        edge_magnitude = torch.sqrt(edges_x**2 + edges_y**2)  # [B, 1, H, W]
+        
+        # Reshape back to token sequence
+        edge_boost = edge_magnitude.view(B, -1)  # [B, N]
+        
+        return edge_boost
+    
+    def _get_coverage_guaranteed_tokens(self, importance_scores, coverage_regions=8):
+        """
+        SHIRG: Get tokens that guarantee spatial coverage
+        
+        Helper method for ensuring spatial coverage in token selection.
+        
+        Args:
+            importance_scores: [B, N] token importance scores
+            coverage_regions: Number of regions per side (default 8 for 8x8 grid)
+            
+        Returns:
+            coverage_tokens: [B, coverage_regions²] indices of coverage-guaranteed tokens
+        """
+        B, N = importance_scores.shape
+        H = W = int(math.sqrt(N))
+        
+        # Ensure coverage_regions divides grid size evenly
+        region_size = H // coverage_regions
+        if region_size * coverage_regions != H:
+            # Adjust region size if needed
+            region_size = max(1, H // coverage_regions)
+            coverage_regions = H // region_size
+        
+        coverage_indices = []
+        
+        for b in range(B):
+            batch_coverage = []
+            
+            for rh in range(coverage_regions):
+                for rw in range(coverage_regions):
+                    # Define region boundaries
+                    start_h = rh * region_size
+                    end_h = min((rh + 1) * region_size, H)
+                    start_w = rw * region_size
+                    end_w = min((rw + 1) * region_size, W)
+                    
+                    # Get linear indices for this region
+                    region_indices = []
+                    for i in range(start_h, end_h):
+                        for j in range(start_w, end_w):
+                            linear_idx = i * W + j
+                            if linear_idx < N:
+                                region_indices.append(linear_idx)
+                    
+                    if region_indices:
+                        region_indices = torch.tensor(region_indices, device=importance_scores.device)
+                        
+                        # Find best token in this region
+                        region_scores = importance_scores[b, region_indices]
+                        best_local_idx = torch.argmax(region_scores)
+                        best_global_idx = region_indices[best_local_idx]
+                        
+                        batch_coverage.append(best_global_idx.item())
+            
+            coverage_indices.append(batch_coverage)
+        
+        # Convert to tensor
+        max_coverage = max(len(batch) for batch in coverage_indices)
+        coverage_tensor = torch.zeros(B, max_coverage, dtype=torch.long, device=importance_scores.device)
+        
+        for b, batch in enumerate(coverage_indices):
+            coverage_tensor[b, :len(batch)] = torch.tensor(batch, device=importance_scores.device)
+        
+        return coverage_tensor
