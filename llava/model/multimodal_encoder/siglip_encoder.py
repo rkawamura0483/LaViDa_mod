@@ -136,8 +136,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # Enable ALL embedding parameters for gradient flow
             for param in embeddings.parameters():
                 param.requires_grad_(True)
-            rank0_print("SHIRG LoRA: Enabled gradients for patch embeddings")
-            rank0_print("SHIRG LoRA: Enabled gradients for position embeddings")
         
         # SHIRG LoRA: Enable gradients for SigLIP attention layers (blocks 0-7) 
         if hasattr(self.vision_tower.vision_model.encoder, 'layers'):
@@ -146,13 +144,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # Enable gradients for ALL layer parameters to maintain gradient flow
                 for param in layer.parameters():
                     param.requires_grad_(True)
-                rank0_print(f"SHIRG LoRA: Enabled gradients for attention layer {i}")
         
         # CRITICAL: Enable gradients for post-layer normalization (forward path component)
         if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
             for param in self.vision_tower.vision_model.post_layernorm.parameters():
                 param.requires_grad_(True)
-            rank0_print("SHIRG LoRA: Enabled gradients for post_layernorm")
 
 
     def enable_gradients_for_testing(self):
