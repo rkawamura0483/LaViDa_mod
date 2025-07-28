@@ -1845,6 +1845,31 @@ class SigLipVisionTower(nn.Module):
 
     # === MISSING SHIRG METHODS FOR VALIDATION ===
     
+    def forward_with_shirg_fixed(self, images, text_embeddings=None):
+        """
+        SHIRG-Fixed: Complete forward pass with high-resolution processing and fixed token selection
+        
+        SHIRG-FIX: 2025-07-28 - Missing forward_with_shirg_fixed method implementation
+        ISSUE: Code calls forward_with_shirg_fixed but method doesn't exist
+        SOLUTION: Combine extract_high_res_tokens_fixed + shirg_fixed_selection for complete pipeline
+        LAVIDA IMPACT: Enables SHIRG validation to proceed with consistent 768-token output
+        SHIRG IMPACT: Provides the core SHIRG-Fixed implementation for pre-LoRA validation
+        
+        Args:
+            images: Input images [B, C, H, W]
+            text_embeddings: Optional text embeddings for relevance scoring [B, L, D]
+            
+        Returns:
+            selected_tokens: [B, 768, D] - Fixed 768 selected tokens for LaViDa cache compatibility
+        """
+        # Step 1: Extract high-resolution tokens (2304 from 672x672)
+        hi_detail_tokens = self.extract_high_res_tokens_fixed(images)
+        
+        # Step 2: Apply SHIRG-Fixed selection (2304 -> 768 tokens)
+        selected_tokens = self.shirg_fixed_selection(hi_detail_tokens, text_embeddings)
+        
+        return selected_tokens
+    
     def forward_with_shirg(self, images, text_embeddings=None, budget=768, **kwargs):
         """
         SHIRG-COMPAT-FIX: 2025-07-28 - Use SHIRG-Fixed as primary implementation
