@@ -918,18 +918,45 @@ class SigLipVisionTower(nn.Module):
             antialias=False
         )
         
-        # Forward through SigLIP vision transformer for hi-detail tokens
-        with torch.set_grad_enabled(True):
-            if high_res_images.requires_grad:
+        # MEMORY-OPTIMIZED: Forward through SigLIP vision transformer for hi-detail tokens
+        # Use no_grad context for validation to save memory, enable grad only when needed
+        grad_mode = torch.is_grad_enabled()
+        
+        with torch.set_grad_enabled(grad_mode):
+            # Memory optimization: Clear cache before forward pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            # Use gradient checkpointing if available to save memory
+            if hasattr(self.vision_tower, 'gradient_checkpointing_enable'):
+                self.vision_tower.gradient_checkpointing_enable()
+            
+            if high_res_images.requires_grad and grad_mode:
                 high_res_images.retain_grad()
             
+            # Forward pass with memory optimization
             outputs = self.vision_tower(
                 high_res_images.to(device=self.device, dtype=self.dtype),
                 output_hidden_states=True
             )
             
+            # Disable gradient checkpointing after use
+            if hasattr(self.vision_tower, 'gradient_checkpointing_disable'):
+                self.vision_tower.gradient_checkpointing_disable()
+            
             # Extract hi-detail tokens: [B, 2304, D] from 672×672 → 48×48 patches
-            hi_detail_tokens = outputs.hidden_states[-1].to(images.dtype)
+            raw_tokens = outputs.hidden_states[-1]
+            
+            # MAGNITUDE-FIX: Apply proper normalization to prevent unusual magnitudes
+            # Issue: Raw transformer outputs can have large magnitudes (>50)
+            # Solution: Apply layer norm + L2 normalization for stable token representations
+            if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
+                normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
+            else:
+                normalized_tokens = raw_tokens
+            
+            # Apply L2 normalization to ensure stable magnitudes (~1.0)
+            hi_detail_tokens = F.normalize(normalized_tokens, p=2, dim=-1).to(images.dtype)
             
             # Validate hi-detail token count (should be 2304 for 672×672)
             expected_hi_detail = (672 // 14) ** 2  # 2304 tokens
@@ -954,6 +981,9 @@ class SigLipVisionTower(nn.Module):
         # Reshape back to token sequence: [B, D, 8, 8] → [B, 64, D]
         lo_res_scaffold = lo_res_scaffold.view(batch_size, -1, scaffold_grid_size * scaffold_grid_size)
         lo_res_scaffold = lo_res_scaffold.permute(0, 2, 1)  # [B, 64, D]
+        
+        # MAGNITUDE-FIX: Apply same normalization to scaffold tokens for consistency
+        lo_res_scaffold = F.normalize(lo_res_scaffold, p=2, dim=-1)
         
         # Validate lo-res scaffold count
         expected_scaffold = scaffold_grid_size * scaffold_grid_size  # 64 tokens
@@ -2183,10 +2213,12 @@ class SigLipVisionTower(nn.Module):
         # Baseline: standard LaViDa forward (729 tokens)
         baseline_features = self.forward(images)
         
-        # SHIRG-Fixed: consistent 768 token selection
+        # SHIRG-Fixed: consistent token selection with shape consistency
+        # SHAPE-CONSISTENCY-FIX: 2025-07-28 - Ensure both paths return same format
         if budget == 768:
             shirg_features = self.forward_with_shirg_fixed(images, text_embeddings)
         else:
+            # Extract only tokens from forward_with_shirg_x to match fixed version
             shirg_features, _ = self.forward_with_shirg_x(images, text_embeddings, budget)
         
         return baseline_features, shirg_features
