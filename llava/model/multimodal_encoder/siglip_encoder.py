@@ -695,25 +695,39 @@ class SigLipVisionTower(nn.Module):
 
         return image_features
 
-    def forward_with_shirg_x(self, images, text_embeddings=None, budget=768):
+    def forward_with_shirg_fixed(self, images, text_embeddings=None):
         """
-        SHIRG-X: Dual-Scale Spatially Aware Token Selection
+        SHIRG-Fixed: Static token selection with fixed K=768 and coverage guarantee
         
-        SHIRG-X-FIX: 2025-07-28 - Implement dual-scale architecture with coordinate embedding
-        ISSUE: Original SHIRG loses spatial fidelity with token pruning
-        SOLUTION: Dual-scale processing (hi-detail + lo-res scaffold) with distance-aware scoring
-        LAVIDA IMPACT: Preserves global geometry while enabling high-detail selection
-        SHIRG IMPACT: Implements SHIRG-X research with spatial coordinate embedding
+        SHIRG-FIXED-FIX: 2025-07-28 - Implement stable SHIRG with fixed budget and coverage
+        ISSUE: Adaptive gating causes variance; complex merging is slow
+        SOLUTION: Fixed K=768 selection + SAINT-style coverage guarantee + simplified scoring
+        LAVIDA IMPACT: Consistent 768 tokens for stable cache performance
+        SHIRG IMPACT: Eliminates variance sources while maintaining token quality
         
         Args:
             images: Input images [B, C, H, W]
             text_embeddings: Text embeddings for relevance scoring (optional)
-            budget: Number of hi-detail tokens to select (512, 768, 1024)
             
         Returns:
-            dual_scale_tokens: [B, budget+144, D] hi-detail + lo-res scaffold tokens
-            coord_embeddings: [B, budget, 4] centroid coordinates for selected tokens
+            selected_tokens: [B, 768, D] selected high-resolution tokens
         """
+        # Step 1: Extract high-resolution tokens (2304 from 672×672)
+        hi_detail_tokens = self.extract_high_res_tokens_fixed(images)
+        
+        # Step 2: Apply SHIRG-Fixed selection with coverage guarantee
+        selected_tokens = self.shirg_fixed_selection(hi_detail_tokens, text_embeddings)
+        
+        return selected_tokens.to(images.dtype if hasattr(images, 'dtype') else torch.float32)
+    
+    def forward_with_shirg_x(self, images, text_embeddings=None, budget=768):
+        """
+        SHIRG-X: Dual-Scale Spatially Aware Token Selection (Legacy - use SHIRG-Fixed instead)
+        """
+        if budget == 768:
+            # Use optimized SHIRG-Fixed for standard case
+            return self.forward_with_shirg_fixed(images, text_embeddings), None
+        
         # SHIRG-X Step 1: Extract dual-scale tokens
         hi_detail_tokens, lo_res_scaffold = self.extract_shirg_x_tokens(images)
         
@@ -738,6 +752,204 @@ class SigLipVisionTower(nn.Module):
         dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
         
         return dual_scale_tokens.to(images.dtype if hasattr(images, 'dtype') else torch.float32), coord_coords
+
+    def extract_high_res_tokens_fixed(self, images):
+        """
+        SHIRG-Fixed: Extract high-resolution tokens (2304 from 672²) with fixed processing
+        
+        SHIRG-FIXED-FIX: 2025-07-28 - Simplified high-res extraction without dual-scale complexity
+        ISSUE: Dual-scale processing adds complexity without proven benefits
+        SOLUTION: Extract only high-res tokens (2304) for direct selection
+        LAVIDA IMPACT: Simpler pipeline with clear 672p → 2304 → 768 token flow
+        SHIRG IMPACT: Focus on core token selection without architectural complexity
+        
+        Args:
+            images: Input images [B, C, H, W]
+            
+        Returns:
+            hi_detail_tokens: [B, 2304, D] high-resolution tokens from 672×672
+        """
+        import torch.nn.functional as F
+        import time
+        
+        start_time = time.time()
+        
+        if images.dim() == 3:
+            images = images.unsqueeze(0)
+        
+        batch_size = images.shape[0]
+        
+        # Device and dtype alignment
+        target_device = self.device
+        target_dtype = self.dtype
+        
+        if images.device != target_device or images.dtype != target_dtype:
+            images = images.to(device=target_device, dtype=target_dtype, non_blocking=True)
+        
+        # Interpolate to 672p (high resolution)
+        high_res_size = 672
+        high_res_images = F.interpolate(
+            images, 
+            size=(high_res_size, high_res_size), 
+            mode='bilinear', 
+            align_corners=False, 
+            antialias=False
+        )
+        
+        # Forward through SigLIP vision transformer
+        with torch.set_grad_enabled(True):
+            if high_res_images.requires_grad:
+                high_res_images.retain_grad()
+            
+            outputs = self.vision_tower(
+                high_res_images.to(device=self.device, dtype=self.dtype),
+                output_hidden_states=True
+            )
+        
+        # Get hi-detail tokens after encoder (LaViDa uses last available layer after deletion)
+        raw_tokens = outputs.hidden_states[-1]  # [B, 2304, D]
+        normalized_tokens = self.vision_tower.vision_model.post_layernorm(raw_tokens)
+        hi_detail_tokens = F.normalize(normalized_tokens, p=2, dim=-1)
+        
+        extraction_time = (time.time() - start_time) * 1000
+        if torch.cuda.is_available():
+            current_memory = torch.cuda.memory_allocated() / 1e9
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+            usage_percent = (current_memory / total_memory) * 100
+            
+            rank0_print(f"SHIRG-Fixed: Extracted {hi_detail_tokens.shape[1]} high-res tokens in {extraction_time:.1f}ms | GPU: {current_memory:.1f}GB ({usage_percent:.1f}%)")
+        
+        return hi_detail_tokens
+
+    def shirg_fixed_selection(self, hi_detail_tokens, text_embeddings=None):
+        """
+        SHIRG-Fixed: Token selection with fixed K=768 and SAINT-style coverage guarantee
+        
+        SHIRG-FIXED-FIX: 2025-07-28 - Simplified selection with fixed budget and coverage
+        ISSUE: Adaptive gating and complex merging cause instability
+        SOLUTION: Fixed K=768 + coverage guarantee + simplified similarity+variance scoring
+        LAVIDA IMPACT: Consistent token count for stable cache performance
+        SHIRG IMPACT: Eliminates variance sources, focuses on quality token selection
+        
+        Args:
+            hi_detail_tokens: [B, N, D] high-resolution tokens (N=2304)
+            text_embeddings: [B, L, D] text embeddings for relevance scoring (optional)
+            
+        Returns:
+            selected_tokens: [B, 768, D] selected tokens with coverage guarantee
+        """
+        B, N, D = hi_detail_tokens.shape
+        H = W = int(N ** 0.5)  # 48×48 grid from 672p
+        FIXED_BUDGET = 768  # Fixed budget as per SHIRG-Fixed design
+        
+        # 1. Compute similarity scores with text
+        if text_embeddings is not None and hasattr(text_embeddings, 'transpose'):
+            similarity_scores = torch.max(
+                torch.matmul(hi_detail_tokens, text_embeddings.transpose(-2, -1)), 
+                dim=-1
+            )[0]  # [B, N]
+        else:
+            # Fallback: use feature magnitude as proxy
+            similarity_scores = torch.norm(hi_detail_tokens, dim=-1)  # [B, N]
+        
+        # 2. Compute variance scores (capture local complexity)
+        variance_scores = torch.var(hi_detail_tokens, dim=-1)  # [B, N]
+        
+        # 3. Combined importance score (simplified, no distance terms)
+        importance_scores = 0.7 * similarity_scores + 0.3 * variance_scores  # [B, N]
+        
+        # 4. SAINT-style coverage guarantee: ensure each 4×4 region has ≥1 token
+        coverage_tokens = self.ensure_coverage_4x4_fixed(importance_scores, H, W)
+        
+        # 5. Fill remaining budget with global top-k
+        remaining_budget = FIXED_BUDGET - coverage_tokens.shape[1]
+        if remaining_budget > 0:
+            # Create mask to exclude coverage tokens from global selection
+            coverage_mask = torch.zeros(B, N, dtype=torch.bool, device=hi_detail_tokens.device)
+            for b in range(B):
+                coverage_mask[b, coverage_tokens[b]] = True
+            
+            # Select top-k from remaining tokens
+            masked_scores = importance_scores.clone()
+            masked_scores[coverage_mask] = float('-inf')  # Exclude coverage tokens
+            
+            _, top_indices = torch.topk(masked_scores, remaining_budget, dim=1)
+            
+            # Combine coverage + global selections
+            all_indices = torch.cat([coverage_tokens, top_indices], dim=1)
+        else:
+            all_indices = coverage_tokens[:, :FIXED_BUDGET]
+        
+        # 6. Extract selected tokens
+        selected_tokens = torch.gather(
+            hi_detail_tokens, 1,
+            all_indices.unsqueeze(-1).expand(-1, -1, D)
+        )
+        
+        return selected_tokens
+
+    def ensure_coverage_4x4_fixed(self, importance_scores, H, W):
+        """
+        SHIRG-Fixed: SAINT-style coverage guarantee with 4×4 regions
+        
+        SHIRG-FIXED-FIX: 2025-07-28 - Ensure each 4×4 region keeps ≥1 token
+        ISSUE: Token selection can eliminate entire spatial regions, hurting OCR
+        SOLUTION: Divide 48×48 grid into 12×12 regions of 4×4 patches, keep best from each
+        LAVIDA IMPACT: Prevents spatial clustering artifacts that hurt text recognition
+        SHIRG IMPACT: Guarantees spatial coverage without complex hierarchical clustering
+        
+        Args:
+            importance_scores: [B, N] token importance scores
+            H, W: Spatial grid dimensions (48, 48)
+            
+        Returns:
+            coverage_tokens: [B, 144] indices of coverage-guaranteed tokens
+        """
+        B = importance_scores.shape[0]
+        coverage_tokens = []
+        
+        # Divide 48×48 grid into 12×12 regions of 4×4 patches each
+        region_size = 4
+        regions_per_dim = H // region_size  # 12 regions per dimension
+        
+        for b in range(B):
+            batch_coverage = []
+            
+            for region_i in range(regions_per_dim):
+                for region_j in range(regions_per_dim):
+                    # Get tokens in this 4×4 region
+                    start_i, end_i = region_i * region_size, (region_i + 1) * region_size
+                    start_j, end_j = region_j * region_size, (region_j + 1) * region_size
+                    
+                    # Convert 2D region to 1D indices
+                    region_indices = []
+                    for i in range(start_i, end_i):
+                        for j in range(start_j, end_j):
+                            idx = i * W + j
+                            if idx < importance_scores.shape[1]:
+                                region_indices.append(idx)
+                    
+                    if region_indices:
+                        # Select highest scoring token in this region
+                        region_scores = importance_scores[b, region_indices]
+                        best_local_idx = torch.argmax(region_scores)
+                        best_global_idx = region_indices[best_local_idx]
+                        batch_coverage.append(best_global_idx)
+            
+            coverage_tokens.append(torch.tensor(batch_coverage, device=importance_scores.device))
+        
+        # Pad to consistent length (144 = 12×12 regions)
+        max_coverage = max(len(ct) for ct in coverage_tokens)
+        padded_coverage = []
+        for ct in coverage_tokens:
+            if len(ct) < max_coverage:
+                # Pad with last token index if needed
+                padding = torch.full((max_coverage - len(ct),), ct[-1] if len(ct) > 0 else 0, 
+                                   device=ct.device, dtype=ct.dtype)
+                ct = torch.cat([ct, padding])
+            padded_coverage.append(ct)
+        
+        return torch.stack(padded_coverage, dim=0)  # [B, 144]
 
     def extract_shirg_x_tokens(self, images):
         """
@@ -1213,101 +1425,77 @@ class SigLipVisionTower(nn.Module):
     
     def forward_with_shirg(self, images, text_embeddings=None, budget=768, **kwargs):
         """
-        SHIRG-COMPAT-FIX: 2025-07-28 - Alias for SHIRG-X compatibility 
-        ISSUE: Validation expects forward_with_shirg method
-        SOLUTION: Forward to SHIRG-X implementation for backward compatibility
-        VALIDATION IMPACT: Allows comprehensive validation to pass
+        SHIRG-COMPAT-FIX: 2025-07-28 - Use SHIRG-Fixed as primary implementation
+        ISSUE: Multiple calling conventions need unified interface
+        SOLUTION: Use SHIRG-Fixed for K=768, fallback to SHIRG-X for other budgets
+        VALIDATION IMPACT: Provides stable, consistent interface for all tests
         """
-        # KWARGS-FIX: 2025-07-28 - Handle target_tokens parameter in validation
-        # ISSUE: Validation passes target_tokens instead of budget
-        # SOLUTION: Extract target_tokens as budget parameter
-        # VALIDATION IMPACT: Prevents unexpected keyword argument errors
-        
+        # Extract target_tokens parameter if provided
         if 'target_tokens' in kwargs:
             budget = kwargs['target_tokens']
         
-        return self.forward_with_shirg_x(images, text_embeddings, budget)
+        if budget == 768:
+            # Use optimized SHIRG-Fixed for standard case  
+            return self.forward_with_shirg_fixed(images, text_embeddings)
+        else:
+            # Use SHIRG-X for non-standard budgets
+            result, coords = self.forward_with_shirg_x(images, text_embeddings, budget)
+            return result
     
     def get_highres_tokens_for_shirg(self, images):
         """
-        SHIRG-COMPAT-FIX: 2025-07-28 - Extract high-resolution tokens for SHIRG validation
+        SHIRG-COMPAT-FIX: 2025-07-28 - Extract high-resolution tokens using SHIRG-Fixed
         ISSUE: Validation expects get_highres_tokens_for_shirg method
-        SOLUTION: Extract hi-detail tokens using SHIRG-X dual-scale extraction
+        SOLUTION: Use SHIRG-Fixed high-res extraction for consistency
         VALIDATION IMPACT: Enables dataset testing validation checks
         """
-        hi_detail_tokens, _ = self.extract_shirg_x_tokens(images)
-        return hi_detail_tokens
+        return self.extract_high_res_tokens_fixed(images)
     
     def shirg_token_selection(self, tokens, budget=768, text_embeddings=None):
         """
-        SHIRG-COMPAT-FIX: 2025-07-28 - Token selection for validation compatibility
+        SHIRG-COMPAT-FIX: 2025-07-28 - Use SHIRG-Fixed selection for validation
         ISSUE: Validation expects shirg_token_selection method with specific signature
-        SOLUTION: Apply SHIRG-X selection to provided tokens, handle parameter order
-        VALIDATION IMPACT: Enables token semantic testing without transpose errors
+        SOLUTION: Use SHIRG-Fixed selection if budget=768, fallback to SHIRG-X otherwise
+        VALIDATION IMPACT: Consistent behavior with main forward_with_shirg method
         """
-        # SIGNATURE-FIX: 2025-07-28 - Handle validation calling pattern
-        # ISSUE: Validation calls shirg_token_selection(tokens, budget, text_embeddings)
-        # SOLUTION: Handle both 2-param and 3-param calling patterns
-        # VALIDATION IMPACT: Prevents parameter confusion and type errors
-        
+        # Handle parameter order variations
         if isinstance(budget, torch.Tensor):
-            # Old pattern: shirg_token_selection(tokens, text_embeddings) 
             text_embeddings = budget
             budget = 768  # Default budget
-        # else: New pattern shirg_token_selection(tokens, budget, text_embeddings) - use as-is
-            
-        selected_tokens, coord_coords = self.shirg_x_selection(tokens, text_embeddings, budget)
         
-        # SHAPE-FIX: 2025-07-28 - Add summary token for validation compatibility
-        # ISSUE: Validation expects budget+1 tokens (including summary token)
-        # SOLUTION: Add global summary token as mean of selected tokens
-        # VALIDATION IMPACT: Fixes shape mismatch errors in performance tests
+        if budget == 768:
+            # Use SHIRG-Fixed selection
+            selected_tokens = self.shirg_fixed_selection(tokens, text_embeddings)
+        else:
+            # Use SHIRG-X selection for non-standard budgets
+            selected_tokens, _ = self.shirg_x_selection(tokens, text_embeddings, budget)
         
+        # Add summary token for validation compatibility
         B, N, D = selected_tokens.shape
-        
-        # Create summary token as mean of all selected tokens
         summary_token = selected_tokens.mean(dim=1, keepdim=True)  # [B, 1, D]
-        
-        # Concatenate summary token at the end
         tokens_with_summary = torch.cat([selected_tokens, summary_token], dim=1)  # [B, budget+1, D]
         
         return tokens_with_summary
     
     def compare_baseline_vs_shirg(self, images, **kwargs):
         """
-        SHIRG-COMPAT-FIX: 2025-07-28 - Comparison method for validation
+        SHIRG-COMPAT-FIX: 2025-07-28 - Use SHIRG-Fixed for baseline comparison
         ISSUE: Validation expects baseline vs SHIRG comparison with flexible parameters
-        SOLUTION: Compare standard LaViDa forward vs SHIRG-X selection, handle all kwargs
-        VALIDATION IMPACT: Enables performance comparison testing without signature errors
+        SOLUTION: Compare standard LaViDa forward vs SHIRG-Fixed selection
+        VALIDATION IMPACT: Enables performance comparison testing with consistent results
         """
-        # KWARGS-FIX: 2025-07-28 - Handle flexible parameter passing
-        # ISSUE: Validation may pass unexpected parameters like 'target_tokens'
-        # SOLUTION: Extract known parameters and ignore unknown ones
-        # VALIDATION IMPACT: Prevents unexpected keyword argument errors
-        
         text_embeddings = kwargs.get('text_embeddings', None)
         budget = kwargs.get('budget', kwargs.get('target_tokens', 768))
         
         # Baseline: standard LaViDa forward (729 tokens)
         baseline_features = self.forward(images)
         
-        # SHIRG-X: dual-scale selection (budget + 144 tokens)
-        shirg_features, coord_coords = self.forward_with_shirg_x(images, text_embeddings, budget)
+        # SHIRG-Fixed: consistent 768 token selection
+        if budget == 768:
+            shirg_features = self.forward_with_shirg_fixed(images, text_embeddings)
+        else:
+            shirg_features, _ = self.forward_with_shirg_x(images, text_embeddings, budget)
         
-        # RETURN-FIX: 2025-07-28 - Return tuple for validation compatibility
-        # ISSUE: Some validation code expects tuple return, others expect dict
-        # SOLUTION: Return both baseline and shirg as tuple, add dict as well
-        # VALIDATION IMPACT: Compatible with different validation calling patterns
-        
-        result_dict = {
-            'baseline': baseline_features,
-            'shirg': shirg_features,
-            'coordinates': coord_coords,
-            'baseline_count': baseline_features.shape[1],
-            'shirg_count': shirg_features.shape[1]
-        }
-        
-        # Return as tuple for validation compatibility
         return baseline_features, shirg_features
     
     def _compute_edge_density_boost(self, tokens):

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-SHIRG LoRA Training Orchestration Script
-Complete end-to-end training pipeline for SHIRG-v2 mixed-ratio LoRA adaptation
+SHIRG-Fixed LoRA Training Script
+Implements rank-64 LoRA training for SHIRG-Fixed implementation as per research plan
 
-SHIRG-FIX: 2025-07-27 - Main orchestration script for research implementation
-ISSUE: Need unified entry point for complete SHIRG LoRA training pipeline
-SOLUTION: Integrated script covering dataset prep, training, evaluation, and reporting
-LAVIDA IMPACT: Seamless integration with LaViDa architecture and workflows
-SHIRG IMPACT: Production-ready implementation following research specifications
+SHIRG-FIXED-FIX: 2025-07-28 - Training pipeline for SHIRG-Fixed implementation
+ISSUE: Need training script for rank-64 LoRA (mm_projector + early SigLIP layers)
+SOLUTION: Mixed-resolution training with fixed K=768 token selection
+RESEARCH IMPACT: Enables cross-resolution alignment with minimal parameter overhead
 """
 
 import os
@@ -16,8 +15,12 @@ import argparse
 import logging
 import time
 import json
+import torch
+import torch.nn as nn
+import torch.optim as optim
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass
 
 # Add paths for imports
 sys.path.append('./shirg/')
@@ -28,309 +31,313 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('shirg_training.log'),
+        logging.FileHandler('shirg_fixed_training.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-def setup_environment():
-    """Setup training environment and dependencies"""
-    logger.info("Setting up SHIRG training environment...")
+@dataclass
+class SHIRGFixedTrainingConfig:
+    """SHIRG-Fixed training configuration as per research plan"""
     
-    # Check GPU availability
-    import torch
-    if not torch.cuda.is_available():
-        logger.warning("No GPU available - training will be slow!")
-        return False
+    # LoRA Configuration (rank-64 as specified)
+    lora_rank: int = 64
+    lora_alpha: int = 32  # α/r = 0.5 scaling
+    lora_dropout: float = 0.05
     
-    gpu_count = torch.cuda.device_count()
-    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
+    # Training Parameters
+    batch_size: int = 16
+    gradient_accumulation: int = 8
+    effective_batch_size: int = 128  # 16 * 8
+    learning_rate: float = 7e-5  # Higher than original due to rank-64
+    weight_decay: float = 0.01
+    epochs: int = 2
+    warmup_ratio: float = 0.1
     
-    logger.info(f"GPU Setup: {gpu_count} GPU(s), {gpu_memory:.1f}GB memory")
+    # Dataset Configuration  
+    dataset_size: int = 558000  # LCS-558K
+    max_length: int = 2048
+    mixed_resolution: bool = True  # Essential for generalization
     
-    if gpu_memory < 15:
-        logger.warning(f"GPU memory ({gpu_memory:.1f}GB) may be insufficient for optimal training")
+    # SHIRG-Fixed Specific
+    fixed_token_budget: int = 768  # Fixed K=768
+    high_res_size: int = 672  # 672p processing
     
-    # Check required packages
-    try:
-        import peft
-        logger.info(f"PEFT version: {peft.__version__}")
-    except ImportError:
-        logger.error("PEFT not installed - please run: pip install peft")
-        return False
-    
-    return True
+    # System Configuration
+    num_gpus: int = 8
+    output_dir: str = "./shirg_fixed_checkpoints"
+    save_steps: int = 500
+    logging_steps: int = 100
 
-def run_dataset_preparation(args):
-    """Run dataset preparation pipeline"""
-    logger.info("Starting dataset preparation...")
+
+def setup_shirg_fixed_model():
+    """
+    Setup LaViDa model with SHIRG-Fixed LoRA configuration
+    
+    Returns:
+        model: LaViDa model with SHIRG-Fixed LoRA applied
+        tokenizer: Model tokenizer
+        image_processor: Image processor
+    """
+    logger.info("Setting up LaViDa model with SHIRG-Fixed LoRA...")
     
     try:
-        from shirg_dataset_preparation import SHIRGDatasetConfig, SHIRGDatasetProcessor
+        from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper, setup_shirg_fixed_lora, verify_shirg_fixed_setup
         
-        # Configuration for dataset preparation
-        dataset_config = SHIRGDatasetConfig(
-            base_dataset_size=args.dataset_size,
-            ocr_enhancement_size=args.ocr_samples,
-            output_dir=args.data_dir,
-            image_resolution=args.image_resolution,
-            enable_augmentation=args.enable_augmentation
-        )
+        # Create LaViDa-SHIRG wrapper in SHIRG-Fixed mode
+        shirg_config = {
+            'mode': 'shirg-fixed',
+            'target_tokens': 768,
+            'alpha': 0.3,  # Enable SHIRG
+            'debug': True
+        }
         
-        # Initialize processor and prepare dataset
-        processor = SHIRGDatasetProcessor(dataset_config)
-        dataset_path = processor.prepare_full_dataset()
+        wrapper = LaViDaSHIRGWrapper(shirg_config=shirg_config)
+        wrapper.load_model()
         
-        logger.info(f"Dataset preparation completed: {dataset_path}")
-        return dataset_path
+        # Apply SHIRG-Fixed LoRA configuration
+        model = setup_shirg_fixed_lora(wrapper.model)
+        
+        # Verify LoRA setup
+        verify_shirg_fixed_setup(model)
+        
+        return model, wrapper.tokenizer, wrapper.image_processor
         
     except Exception as e:
-        logger.error(f"Dataset preparation failed: {e}")
+        logger.error(f"Failed to setup SHIRG-Fixed model: {e}")
         raise
 
-def run_lora_training(args, dataset_path: str):
-    """Run LoRA training pipeline"""
-    logger.info("Starting SHIRG LoRA training...")
+
+def prepare_shirg_fixed_dataset(config: SHIRGFixedTrainingConfig):
+    """
+    Prepare mixed-resolution dataset for SHIRG-Fixed training
+    
+    Args:
+        config: Training configuration
+        
+    Returns:
+        train_dataloader: Training data loader
+        val_dataloader: Validation data loader
+    """
+    logger.info("Preparing SHIRG-Fixed mixed-resolution dataset...")
     
     try:
-        from shirg_lora_training import SHIRGLoRAConfig, SHIRGLoRATrainer, setup_model_for_lora
-        from shirg_dataset_preparation import SHIRGTrainingDataset
-        import torch
+        from shirg.shirg_dataset_preparation import create_mixed_resolution_dataset
         
-        # LoRA training configuration
-        lora_config = SHIRGLoRAConfig(
-            lora_rank=args.lora_rank,
-            lora_alpha=args.lora_alpha,
-            batch_size_per_gpu=args.batch_size,
-            gradient_accumulation_steps=args.grad_accumulation,
-            num_epochs=args.epochs,
-            learning_rate=args.learning_rate,
-            token_budgets=args.token_budgets,
-            output_dir=args.output_dir,
-            mixed_precision=args.mixed_precision,
-            save_steps=args.save_steps,
-            eval_steps=args.eval_steps
-        )
+        # Dataset configuration for SHIRG-Fixed
+        dataset_config = {
+            'source': 'LCS-558K', 
+            'size': config.dataset_size,
+            'mixed_resolution': config.mixed_resolution,
+            'fixed_token_budget': config.fixed_token_budget,
+            'high_res_size': config.high_res_size,
+            'batch_size': config.batch_size,
+            'max_length': config.max_length
+        }
         
-        # Setup model
-        logger.info("Loading LaViDa model for LoRA adaptation...")
-        model = setup_model_for_lora()
+        train_dataloader, val_dataloader = create_mixed_resolution_dataset(dataset_config)
         
-        # Load datasets
-        train_dataset = SHIRGTrainingDataset(dataset_path, split="train")
-        val_dataset = SHIRGTrainingDataset(dataset_path, split="val")
-        
-        # Create data loaders
-        train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=lora_config.batch_size_per_gpu,
-            shuffle=True,
-            num_workers=args.num_workers,
-            pin_memory=True
-        )
-        
-        val_loader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=lora_config.batch_size_per_gpu,
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=True
-        )
-        
-        # Initialize trainer
-        trainer = SHIRGLoRATrainer(lora_config, model)
-        
-        # Run training
-        training_results = trainer.train(train_loader, val_loader)
-        
-        logger.info(f"Training completed: {training_results}")
-        return training_results
+        logger.info(f"Dataset prepared: {len(train_dataloader)} training batches")
+        return train_dataloader, val_dataloader
         
     except Exception as e:
-        logger.error(f"LoRA training failed: {e}")
+        logger.error(f"Failed to prepare dataset: {e}")
         raise
 
-def run_evaluation(args, model_path: Optional[str] = None):
-    """Run comprehensive evaluation"""
-    logger.info("Starting SHIRG evaluation...")
-    
-    try:
-        from shirg_evaluation import SHIRGEvaluationConfig, SHIRGEvaluator
-        from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
-        
-        # Evaluation configuration
-        eval_config = SHIRGEvaluationConfig(
-            datasets=args.eval_datasets,
-            token_budgets=args.token_budgets,
-            sample_size=args.eval_samples,
-            output_dir=args.output_dir + "/evaluation"
-        )
-        
-        # Setup vision tower
-        vision_tower = SigLipVisionTower(
-            vision_tower="google/siglip-so400m-patch14-384",
-            vision_tower_cfg=None,
-            delay_load=False
-        )
-        
-        # Mock model for evaluation
-        class EvalModel:
-            def __init__(self):
-                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        model = EvalModel()
-        
-        # Run evaluation
-        evaluator = SHIRGEvaluator(eval_config, model, vision_tower)
-        results = evaluator.run_evaluation()
-        
-        logger.info("Evaluation completed successfully!")
-        return results
-        
-    except Exception as e:
-        logger.error(f"Evaluation failed: {e}")
-        raise
 
-def generate_final_report(args, training_results: Dict[str, Any], eval_results: Dict[str, Any]):
-    """Generate comprehensive final report"""
-    logger.info("Generating final SHIRG training report...")
+def train_shirg_fixed_lora(model, train_dataloader, val_dataloader, config: SHIRGFixedTrainingConfig):
+    """
+    Train SHIRG-Fixed LoRA with mixed-resolution data
     
-    report_path = Path(args.output_dir) / "SHIRG_TRAINING_REPORT.md"
+    Args:
+        model: LaViDa model with SHIRG-Fixed LoRA
+        train_dataloader: Training data
+        val_dataloader: Validation data  
+        config: Training configuration
+        
+    Returns:
+        trained_model: Model after training
+    """
+    logger.info("Starting SHIRG-Fixed LoRA training...")
     
-    with open(report_path, 'w') as f:
-        f.write("# SHIRG LoRA Training Report\n\n")
-        f.write(f"Generated on: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    # Setup optimizer for SHIRG-Fixed parameters
+    trainable_params = [p for n, p in model.named_parameters() if p.requires_grad]
+    optimizer = optim.AdamW(
+        trainable_params,
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+        betas=(0.9, 0.999)
+    )
+    
+    # Setup scheduler
+    total_steps = len(train_dataloader) * config.epochs // config.gradient_accumulation
+    warmup_steps = int(total_steps * config.warmup_ratio)
+    
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps,
+        eta_min=config.learning_rate * 0.1
+    )
+    
+    # Training loop
+    model.train()
+    global_step = 0
+    
+    for epoch in range(config.epochs):
+        logger.info(f"Starting epoch {epoch+1}/{config.epochs}")
         
-        # Training Configuration
-        f.write("## Training Configuration\n\n")
-        f.write(f"- LoRA Rank: {args.lora_rank}\n")
-        f.write(f"- Learning Rate: {args.learning_rate}\n")
-        f.write(f"- Batch Size: {args.batch_size}\n")
-        f.write(f"- Epochs: {args.epochs}\n")
-        f.write(f"- Token Budgets: {args.token_budgets}\n")
-        f.write(f"- Dataset Size: {args.dataset_size}\n\n")
+        for step, batch in enumerate(train_dataloader):
+            # Move batch to device
+            images = batch['images'].cuda()
+            input_ids = batch['input_ids'].cuda()
+            attention_mask = batch['attention_mask'].cuda()
+            labels = batch['labels'].cuda()
+            
+            # Forward pass with SHIRG-Fixed
+            outputs = model(
+                input_ids=input_ids,
+                images=images,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+            
+            loss = outputs.loss / config.gradient_accumulation
+            loss.backward()
+            
+            if (step + 1) % config.gradient_accumulation == 0:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+                global_step += 1
+                
+                # Logging
+                if global_step % config.logging_steps == 0:
+                    logger.info(f"Step {global_step}, Loss: {loss.item():.4f}, LR: {scheduler.get_last_lr()[0]:.6f}")
+                
+                # Save checkpoint
+                if global_step % config.save_steps == 0:
+                    save_checkpoint(model, optimizer, scheduler, global_step, config)
+    
+    logger.info("SHIRG-Fixed LoRA training completed!")
+    return model
+
+
+def save_checkpoint(model, optimizer, scheduler, step: int, config: SHIRGFixedTrainingConfig):
+    """Save training checkpoint"""
+    checkpoint_dir = Path(config.output_dir) / f"checkpoint-{step}"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save model
+    model.save_pretrained(checkpoint_dir)
+    
+    # Save training state
+    torch.save({
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'step': step,
+        'config': config.__dict__
+    }, checkpoint_dir / 'training_state.pt')
+    
+    logger.info(f"Checkpoint saved at step {step}")
+
+
+def evaluate_shirg_fixed(model, val_dataloader, config: SHIRGFixedTrainingConfig):
+    """
+    Evaluate SHIRG-Fixed model on validation set
+    
+    Args:
+        model: Trained SHIRG-Fixed model
+        val_dataloader: Validation data
+        config: Training configuration
         
-        # Training Results
-        f.write("## Training Results\n\n")
-        if training_results:
-            f.write(f"- Final Loss: {training_results.get('final_loss', 'N/A'):.4f}\n")
-            f.write(f"- Total Steps: {training_results.get('total_steps', 'N/A')}\n")
-            f.write(f"- Trainable Parameters: {training_results.get('trainable_parameters', 'N/A'):,}\n")
-        f.write("\n")
-        
-        # Evaluation Results
-        f.write("## Evaluation Summary\n\n")
-        f.write("SHIRG-v2 demonstrates competitive performance with significant efficiency gains:\n\n")
-        f.write("- **Token Efficiency**: Reduces token count from 2304 to 512-1024 while preserving quality\n")
-        f.write("- **Speed Improvement**: Maintains inference speed within 30ms selection budget\n")
-        f.write("- **Memory Efficiency**: Reduces KV cache memory usage by 30-50%\n")
-        f.write("- **Quality Preservation**: Coverage guarantee ensures no spatial regions are lost\n\n")
-        
-        # Technical Implementation
-        f.write("## Technical Implementation\n\n")
-        f.write("### SHIRG-v2 Features\n")
-        f.write("- Coverage-aware token selection with hierarchical clustering\n")
-        f.write("- Edge density boost for thin text detection\n")
-        f.write("- Mixed-ratio LoRA training for flexible token budgets\n")
-        f.write("- Static selection preserving LaViDa's KV-cache efficiency\n\n")
-        
-        # Next Steps
-        f.write("## Next Steps\n\n")
-        f.write("1. **Production Deployment**: Integrate LoRA adapter into LaViDa inference pipeline\n")
-        f.write("2. **Benchmark Evaluation**: Test on full ChartQA, DocVQA, TextVQA datasets\n")
-        f.write("3. **Hyperparameter Tuning**: Optimize α, β parameters for specific domains\n")
-        f.write("4. **Scale Testing**: Validate performance on larger datasets and batch sizes\n\n")
-        
-        # Research Contributions
-        f.write("## Research Contributions\n\n")
-        f.write("- **Novel Coverage Guarantee**: First token selection method ensuring spatial completeness\n")
-        f.write("- **Cache-Friendly Design**: Static selection compatible with diffusion VLM caching\n")
-        f.write("- **Mixed-Ratio Training**: Single adapter works across multiple token budgets\n")
-        f.write("- **Production Ready**: Complete implementation ready for research publication\n\n")
-        
-    logger.info(f"Final report saved to: {report_path}")
+    Returns:
+        eval_results: Evaluation metrics
+    """
+    logger.info("Evaluating SHIRG-Fixed model...")
+    
+    model.eval()
+    total_loss = 0
+    num_batches = 0
+    
+    with torch.no_grad():
+        for batch in val_dataloader:
+            images = batch['images'].cuda()
+            input_ids = batch['input_ids'].cuda()
+            attention_mask = batch['attention_mask'].cuda()
+            labels = batch['labels'].cuda()
+            
+            outputs = model(
+                input_ids=input_ids,
+                images=images,
+                attention_mask=attention_mask,
+                labels=labels
+            )
+            
+            total_loss += outputs.loss.item()
+            num_batches += 1
+    
+    avg_loss = total_loss / num_batches
+    
+    eval_results = {
+        'validation_loss': avg_loss,
+        'perplexity': torch.exp(torch.tensor(avg_loss)).item()
+    }
+    
+    logger.info(f"Validation results: Loss={avg_loss:.4f}, Perplexity={eval_results['perplexity']:.2f}")
+    return eval_results
+
 
 def main():
-    """Main orchestration function"""
-    parser = argparse.ArgumentParser(description="SHIRG LoRA Training Pipeline")
-    
-    # Dataset configuration
-    parser.add_argument("--dataset-size", type=int, default=1000, help="Base dataset size for testing")
-    parser.add_argument("--ocr-samples", type=int, default=200, help="OCR enhancement samples")
-    parser.add_argument("--data-dir", type=str, default="./shirg_training_data", help="Dataset directory")
-    parser.add_argument("--image-resolution", type=int, default=672, help="High-res input resolution")
-    parser.add_argument("--enable-augmentation", action="store_true", help="Enable data augmentation")
-    
-    # LoRA training configuration
-    parser.add_argument("--lora-rank", type=int, default=16, help="LoRA rank")
-    parser.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha")
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size per GPU")
-    parser.add_argument("--grad-accumulation", type=int, default=2, help="Gradient accumulation steps")
-    parser.add_argument("--epochs", type=int, default=1, help="Training epochs")
-    parser.add_argument("--learning-rate", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--token-budgets", type=int, nargs="+", default=[512, 768], help="Token budgets to train")
-    parser.add_argument("--mixed-precision", type=str, default="fp16", help="Mixed precision training")
-    
-    # Training infrastructure
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
-    parser.add_argument("--save-steps", type=int, default=100, help="Checkpoint save frequency")
-    parser.add_argument("--eval-steps", type=int, default=50, help="Evaluation frequency")
-    
-    # Evaluation configuration
-    parser.add_argument("--eval-datasets", type=str, nargs="+", default=["ChartQA", "DocVQA"], help="Evaluation datasets")
-    parser.add_argument("--eval-samples", type=int, default=20, help="Samples per evaluation dataset")
-    
-    # Output configuration
-    parser.add_argument("--output-dir", type=str, default="./shirg_lora_output", help="Output directory")
-    parser.add_argument("--skip-training", action="store_true", help="Skip training, run evaluation only")
-    parser.add_argument("--skip-evaluation", action="store_true", help="Skip evaluation, run training only")
+    """Main training orchestration"""
+    parser = argparse.ArgumentParser(description='SHIRG-Fixed LoRA Training')
+    parser.add_argument('--config', type=str, help='Training config file')
+    parser.add_argument('--output_dir', type=str, default='./shirg_fixed_checkpoints')
+    parser.add_argument('--resume_from_checkpoint', type=str, help='Resume from checkpoint')
     
     args = parser.parse_args()
     
-    # Create output directory
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    # Load configuration
+    config = SHIRGFixedTrainingConfig()
+    if args.config and os.path.exists(args.config):
+        with open(args.config, 'r') as f:
+            config_dict = json.load(f)
+            for key, value in config_dict.items():
+                setattr(config, key, value)
     
-    logger.info("🚀 Starting SHIRG LoRA Training Pipeline")
-    logger.info(f"Configuration: {vars(args)}")
+    config.output_dir = args.output_dir
     
-    # Setup environment
-    if not setup_environment():
-        logger.error("Environment setup failed!")
-        return 1
-    
-    training_results = {}
-    eval_results = {}
+    logger.info("Starting SHIRG-Fixed LoRA training pipeline")
+    logger.info(f"Configuration: {config.__dict__}")
     
     try:
-        if not args.skip_training:
-            # Step 1: Dataset Preparation
-            dataset_path = run_dataset_preparation(args)
-            
-            # Step 2: LoRA Training
-            training_results = run_lora_training(args, dataset_path)
-            
-            logger.info("✅ Training completed successfully!")
+        # Setup model
+        model, tokenizer, image_processor = setup_shirg_fixed_model()
         
-        if not args.skip_evaluation:
-            # Step 3: Evaluation
-            eval_results = run_evaluation(args)
-            
-            logger.info("✅ Evaluation completed successfully!")
+        # Prepare dataset
+        train_dataloader, val_dataloader = prepare_shirg_fixed_dataset(config)
         
-        # Step 4: Generate Final Report
-        generate_final_report(args, training_results, eval_results)
+        # Train model
+        trained_model = train_shirg_fixed_lora(model, train_dataloader, val_dataloader, config)
         
-        logger.info("🎉 SHIRG LoRA Training Pipeline completed successfully!")
-        logger.info(f"Results saved to: {args.output_dir}")
+        # Final evaluation
+        eval_results = evaluate_shirg_fixed(trained_model, val_dataloader, config)
         
-        return 0
+        # Save final model
+        final_checkpoint_dir = Path(config.output_dir) / "final"
+        final_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        trained_model.save_pretrained(final_checkpoint_dir)
+        
+        # Save evaluation results
+        with open(final_checkpoint_dir / 'eval_results.json', 'w') as f:
+            json.dump(eval_results, f, indent=2)
+        
+        logger.info("SHIRG-Fixed training pipeline completed successfully!")
         
     except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+        logger.error(f"Training pipeline failed: {e}")
+        raise
+
 
 if __name__ == "__main__":
-    exit(main())
+    main()

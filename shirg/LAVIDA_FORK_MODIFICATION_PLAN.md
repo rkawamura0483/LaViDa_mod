@@ -3,72 +3,79 @@
 ## Objective
 Modify LaViDa's vision processing pipeline to implement SHIRG-X dual-scale spatially aware token selection, preserving global geometry while selecting high-detail tokens with minimal LoRA projector adaptation.
 
-## Current Problem
-- LaViDa's vanilla SHIRG loses spatial fidelity with only ~33% retention (768/2304)
-- Dropped patches leave holes without spatial coordinate information
-- Mean-pooled summary token discards geometry
-- Layout tasks see steep accuracy drops below ~40% keep-rate
+## Current Issues (Based on Practical Analysis)
+- **Adaptive-K gating instability**: Gate mis-predictions cause token count variance
+- **Over-merging in sparse regions**: Aggressive token merging eliminates fine details needed for OCR
+- **SigLIP-LaViDa mismatch**: 672p inputs need positional embedding adaptation
+- **Memory pressure**: High-res tokens (2304→912) strain KV cache without compression
+- **Training complexity**: Multi-component LoRA setup increases failure risk
 
-## Solution: SHIRG-X Dual-Scale Architecture
+## Simplified Solution: SHIRG-Fixed Architecture
 
-**Key Insight**: Implement dual-scale token set with lo-res scaffold + distance-aware scoring + centroid coordinate embedding to preserve spatial relationships while maintaining cache compatibility.
+**Key Insight**: **Eliminate variance sources** and focus on **minimal LoRA adaptation** that enables genuine high-resolution processing. Fixed K=768 + rank-64 LoRA + PrefixKV compression = stable, reproducible performance gains.
 
-### **Step 1: Implement Dual-Scale Token Extraction**
+### **Step 1: Stabilize SigLIP High-Resolution Processing**
 
 **File:** `LaViDa/llava/model/multimodal_encoder/siglip_encoder.py`
 
-**Current Code (Lines 570-571):**
+**Key Changes:**
+1. **Keep all SigLIP layers** (unlike original LaViDa that removes last layer)
+2. **Add 672p positional embedding interpolation** 
+3. **Fixed token budget K=768** (no adaptive gating)
+
+**Code Modifications:**
 ```python
-del self.vision_tower.vision_model.encoder.layers[-1:]  # Remove last layer
-self.vision_tower.vision_model.head = nn.Identity()     # Remove pooling
+# SHIRG-Fixed: Keep full SigLIP encoder
+# del self.vision_tower.vision_model.encoder.layers[-1:]  # REMOVE THIS LINE
+self.vision_tower.vision_model.head = nn.Identity()     # Keep this
+
+# SHIRG-Fixed: Add high-resolution support
+self.enable_shirg_fixed = True
+self.fixed_token_budget = 768  # No adaptive gating
+self.high_res_size = 672  # Target resolution
+self.enable_pos_interpolation = True  # For 672p support
 ```
 
-**Modified Code for SHIRG-X Dual-Scale:**
+**Add High-Resolution Token Extraction with Fixed Selection:**
 ```python
-# SHIRG-X Modification: Dual-scale token extraction
-# Keep full SigLIP encoder for high-resolution tokens
-# del self.vision_tower.vision_model.encoder.layers[-1:]  # COMMENT OUT - keep all layers
-self.vision_tower.vision_model.head = nn.Identity()     # Keep this - remove pooling head
-
-# SHIRG-X: Add dual-scale configuration
-self.enable_shirg_x = True
-self.lo_res_scaffold_size = (12, 12)  # 144 tokens for global geometry
-self.hi_detail_budget_range = (512, 768, 1024)  # Adaptive budget
-self.coord_embedding_dim = 128  # Centroid coordinate embedding size
-```
-
-**Add SHIRG-X Dual-Scale Extraction Method:**
-```python
-def extract_shirg_x_tokens(self, images):
+def extract_high_res_tokens_fixed(self, images):
     """
-    Extract dual-scale tokens for SHIRG-X: hi-detail + lo-res scaffold
-    Returns both high-resolution tokens and spatial scaffold
+    Extract high-resolution tokens (2304 from 672²) with fixed K=768 selection
+    Uses SAINT-style coverage guarantee instead of adaptive gating
     """
     batch_size = images.shape[0]
     
-    # Extract full high-resolution tokens (2,304 from 672²)
+    # Interpolate to 672p
     high_res_images = F.interpolate(images, size=(672, 672), mode='bilinear', align_corners=False)
+    
+    # Interpolate positional embeddings from 24×24 to 48×48 
+    if self.enable_pos_interpolation:
+        self.interpolate_pos_embeddings()
+    
+    # Extract full 2304 tokens
     with torch.no_grad():
-        outputs = self.vision_tower(high_res_images.to(device=self.device, dtype=self.dtype), 
-                                  output_hidden_states=True)
+        outputs = self.vision_tower(high_res_images.to(device=self.device, dtype=self.dtype))
         hi_detail_tokens = outputs.last_hidden_state  # [B, 2304, D]
         
         # Remove CLS token if present
         if hi_detail_tokens.shape[1] > 2304:
-            hi_detail_tokens = hi_detail_tokens[:, 1:, :]  # Remove CLS token
+            hi_detail_tokens = hi_detail_tokens[:, 1:, :]
     
-    # Create lo-res scaffold through 4×4 average pooling
-    # Reshape to 48×48 spatial grid
-    H = W = 48  # 672/14 = 48
-    spatial_features = hi_detail_tokens.view(batch_size, H, W, -1)
+    return hi_detail_tokens
+
+def interpolate_pos_embeddings(self):
+    """
+    Interpolate SigLIP positional embeddings from 24×24 to 48×48
+    One-line fix for 672p support (standard ViT technique)
+    """
+    old_pos_embed = self.vision_tower.vision_model.embeddings.position_embedding.weight
+    # Bicubic interpolation from 24×24 to 48×48
+    new_pos_embed = F.interpolate(
+        old_pos_embed.view(1, 24, 24, -1).permute(0, 3, 1, 2),
+        size=(48, 48), mode='bicubic', align_corners=False
+    ).permute(0, 2, 3, 1).view(48*48, -1)
     
-    # Apply 4×4 average pooling to get 12×12 = 144 scaffold tokens
-    lo_res_scaffold = F.avg_pool2d(
-        spatial_features.permute(0, 3, 1, 2),  # [B, D, H, W]
-        kernel_size=4, stride=4
-    ).permute(0, 2, 3, 1).flatten(1, 2)  # [B, 144, D]
-    
-    return hi_detail_tokens, lo_res_scaffold
+    self.vision_tower.vision_model.embeddings.position_embedding.weight.data = new_pos_embed
 
 def compute_patch_centroids(self, H=48, W=48):
     """
@@ -91,56 +98,47 @@ def compute_patch_centroids(self, H=48, W=48):
     return torch.tensor(patch_coords, dtype=torch.float32)
 ```
 
-### **Step 2: Implement Distance-Aware Token Selection**
+### **Step 2: Implement Fixed-K Token Selection with Coverage**
 
-**Add new SHIRG-X selection method to SigLipVisionTower:**
+**Add simplified SHIRG-Fixed selection method:**
 ```python
-def forward_with_shirg_x(self, images, text_embeddings=None, budget=768):
+def forward_with_shirg_fixed(self, images, text_embeddings=None):
     """
-    Forward pass with SHIRG-X dual-scale token selection
+    Forward pass with SHIRG-Fixed token selection (K=768, coverage guaranteed)
     
     Args:
         images: Input images
-        text_embeddings: Text embeddings for relevance scoring
-        budget: Target number of hi-detail tokens to keep
+        text_embeddings: Text embeddings for relevance scoring (optional)
         
     Returns:
-        selected_tokens: Dual-scale token set (hi-detail + lo-res scaffold)
-        coord_embeddings: Centroid coordinate embeddings
+        selected_tokens: [B, 768, D] selected vision tokens
     """
-    # Extract dual-scale tokens
-    hi_detail_tokens, lo_res_scaffold = self.extract_shirg_x_tokens(images)
+    # Extract high-resolution tokens (2304)
+    hi_detail_tokens = self.extract_high_res_tokens_fixed(images)
     
     if text_embeddings is not None:
-        # Apply SHIRG-X selection to hi-detail tokens
-        selected_hi_detail, coord_coords = self.shirg_x_selection(
-            hi_detail_tokens, text_embeddings, budget
+        # Apply SHIRG-Fixed selection with coverage guarantee
+        selected_tokens = self.shirg_fixed_selection(
+            hi_detail_tokens, text_embeddings
         )
     else:
-        # Fallback: keep top tokens by feature magnitude
+        # Fallback: keep top-768 by feature magnitude
         feature_magnitude = torch.norm(hi_detail_tokens, dim=-1)
-        _, top_indices = torch.topk(feature_magnitude, budget, dim=1)
-        selected_hi_detail = torch.gather(
+        _, top_indices = torch.topk(feature_magnitude, self.fixed_token_budget, dim=1)
+        selected_tokens = torch.gather(
             hi_detail_tokens, 1, 
             top_indices.unsqueeze(-1).expand(-1, -1, hi_detail_tokens.shape[-1])
         )
-        # Compute coordinates for selected tokens
-        coord_coords = self.compute_selected_coordinates(top_indices)
     
-    # Combine hi-detail + lo-res scaffold
-    dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
-    
-    return dual_scale_tokens, coord_coords
+    return selected_tokens
 
-def shirg_x_selection(self, hi_detail_tokens, text_embeddings, budget):
+def shirg_fixed_selection(self, hi_detail_tokens, text_embeddings):
     """
-    SHIRG-X token selection with distance-aware scoring and token merging
+    SHIRG-Fixed token selection: K=768 with SAINT-style coverage guarantee
+    Eliminates adaptive gating and complex token merging for stability
     """
-    B, N, D = hi_detail_tokens.shape
-    H = W = int(math.sqrt(N))  # 48x48 grid
-    
-    # Compute patch centroids
-    patch_coords = self.compute_patch_centroids(H, W).to(hi_detail_tokens.device)
+    B, N, D = hi_detail_tokens.shape  # N=2304
+    H = W = 48  # 48x48 grid from 672p
     
     # 1. Compute similarity scores with text
     similarity_scores = torch.max(
@@ -148,69 +146,100 @@ def shirg_x_selection(self, hi_detail_tokens, text_embeddings, budget):
         dim=-1
     )[0]  # [B, N]
     
-    # 2. Compute distance-aware importance scores (TopV-style)
-    center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
+    # 2. Compute variance scores (capture local complexity)
+    variance_scores = torch.var(hi_detail_tokens, dim=-1)  # [B, N]
     
-    # Distance to image center
-    center_distances = torch.norm(
-        patch_coords[:, :2] - center_coord, dim=1
-    )  # [N]
+    # 3. Combined importance score (simplified)
+    importance_scores = 0.7 * similarity_scores + 0.3 * variance_scores  # [B, N]
     
-    # Distance-aware scoring: s_i = 0.7*Sim_i - 0.2*||p_i-p_j||_2 - 0.1*||p_i-c||_2
-    # Simplified to avoid pairwise distance computation
-    importance_scores = (
-        0.7 * similarity_scores - 
-        0.1 * center_distances.unsqueeze(0).expand(B, -1)
-    )  # [B, N]
+    # 4. SAINT-style coverage guarantee
+    # Ensure each 4×4 region has at least 1 token
+    coverage_tokens = self.ensure_coverage_4x4(importance_scores, H, W)
     
-    # 3. Token merge for neighboring low-score tokens (ToMe-style)
-    merged_tokens, merged_coords = self.merge_neighboring_tokens(
-        hi_detail_tokens, patch_coords, importance_scores, epsilon=0.05
+    # 5. Fill remaining budget with global top-k
+    remaining_budget = self.fixed_token_budget - len(coverage_tokens)
+    if remaining_budget > 0:
+        # Exclude coverage tokens from global selection
+        mask = torch.ones(N, dtype=torch.bool, device=hi_detail_tokens.device)
+        mask[coverage_tokens] = False
+        
+        remaining_scores = importance_scores[:, mask]
+        _, top_indices = torch.topk(remaining_scores, remaining_budget, dim=1)
+        
+        # Combine coverage + global selections
+        all_indices = torch.cat([coverage_tokens, top_indices])
+    else:
+        all_indices = coverage_tokens[:self.fixed_token_budget]
+    
+    # 6. Extract selected tokens
+    selected_tokens = torch.gather(
+        hi_detail_tokens, 1,
+        all_indices.unsqueeze(-1).expand(-1, -1, D)
     )
     
-    # 4. Select top-K tokens
-    if merged_tokens.shape[1] > budget:
-        _, top_indices = torch.topk(importance_scores, budget, dim=1)
-        selected_tokens = torch.gather(
-            merged_tokens, 1,
-            top_indices.unsqueeze(-1).expand(-1, -1, merged_tokens.shape[-1])
-        )
-        selected_coords = merged_coords[top_indices]
-    else:
-        selected_tokens = merged_tokens
-        selected_coords = merged_coords
-    
-    return selected_tokens, selected_coords
+    return selected_tokens
 
-def merge_neighboring_tokens(self, tokens, coords, scores, epsilon=0.05):
+def ensure_coverage_4x4(self, importance_scores, H, W):
     """
-    Merge neighboring tokens with similar scores (ToMe-style)
-    Preserves area-weighted centroids
+    SAINT-style coverage guarantee: ensure each 4×4 region keeps ≥1 token
+    Prevents over-merging that eliminates fine text details
     """
-    # Simplified implementation - can be optimized with CUDA
-    # For now, return original tokens (merge logic can be added)
-    return tokens, coords
+    B = importance_scores.shape[0]
+    coverage_tokens = []
+    
+    # Divide 48×48 grid into 12×12 regions of 4×4 patches each
+    regions_per_dim = H // 4  # 12 regions per dimension
+    
+    for region_i in range(regions_per_dim):
+        for region_j in range(regions_per_dim):
+            # Get tokens in this 4×4 region
+            start_i, end_i = region_i * 4, (region_i + 1) * 4
+            start_j, end_j = region_j * 4, (region_j + 1) * 4
+            
+            # Convert 2D region to 1D indices
+            region_indices = []
+            for i in range(start_i, end_i):
+                for j in range(start_j, end_j):
+                    idx = i * W + j
+                    region_indices.append(idx)
+            
+            # Select highest scoring token in this region
+            region_scores = importance_scores[0, region_indices]  # Use batch 0 for simplicity
+            best_local_idx = torch.argmax(region_scores)
+            best_global_idx = region_indices[best_local_idx]
+            
+            coverage_tokens.append(best_global_idx)
+    
+    return torch.tensor(coverage_tokens, device=importance_scores.device)
 ```
 
-### **Step 3: Add Centroid Coordinate Embedding Layer**
+### **Step 3: Setup PrefixKV Cache Compression**
 
 **File:** `lavida_shirg_integration.py`
 
-**Add coordinate embedding to mm_projector:**
+**Add PrefixKV integration for memory efficiency:**
 ```python
-class CoordinateEmbedding(nn.Module):
-    """Centroid coordinate embedding layer for SHIRG-X"""
-    
-    def __init__(self, input_dim=4, output_dim=128):
-        super().__init__()
-        self.coord_linear = nn.Linear(input_dim, output_dim)
-        
-    def forward(self, coord_features):
-        """Embed (x, y, h, w) coordinates"""
-        return self.coord_linear(coord_features)
+try:
+    from prefixkv import PrefixKVWrapper
+    PREFIXKV_AVAILABLE = True
+except ImportError:
+    print("⚠️ PrefixKV not available - install with: pip install prefixkv")
+    PREFIXKV_AVAILABLE = False
 
-def patched_encode_images_shirg_x(self, images):
-    """Enhanced encode_images with SHIRG-X dual-scale selection"""
+class SHIRGCacheManager:
+    """Memory-efficient KV cache management for SHIRG tokens"""
+    
+    def __init__(self, enable_compression=True):
+        self.enable_compression = enable_compression and PREFIXKV_AVAILABLE
+        
+    def wrap_model_with_cache_compression(self, model):
+        """Wrap diffusion model with PrefixKV compression"""
+        if self.enable_compression:
+            return PrefixKVWrapper(model, compression_ratio=0.5)  # 16-bit compression
+        return model
+
+def patched_encode_images_shirg_fixed(self, images):
+    """Enhanced encode_images with SHIRG-Fixed selection (K=768)"""
     
     wrapper = getattr(self, 'shirg_wrapper', None)
     vision_tower = self.get_model().get_vision_tower()
@@ -218,37 +247,27 @@ def patched_encode_images_shirg_x(self, images):
     if (wrapper is not None and 
         hasattr(wrapper, '_current_question_tokens') and 
         wrapper._current_question_tokens is not None and
-        wrapper.shirg_config.get('alpha', 0) > 0):
+        wrapper.shirg_config.get('enabled', False)):
         
         try:
-            # SHIRG-X: Get dual-scale tokens with coordinate embedding
-            if hasattr(vision_tower, 'forward_with_shirg_x'):
-                # Get dual-scale tokens and coordinates
-                dual_scale_tokens, coord_embeddings = vision_tower.forward_with_shirg_x(
+            # SHIRG-Fixed: Get selected tokens (K=768)
+            if hasattr(vision_tower, 'forward_with_shirg_fixed'):
+                selected_tokens = vision_tower.forward_with_shirg_fixed(
                     images, 
-                    text_embeddings=wrapper._current_question_tokens,
-                    budget=wrapper.shirg_config.get('budget', 768)
+                    text_embeddings=wrapper._current_question_tokens
                 )
                 
                 if wrapper.shirg_config.get('debug', False):
-                    print(f"🔍 SHIRG-X dual-scale tokens: {dual_scale_tokens.shape}")
-                    print(f"📍 Coordinate embeddings: {coord_embeddings.shape}")
+                    print(f"🔍 SHIRG-Fixed selected tokens: {selected_tokens.shape}")
                 
-                # Add coordinate embedding to tokens
-                if hasattr(self, 'coord_embedding'):
-                    coord_features = self.coord_embedding(coord_embeddings)
-                    # Add to corresponding hi-detail tokens (first budget tokens)
-                    budget = wrapper.shirg_config.get('budget', 768)
-                    dual_scale_tokens[:, :budget, :] += coord_features
-                
-                image_features = dual_scale_tokens
+                image_features = selected_tokens
             else:
                 # Fallback to standard approach
                 image_features = vision_tower(images)
                 
         except Exception as e:
             if wrapper.shirg_config.get('debug', False):
-                print(f"⚠️ SHIRG-X failed: {e}, using standard path")
+                print(f"⚠️ SHIRG-Fixed failed: {e}, using standard path")
             image_features = vision_tower(images)
     else:
         # Baseline: use standard LaViDa path
@@ -259,81 +278,84 @@ def patched_encode_images_shirg_x(self, images):
     return image_features
 ```
 
-### **Step 4: Adaptive-K Gating Head Implementation**
+### **Step 4: LoRA Training Configuration**
 
-**Instance-Adaptive Token Budgeting:**
+**Rank-64 LoRA Setup for Projector + SigLIP:**
 
-Implement adaptive-K head that predicts optimal token budget from patch-wise entropy, following ATP-LLaVA methodology for instance-specific token allocation.
+Simplified LoRA configuration targeting 1.4% of parameters with proven effectiveness for high-resolution VLM adaptation.
 
-### **SHIRG-X Component Training:**
+### **SHIRG-Fixed Component Training:**
 
 | Module | Params trained | Size | Comment |
 |--------|---------------|------|---------|
-| **`mm_projector` LoRA** | rank-32 adapters per layer | `~60M` | handles variable token counts |
-| **`coord_linear` LoRA** | rank-8 adapter for coordinates | `~5M` | embeds (x,y,h,w) features |
-| **Adaptive-K gating** | 2-layer MLP head | `~32k` | predicts optimal budget |
-| **SHIRG-X thresholds** | *none* (training-free) | — | distance-aware scoring params |
+| **`mm_projector` LoRA** | rank-64 adapters on fc1/fc2 | `~80M` | handles 768 selected tokens |
+| **SigLIP blocks 0-3 LoRA** | rank-64 on QKV matrices | `~40M` | early layer adaptation for high-res |
+| **Fixed selection logic** | *none* (training-free) | — | K=768 + coverage guarantee |
+| **PrefixKV compression** | *none* (plug-and-play) | — | 16-bit KV cache storage |
 
-**Total trainable parameters ≈ 65M (~0.8% of LaViDa).**
+**Total trainable parameters ≈ 120M (~1.4% of LaViDa).**
 
 ### **SHIRG-X Theory (Spatial Preservation)**
 > *SHIRG-X preserves spatial relationships through dual-scale architecture: (1) lo-res scaffold provides global geometry context, (2) distance-aware scoring prevents spatial clustering artifacts, (3) centroid coordinate embedding maintains relative position information after token pruning. The adaptive-K gating ensures dense charts receive sufficient tokens while sparse images use fewer resources. LoRA adaptation of both projector and coordinate layers enables the model to process variable token counts (656-912) while maintaining diffusion cache compatibility.*
 
-**SHIRG-X LoRA Configuration:**
+**SHIRG-Fixed LoRA Configuration:**
 ```python
 from peft import LoraConfig, get_peft_model, TaskType
-import torch.nn as nn
 
-def setup_shirg_x_lora(model, lora_config):
-    """Setup LoRA for SHIRG-X dual-scale adaptation"""
+def setup_shirg_fixed_lora(model):
+    """Setup LoRA for SHIRG-Fixed: projector + early SigLIP layers"""
     
-    # SHIRG-X LoRA configuration
-    shirg_x_lora_config = LoraConfig(
-        r=32,                    # Rank: 32 for projector
-        lora_alpha=16,           # Alpha: 16 (α/r = 0.5 scaling)
+    # Projector LoRA (rank-64)
+    projector_lora_config = LoraConfig(
+        r=64,                    # Rank: 64 for sufficient capacity
+        lora_alpha=32,           # Alpha: 32 (α/r = 0.5 scaling)
         target_modules=[
             "mm_projector.fc1",  # First linear layer of projector
             "mm_projector.fc2",  # Second linear layer of projector
-            "coord_linear"       # NEW: Coordinate embedding layer
         ],
         lora_dropout=0.05,       # Low dropout for stable adaptation
-        bias="lora",             # LoRA bias for coordinate layer
+        bias="none",             # No bias LoRA for simplicity
         task_type=TaskType.FEATURE_EXTRACTION
     )
     
-    # Add coordinate embedding layer with separate rank
-    coord_lora_config = LoraConfig(
-        r=8,                     # Rank: 8 for coordinate embedding
-        lora_alpha=8,            # Alpha: 8 (α/r = 1.0 scaling)
-        target_modules=["coord_linear"],
-        lora_dropout=0.0,        # No dropout for coordinate layer
-        bias="lora",
+    # SigLIP early layers LoRA (rank-64)
+    siglip_lora_config = LoraConfig(
+        r=64,                    # Rank: 64 for cross-resolution alignment
+        lora_alpha=32,           # Alpha: 32 (α/r = 0.5 scaling)
+        target_modules=[
+            "vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.0.self_attn.k_proj", 
+            "vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.v_proj",
+        ],
+        lora_dropout=0.0,        # No dropout for vision layers
+        bias="none",
         task_type=TaskType.FEATURE_EXTRACTION
     )
     
-    # Apply LoRA to both projector and coordinate layers
-    model = get_peft_model(model, shirg_x_lora_config)
+    # Apply LoRA configurations
+    model = get_peft_model(model, projector_lora_config)
     
-    # Add adaptive-K gating head (trainable)
-    model.adaptive_k_head = nn.Sequential(
-        nn.Linear(768, 32),      # Patch entropy → hidden
-        nn.ReLU(),
-        nn.Linear(32, 3),        # Hidden → 3 budget options
-        nn.Softmax(dim=-1)
-    )
-    
-    # Freeze everything except LoRA parameters and gating head
+    # Freeze everything except LoRA parameters
     for name, param in model.named_parameters():
-        if "lora_" not in name and "adaptive_k_head" not in name:
+        if "lora_" not in name:
             param.requires_grad = False
         else:
             param.requires_grad = True
-            print(f"✓ SHIRG-X parameter enabled: {name}")
+            print(f"✓ SHIRG-Fixed parameter enabled: {name}")
     
     return model
 
-def verify_shirg_x_setup(model):
-    """Verify SHIRG-X LoRA setup is correct"""
+def verify_shirg_fixed_setup(model):
+    """Verify SHIRG-Fixed LoRA setup is correct"""
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     
@@ -341,8 +363,8 @@ def verify_shirg_x_setup(model):
     print(f"Total parameters: {total_params:,}")
     print(f"Trainable ratio: {trainable_params/total_params:.4f}")
     
-    # Should be ~0.8% trainable for SHIRG-X
-    assert trainable_params/total_params < 0.015, "Too many trainable parameters"
+    # Should be ~1.4% trainable for SHIRG-Fixed
+    assert trainable_params/total_params < 0.02, "Too many trainable parameters"
     
     return True
 ```

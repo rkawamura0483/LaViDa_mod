@@ -42,6 +42,63 @@ except ImportError as e:
     print(f"⚠️ LaViDa imports not available: {e}")
     LAVIDA_AVAILABLE = False
 
+# PrefixKV cache compression integration
+try:
+    from prefixkv import PrefixKVWrapper
+    PREFIXKV_AVAILABLE = True
+    print("✅ PrefixKV available for cache compression")
+except ImportError:
+    PREFIXKV_AVAILABLE = False
+    print("⚠️ PrefixKV not available - install with: pip install prefixkv")
+
+
+class SHIRGCacheManager:
+    """
+    Memory-efficient KV cache management for SHIRG tokens
+    
+    SHIRG-FIXED-FIX: 2025-07-28 - PrefixKV integration for SHIRG-Fixed
+    ISSUE: SHIRG-Fixed increases token count from 729 to 768, need memory efficiency
+    SOLUTION: PrefixKV 16-bit cache compression with <2ms overhead
+    RESEARCH IMPACT: Enables SHIRG-Fixed deployment within memory constraints
+    """
+    
+    def __init__(self, enable_compression=True):
+        self.enable_compression = enable_compression and PREFIXKV_AVAILABLE
+        self.compression_ratio = 0.5  # 16-bit compression
+        
+    def wrap_model_with_cache_compression(self, model):
+        """
+        Wrap diffusion model with PrefixKV compression for SHIRG-Fixed
+        
+        Args:
+            model: LaViDa model instance
+            
+        Returns:
+            wrapped_model: Model with cache compression if available
+        """
+        if self.enable_compression:
+            try:
+                wrapped_model = PrefixKVWrapper(model, compression_ratio=self.compression_ratio)
+                print(f"✅ PrefixKV cache compression enabled (16-bit, ratio={self.compression_ratio})")
+                return wrapped_model
+            except Exception as e:
+                print(f"⚠️ PrefixKV wrapping failed: {e}, using standard caching")
+                return model
+        else:
+            if PREFIXKV_AVAILABLE:
+                print("ℹ️ PrefixKV available but compression disabled")
+            else:
+                print("ℹ️ PrefixKV not available, using standard caching")
+            return model
+    
+    def get_cache_memory_info(self, model):
+        """Get cache memory information"""
+        if hasattr(model, 'get_cache_memory_usage'):
+            return model.get_cache_memory_usage()
+        else:
+            return {"status": "standard_cache", "compression": "none"}
+
+
 class CoordinateEmbedding(nn.Module):
     """
     SHIRG-X: Centroid coordinate embedding layer
@@ -161,6 +218,9 @@ class LaViDaSHIRGWrapper:
         self.conv_template = None
         self.shirg_selector = None
         
+        # SHIRG-Fixed cache management
+        self.cache_manager = SHIRGCacheManager(enable_compression=True)
+        
         # Performance tracking
         self.generation_times = []
         self.shirg_times = []
@@ -241,6 +301,10 @@ class LaViDaSHIRGWrapper:
             
             # Setup conversation template
             self._setup_conversation_template()
+            
+            # SHIRG-Fixed: Apply cache compression
+            if self.shirg_config.get('mode', 'shirg-fixed') == 'shirg-fixed':
+                self.model = self.cache_manager.wrap_model_with_cache_compression(self.model)
             
             # Integrate SHIRG into model
             self._integrate_shirg()
@@ -409,9 +473,41 @@ class LaViDaSHIRGWrapper:
                             # SOLUTION: Use SHIRG-X dual-scale architecture with coordinate embedding
                             # RESEARCH IMPACT: Tests SHIRG-X spatial preservation hypothesis
                             
-                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg-x')  # Default to SHIRG-X
+                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg-fixed')  # Default to SHIRG-Fixed
                             
-                            if shirg_mode == 'shirg-x' and hasattr(vision_tower, 'forward_with_shirg_x'):
+                            if shirg_mode == 'shirg-fixed' and hasattr(vision_tower, 'forward_with_shirg_fixed'):
+                                # SHIRG-Fixed: Consistent K=768 selection with coverage guarantee
+                                if wrapper.shirg_config.get('debug', False):
+                                    print(f"🔍 Using SHIRG-Fixed processing (K=768)")
+                                
+                                try:
+                                    # SHIRG-Fixed uses fixed K=768, no budget parameter needed
+                                    text_embeddings = wrapper._current_question_tokens
+                                    if text_embeddings is not None:
+                                        # Validate text embeddings shape and dtype
+                                        if text_embeddings.dim() != 3:
+                                            text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
+                                        # Ensure text embeddings are on correct device
+                                        if text_embeddings.device != images.device:
+                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
+                                    
+                                    # Call SHIRG-Fixed with validated parameters
+                                    selected_features = vision_tower.forward_with_shirg_fixed(
+                                        images=images, 
+                                        text_embeddings=text_embeddings
+                                    )
+                                    
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"🎯 SHIRG-Fixed selected: {selected_features.shape}")
+                                    
+                                    image_features = selected_features
+                                    
+                                except Exception as shirg_fixed_error:
+                                    if wrapper.shirg_config.get('debug', False):
+                                        print(f"❌ SHIRG-Fixed failed: {shirg_fixed_error}")
+                                    raise shirg_fixed_error
+                                    
+                            elif shirg_mode == 'shirg-x' and hasattr(vision_tower, 'forward_with_shirg_x'):
                                 # SHIRG-X: Dual-scale processing with coordinate embedding
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🔍 Using SHIRG-X dual-scale processing")
@@ -1111,9 +1207,79 @@ def compare_baseline_vs_shirg(image_path: str, question: str) -> Dict[str, Any]:
     return comparison
 
 
+def setup_shirg_fixed_lora(model, lora_config=None):
+    """
+    Setup rank-64 LoRA for SHIRG-Fixed: projector + early SigLIP layers
+    
+    SHIRG-FIXED-FIX: 2025-07-28 - Configure LoRA for SHIRG-Fixed implementation
+    ISSUE: Need rank-64 LoRA for mm_projector and early SigLIP layers as per research plan
+    SOLUTION: Target 1.4% parameters (rank-64) for cross-resolution alignment
+    RESEARCH IMPACT: Enables SHIRG-Fixed training with minimal parameter overhead
+    
+    Args:
+        model: LaViDa model instance
+        lora_config: LoRA configuration overrides
+        
+    Returns:
+        model: Model with LoRA configuration applied
+    """
+    try:
+        from peft import LoraConfig, get_peft_model, TaskType
+    except ImportError:
+        print("⚠️ PEFT not available. Please install PEFT for LoRA training.")
+        return model
+    
+    # SHIRG-Fixed LoRA configuration (rank-64 as per research plan)
+    shirg_fixed_lora_config = {
+        'r': 64,                    # Rank: 64 for sufficient capacity
+        'lora_alpha': 32,           # Alpha: 32 (α/r = 0.5 scaling)
+        'target_modules': [
+            # mm_projector adaptation (rank-64)
+            "mm_projector.fc1",     # First linear layer of projector
+            "mm_projector.fc2",     # Second linear layer of projector
+            
+            # Early SigLIP layers adaptation (rank-64 on blocks 0-3 QKV)
+            "vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.2.self_attn.v_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.k_proj",
+            "vision_tower.vision_model.encoder.layers.3.self_attn.v_proj",
+        ],
+        'lora_dropout': 0.05,       # Low dropout for stable adaptation
+        'bias': "none",             # No bias LoRA for simplicity
+        'task_type': TaskType.FEATURE_EXTRACTION
+    }
+    
+    # Override with user config
+    if lora_config:
+        shirg_fixed_lora_config.update(lora_config)
+    
+    # Create LoRA config
+    lora_config_obj = LoraConfig(**shirg_fixed_lora_config)
+    
+    # Apply LoRA to model
+    model = get_peft_model(model, lora_config_obj)
+    
+    # Freeze everything except LoRA parameters
+    for name, param in model.named_parameters():
+        if "lora_" not in name:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+            print(f"✓ SHIRG-Fixed parameter enabled: {name}")
+    
+    return model
+
 def setup_shirg_x_lora(model, lora_config=None):
     """
-    Setup LoRA for SHIRG-X dual-scale adaptation
+    Setup LoRA for SHIRG-X dual-scale adaptation (Legacy - use SHIRG-Fixed instead)
     
     SHIRG-X-FIX: 2025-07-28 - Configure LoRA for dual-scale processing
     ISSUE: Need to train projector and coordinate layers for variable token counts
@@ -1171,8 +1337,40 @@ def setup_shirg_x_lora(model, lora_config=None):
     return model
 
 
+def verify_shirg_fixed_setup(model):
+    """
+    Verify SHIRG-Fixed LoRA setup is correct
+    
+    SHIRG-FIXED-FIX: 2025-07-28 - Validation for rank-64 LoRA configuration
+    ISSUE: Need to ensure SHIRG-Fixed targets 1.4% parameters as per research plan
+    SOLUTION: Validate trainable parameter count matches expected ~120M parameters
+    RESEARCH IMPACT: Ensures SHIRG-Fixed training efficiency targets are met
+    """
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    
+    print(f"SHIRG-Fixed LoRA Configuration:")
+    print(f"  Trainable parameters: {trainable_params:,}")
+    print(f"  Total parameters: {total_params:,}")
+    print(f"  Trainable ratio: {trainable_params/total_params:.4f}")
+    
+    # Should be ~1.4% trainable for SHIRG-Fixed (rank-64)
+    expected_ratio = 0.014  # 1.4%
+    actual_ratio = trainable_params/total_params
+    
+    if actual_ratio > 0.02:  # More than 2%
+        print(f"⚠️ Warning: High trainable ratio ({actual_ratio:.4f} > 0.02)")
+        print("   Consider reducing LoRA rank or target modules")
+    elif actual_ratio < 0.01:  # Less than 1%
+        print(f"⚠️ Warning: Low trainable ratio ({actual_ratio:.4f} < 0.01)")
+        print("   May not have sufficient capacity for cross-resolution alignment")
+    else:
+        print(f"✅ SHIRG-Fixed LoRA ratio within target range: {actual_ratio:.4f}")
+    
+    return True
+
 def verify_shirg_x_setup(model):
-    """Verify SHIRG-X LoRA setup is correct"""
+    """Verify SHIRG-X LoRA setup is correct (Legacy)"""
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     

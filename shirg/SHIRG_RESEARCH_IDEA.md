@@ -49,30 +49,24 @@ Benchmarks such as ChartQA and DocVQA require locating 4‑6 pt text or thin tic
 
 ---
 
-## 4 Proposed Method: **SHIRG‑X (Dual‑Scale, Spatially Aware)**
+## 4 Refactored Method: **SHIRG‑Fixed (Static, Cache‑Friendly)**
 
-### 4.1 Key Features — what's new
+### 4.1 Key Simplifications — what changed
 
-1. **Dual‑scale visual prefix**
+1. **Fixed token budget K=768** (eliminates adaptive gating variance)
 
-   * **Hi‑detail branch**: attention‑scored subset of *K* ≈ 512 – 1 024 tokens from the 48 × 48 patch grid.
-   * **Lo‑res scaffold**: a fixed 12 × 12 = 144 average‑pooled tokens that give global geometry.
+2. **SAINT‑style coverage guarantee** (ensures each 4×4 region keeps ≥1 token)
 
-2. **Distance‑aware importance score** (TopV‑style)
+3. **Rank‑64 LoRA adaptation**:
+   * **mm_projector**: rank‑64 on fc1/fc2 layers
+   * **SigLIP blocks 0‑3**: rank‑64 on QKV matrices only (≈1.8% params)
+   * **No coordinate embedding** (reduces complexity)
 
-   $
-   s_i = 0.7\,\text{Sim}_i \;-\;0.2\,\|p_i-p_j\|_2 \;-\;0.1\,\|p_i-c\|_2
-   $
+4. **Positional embedding interpolation**: Bicubic 24×24 → 48×48 for 672p inputs
 
-3. **Token *merge* instead of drop** when two low‑score neighbours differ by < ε = 0.05; merged token inherits the **area‑weighted centroid**.
+5. **PrefixKV cache compression**: 16‑bit KV storage for visual prefix tokens
 
-4. **Centroid‑coordinate embedding**
-   Concatenate normalised (x, y, h, w) to every kept token; a tiny 4 → 128 linear layer (inside the projector LoRA) encodes it.
-
-5. **Instance‑adaptive keep‑rate**
-   A gating MLP predicts *K* ∈ {512, 768, 1 024} from patch‑wise entropy, following ATP‑LLaVA.
-
-6. **Lightweight LoRA (< 1 % params)** over `mm_projector` + `coord_linear`; no vision‑encoder or LLM fine‑tuning.
+6. **Simplified distance scoring**: Focus on similarity + variance, drop complex merging
 
 ### 4.2 Algorithm (updated)
 
@@ -96,16 +90,17 @@ Benchmarks such as ChartQA and DocVQA require locating 4‑6 pt text or thin tic
 
 Runtime: 48 ms (avg) for 30 steps on A100, ≈ +20 % vs. LaViDa‑384, still ≪ full‑high‑res (65 ms).
 
-### 4.4 LoRA Adapter Training (revised)
+### 4.4 LoRA Adapter Training (simplified)
 
 ```yaml
 projector_lora:
-  rank: 32
-  target_modules: ["mm_projector.fc1", "mm_projector.fc2", "coord_linear"]
-coord_linear_lora:
-  rank: 8
-trainable_params: ~65M  # ≈0.8 % of 8 B
-time_estimate: 5 h on 8×A100
+  rank: 64
+  target_modules: ["mm_projector.fc1", "mm_projector.fc2"]
+siglip_lora:
+  rank: 64  
+  target_modules: ["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv"]
+trainable_params: ~120M  # ≈1.4% of 8B
+time_estimate: 8h on 8×A100
 ```
 
 ### 4.5 Why SHIRG‑X meets diffusion constraints (additions)
@@ -116,9 +111,9 @@ time_estimate: 5 h on 8×A100
 
 ---
 
-## 5 72‑Hour Crash‑Publish Schedule
+## 5 Practical 3‑Day Refactor Schedule
 
-**Front‑loads all failure risks (data prep, LoRA convergence, SHIRG CUDA kernel) with 24h free for evaluation/writing. Assumes two 8‑GPU A100‑80GB nodes for parallel jobs.**
+**Focused on stabilizing existing implementation and demonstrating real improvements with minimal risk. Emphasizes fixing current issues rather than building new complex features.**
 
 ### Prerequisites (Day 0)
 | Item | Status | Why critical |
@@ -128,32 +123,25 @@ time_estimate: 5 h on 8×A100
 | OCR‑heavy dev sets: ChartQA, DocVQA, MMMU‑OCR | ✅ | early sanity |
 | Baseline LaViDa repo fork with high‑res hook | ✅ | runs `inference_highres.py` |
 
-### Day 1: LoRA Training & SHIRG Implementation
-| Time | Task | GPUs | Notes |
-|------|------|------|-------|
-| 23:00–01:00 | Final code freeze: merge SHIRG CUDA kernel (≈300 LOC) | CPU | compile & unit‑test |
-| 09:00–09:30 | Launch **LoRA‑mix** training job | 8 GPUs | mixed keep‑ratios, r=16, LR 1e‑4, AdamW, cosine |
-| 09:30–10:00 | Launch **r=32** duplicate job (LoRA‑wide) | 8 GPUs (2nd node) | test if higher rank matters |
-| 10:00–18:00 | Jobs run (~34k iters, 3 epochs, **8h wall clock**) | — | monitor loss every 2k iters |
-| 18:15–19:00 | Quick validation on ChartQA dev (no pruning) | 1 GPU | expect ≥+6 CIDEr vs. un‑adapted |
-| 19:00–21:00 | Grid‑search SHIRG thresholds offline | CPU | α ∈ {0.1,0.3,0.5}, budgets ∈ {1024,768,512} |
-| 21:00–23:00 | Launch evaluation sweeps: baseline‑729, full 2304, SHIRG variants | 8 GPUs each × 2 nodes | inference only (fast) |
+### Day 1: Stabilize Token Selector & Simple LoRA Training (8h)
+| Time | Task | Focus | Notes |
+|------|------|-------|-------|
+| 0-4h | **Replace adaptive‑K with fixed K=768** | Eliminate variance | Remove gating MLP, use SAINT coverage rule |
+| 4-6h | **Setup rank‑64 LoRA training** | Projector + SigLIP blocks 0‑3 | Use PEFT 0.10, target 1.8% params |
+| 6-8h | **Start training job** | 8 GPUs, LR 7e‑5 | 2 epochs, batch=16×8, monitor convergence |
 
-### Day 2: Evaluation & Analysis
-| Time | Task | GPUs | Notes |
-|------|------|------|-------|
-| 09:00 | Collect metrics → decide best LoRA rank & prune budget | — | target: 768 wins speed + ≥5 CIDEr |
-| 09:30–12:30 | **Ablations**: remove summary token, variance‑only vs similarity‑only, α sweep | 8 GPUs | gives Table 2 |
-| 13:00–16:00 | **Latency & memory profiling** with nvprof | 1 GPU | report KV size vs. ms/step |
-| 16:00–20:00 | **Write paper** (4 pages + appendix) | CPU | use Overleaf template |
-| 20:00–23:00 | Generate qualitative examples & t‑SNE plots | 1 GPU | helps Figure 3 |
+### Day 2: Cache Optimization & Benchmarking (6h + 4h)
+| Time | Task | Focus | Notes |
+|------|------|-------|-------|
+| 0-2h | **Fix 672p positional embeddings** | One‑line interpolation | Bicubic 24×24 → 48×48 grid |
+| 2-8h | **Integrate PrefixKV cache compression** | Memory efficiency | 16‑bit KV compression, <2ms overhead |
+| 8-12h | **Run benchmark sweep** | 4 configs comparison | Baseline‑384, Full‑672, SHIRG‑orig, SHIRG‑fixed |
 
-### Day 3: Finalization
-| Time | Task | GPUs | Notes |
-|------|------|------|-------|
-| 09:00–12:00 | Proof‑reading, citation clean‑up | — | cross‑check against dev logs |
-| 12:00–14:00 | Final PDF build, reproducibility run | CPU | seed=42 |
-| 14:00 | **Submit!** | — | celebrate |
+### Day 3: Results Analysis & Documentation (Any remaining time)
+| Time | Task | Focus | Notes |
+|------|------|-------|-------|
+| 0-6h | **Generate results report** | Performance comparison | Document ΔCIDEr, latency, memory usage |
+| 6h+ | **Write‑up & ablations** | Evidence generation | nvprof memory graphs, trade‑off analysis |
 
 ### LoRA Training Configuration
 ```yaml
@@ -178,12 +166,14 @@ training:
   mixed_resolution: true  # Essential for generalization
 ```
 
-### Expected Performance (updated)
+### Expected Performance (Conservative Estimates)
 
-| Variant     | Vision tokens (kept + scaffold) | ChartQA ΔCIDEr | EntityGrid‑QA ΔF1 | 30‑step latency |
-| ----------- | ------------------------------- | -------------- | ----------------- | --------------- |
-| SHIRG‑X‑768 | 768 + 144 = 912                 | **+8**         | **+12**           | 48 ms           |
-| SHIRG‑X‑512 | 512 + 144 = 656                 | +5             | +8                | 46 ms           |
+| Variant                          | CIDEr Δ (ChartQA) | 30‑step latency | GPU VRAM (16‑bit) |
+| -------------------------------- | ----------------- | --------------- | ----------------- |
+| Baseline 384p                    | —                 | 37 ms           | 7.6 GB            |
+| 672p full seq                    | **+7**            | 76 ms           | 20 GB             |
+| Original SHIRG‑X                 | +1 ↔ +3           | 48 ms           | 10 GB             |
+| **Refactored SHIRG‑R64‑PKV**     | **+3 ↔ +5**       | **50 ms**       | **8.9 GB**        |
 
 ### Paper Structure (4 pages)
 | Section | Key content |
@@ -195,7 +185,11 @@ training:
 | 5 Related work | Position relative to zero‑shot (SAINT, FastV) vs. full training (HiRes‑LLaVA) |
 | 6 Conclusion | 3 bullet take‑aways: minimal training enables high‑res, cache‑friendly, effective |
 
-**Critical Success Factor**: If LoRA loss plateaus above baseline perplexity after 2h, immediately drop rank‑32 job and launch rank‑64; weak projector adaptation is the only real blocker to publication.
+**Critical Success Factors**: 
+1. **Fixed‑K selector** eliminates adaptive gating variance and over‑merging issues
+2. **Rank‑64 LoRA** provides sufficient capacity for cross‑resolution alignment 
+3. **PrefixKV integration** manages memory without custom CUDA development
+4. **Conservative targets** focus on demonstrable +3‑5 CIDEr gains rather than ambitious claims
 
 ---
 
