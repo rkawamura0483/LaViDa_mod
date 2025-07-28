@@ -253,9 +253,34 @@ class SigLipShirgExtensions:
         """
         start_time = time.time()
         
+        # TENSOR-FIX: 2025-07-28 - Validate and normalize input tensor dimensions
+        # ISSUE: Method receives tensors with unexpected dimensions causing SigLIP errors
+        # SOLUTION: Add comprehensive tensor validation and normalization
+        # LAVIDA IMPACT: Prevents SigLIP embeddings unpacking errors
+        # SHIRG IMPACT: Ensures reliable high-resolution token extraction
+        
+        if not hasattr(images, 'shape'):
+            raise ValueError(f"Input images must be a tensor with shape attribute, got {type(images)}")
+        
+        original_shape = images.shape
+        rank0_print(f"SHIRG-DEBUG: extract_shirg_x_tokens input shape: {original_shape}")
+        
+        # Handle different tensor dimensions
+        if len(images.shape) == 5:
+            # [1, B, C, H, W] -> [B, C, H, W]
+            images = images.squeeze(0)
+            rank0_print(f"SHIRG-DEBUG: Squeezed 5D tensor to 4D: {images.shape}")
+        elif len(images.shape) == 3:
+            # [C, H, W] -> [1, C, H, W]
+            images = images.unsqueeze(0)
+            rank0_print(f"SHIRG-DEBUG: Added batch dimension to 3D tensor: {images.shape}")
+        elif len(images.shape) != 4:
+            raise ValueError(f"Expected 3D, 4D or 5D input tensor, got {len(images.shape)}D: {images.shape}")
+        
         # Step 1: Process high-resolution images (672×672) to get 2,304 tokens
         if hasattr(images, 'shape') and len(images.shape) == 4:
             B, C, H, W = images.shape
+            rank0_print(f"SHIRG-DEBUG: Processing tensor with shape [B={B}, C={C}, H={H}, W={W}]")
             
             # GPU-FIX: 2025-07-28 - Optimized image resizing with caching
             # ISSUE: Multiple redundant resize operations causing GPU stalls
