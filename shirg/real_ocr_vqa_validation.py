@@ -124,7 +124,7 @@ class RealOCRVQAValidator:
                     "name": "HuggingFaceM4/ChartQA",
                     "config": "default",
                     "split": "test",
-                    "samples": 3,
+                    "samples": 10,
                     "type": "ChartQA",
                     "challenge": "Chart question answering"
                 },
@@ -132,7 +132,7 @@ class RealOCRVQAValidator:
                     "name": "lmms-lab/DocVQA", 
                     "config": "DocVQA",
                     "split": "validation",
-                    "samples": 3,
+                    "samples": 10,
                     "type": "DocVQA",
                     "challenge": "Document question answering"
                 },
@@ -140,9 +140,49 @@ class RealOCRVQAValidator:
                     "name": "howard-hou/OCR-VQA",
                     "config": None,
                     "split": "validation", 
-                    "samples": 2,
+                    "samples": 10,
                     "type": "OCR-VQA",
                     "challenge": "OCR-based VQA"
+                },
+                {
+                    "name": "AI4Math/MathVista",
+                    "config": "default",
+                    "split": "testmini",
+                    "samples": 10,
+                    "type": "MathVista",
+                    "challenge": "Mathematical reasoning in visual contexts"
+                },
+                {
+                    "name": "facebook/textvqa",
+                    "config": None,
+                    "split": "validation",
+                    "samples": 10,
+                    "type": "TextVQA",
+                    "challenge": "Text-based visual question answering"
+                },
+                {
+                    "name": "lmms-lab/DocVQA",
+                    "config": "InfographicVQA",
+                    "split": "validation",
+                    "samples": 10,
+                    "type": "InfoVQA",
+                    "challenge": "Infographic question answering"
+                },
+                {
+                    "name": "AI4Math/MathVerse",
+                    "config": "testmini",
+                    "split": "testmini",
+                    "samples": 10,
+                    "type": "MathVerse",
+                    "challenge": "Multi-modal mathematical reasoning"
+                },
+                {
+                    "name": "lmms-lab/VQAv2",
+                    "config": None,
+                    "split": "validation",
+                    "samples": 10,
+                    "type": "VQAv2",
+                    "challenge": "General visual question answering"
                 }
             ]
             
@@ -181,6 +221,18 @@ class RealOCRVQAValidator:
                                     image = example['DocVQA/image']
                                 elif 'image' in example and example['image'] is not None:
                                     image = example['image']
+                            elif dataset_info['type'] == 'InfoVQA':
+                                # InfoVQA has field structure: InfographicVQA/image
+                                if 'InfographicVQA/image' in example and example['InfographicVQA/image'] is not None:
+                                    image = example['InfographicVQA/image']
+                                elif 'image' in example and example['image'] is not None:
+                                    image = example['image']
+                            elif dataset_info['type'] == 'MathVista':
+                                # MathVista may use 'decoded_image' or 'image'
+                                if 'decoded_image' in example and example['decoded_image'] is not None:
+                                    image = example['decoded_image']
+                                elif 'image' in example and example['image'] is not None:
+                                    image = example['image']
                             else:
                                 # Other datasets use standard 'image' field
                                 if 'image' in example and example['image'] is not None:
@@ -196,11 +248,31 @@ class RealOCRVQAValidator:
                                         question = example['DocVQA/question']
                                     elif 'question' in example:
                                         question = example['question']
+                                elif dataset_info['type'] == 'InfoVQA':
+                                    # InfoVQA has field structure: InfographicVQA/question
+                                    if 'InfographicVQA/question' in example:
+                                        question = example['InfographicVQA/question']
+                                    elif 'question' in example:
+                                        question = example['question']
                                 elif dataset_info['type'] == 'ChartQA':
                                     # ChartQA uses 'query' field
                                     if 'query' in example:
                                         question = example['query']
                                     elif 'question' in example:
+                                        question = example['question']
+                                elif dataset_info['type'] == 'MathVista':
+                                    # MathVista uses 'question' field
+                                    if 'question' in example:
+                                        question = example['question']
+                                    elif 'query' in example:
+                                        question = example['query']
+                                elif dataset_info['type'] == 'MathVerse':
+                                    # MathVerse uses 'question' field
+                                    if 'question' in example:
+                                        question = example['question']
+                                elif dataset_info['type'] in ['TextVQA', 'VQAv2']:
+                                    # TextVQA and VQAv2 use 'question' field
+                                    if 'question' in example:
                                         question = example['question']
                                 else:
                                     # OCR-VQA and others use 'question' field
@@ -239,126 +311,32 @@ class RealOCRVQAValidator:
                     print(f"⚠️ Failed to load dataset {dataset_info['name']}: {e}")
                     continue
             
-            # Add working COCO samples as fallback
-            coco_samples = self._get_fallback_coco_samples()
-            ocr_vqa_samples.update(coco_samples)
-            total_loaded += len(coco_samples)
+            # No fallback samples needed - using real datasets only
             
         except Exception as e:
             print(f"⚠️ Error loading HuggingFace datasets: {e}")
-            print("🔄 Falling back to COCO images...")
-            return self._get_fallback_coco_samples()
+            print("❌ No fallback available - check dataset configurations")
+            return {}
         
         print(f"📋 Successfully loaded {total_loaded} real OCR/VQA dataset samples")
         print(f"   📊 ChartQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'ChartQA')}")
         print(f"   📄 DocVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'DocVQA')}")
         print(f"   📝 OCR-VQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'OCR-VQA')}")
-        print(f"   📝 COCO-Text: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'COCO-Text')}")
+        print(f"   🧮 MathVista: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'MathVista')}")
+        print(f"   📝 TextVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'TextVQA')}")
+        print(f"   📊 InfoVQA: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'InfoVQA')}")
+        print(f"   🔢 MathVerse: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'MathVerse')}")
+        print(f"   🎯 VQAv2: {sum(1 for s in ocr_vqa_samples.values() if s['type'] == 'VQAv2')}")
         
-        if total_loaded < 10:
+        if total_loaded < 50:
             print(f"⚠️ WARNING: Only loaded {total_loaded} samples. Some datasets may be inaccessible.")
             print("   Consider checking internet connectivity or dataset availability.")
-        elif total_loaded >= 15:
+        elif total_loaded >= 70:
             print(f"✅ Excellent! Loaded {total_loaded} real dataset samples for comprehensive SHIRG validation")
         else:
             print(f"✅ Good! Loaded {total_loaded} real dataset samples for SHIRG validation")
         
         return ocr_vqa_samples
-    
-    def _get_fallback_coco_samples(self):
-        """Get COCO images as fallback when HuggingFace datasets fail"""
-        
-        coco_samples = {}
-        
-        # COCO images with text content (working URLs)
-        coco_text_samples = [
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000009.jpg",
-                "question": "What text can you see in this image?",
-                "type": "COCO-Text",
-                "challenge": "Natural scene text detection"
-            },
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000025.jpg",
-                "question": "What are the visible signs or text elements?", 
-                "type": "COCO-Text",
-                "challenge": "Street scene text reading"
-            },
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000030.jpg",
-                "question": "What text appears on any visible signs or objects?",
-                "type": "COCO-Text",
-                "challenge": "Object text identification"
-            },
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000042.jpg",
-                "question": "What written information is visible in this scene?",
-                "type": "COCO-Text", 
-                "challenge": "Scene text comprehension"
-            },
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000049.jpg",
-                "question": "What text or numbers can be read in this image?",
-                "type": "COCO-Text",
-                "challenge": "Text and numerical reading"
-            },
-            {
-                "url": "http://images.cocodataset.org/train2017/000000000061.jpg",
-                "question": "What signage or text is visible in this photo?",
-                "type": "COCO-Text",
-                "challenge": "Signage text detection"
-            }
-        ]
-        
-        print("🔄 Loading fallback COCO images...")
-        successful_loads = 0
-        
-        for idx, sample_info in enumerate(coco_text_samples):
-            try:
-                sample_name = f"coco_text_{idx:02d}"
-                print(f"🔄 Loading {sample_name} from COCO...")
-                
-                # Enhanced headers for better compatibility
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                    'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1'
-                }
-                
-                # Download with extended timeout and retry logic
-                response = requests.get(
-                    sample_info['url'], 
-                    timeout=45, 
-                    stream=True, 
-                    headers=headers,
-                    allow_redirects=True
-                )
-                response.raise_for_status()
-                
-                # Load and process image
-                image = Image.open(BytesIO(response.content)).convert('RGB')
-                image = self._resize_for_shirg(image)
-                
-                coco_samples[sample_name] = {
-                    'image': image,
-                    'question': sample_info['question'],
-                    'type': sample_info['type'],
-                    'challenge': sample_info['challenge'],
-                    'source': 'coco_fallback',
-                    'url': sample_info['url']
-                }
-                successful_loads += 1
-                print(f"✅ Loaded {sample_name} ({successful_loads}/{len(coco_text_samples)})")
-                
-            except Exception as e:
-                print(f"⚠️ Failed to load COCO sample {idx}: {e}")
-                continue
-        
-        print(f"✅ Loaded {successful_loads} COCO fallback samples")
-        return coco_samples
     
     def _resize_for_shirg(self, image, target_size=672):
         """Resize image for SHIRG while maintaining aspect ratio"""
