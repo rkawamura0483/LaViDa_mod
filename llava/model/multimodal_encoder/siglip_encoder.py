@@ -406,6 +406,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 actual_tokens = image_feature.shape[-2] if len(image_feature.shape) >= 2 else 0
                 
                 if actual_tokens != expected_tokens:
+                    import math  # SCOPE-FIX: Ensure math module is available in local scope
                     actual_grid_size = int(math.sqrt(actual_tokens)) if actual_tokens > 0 else 0
                     actual_resolution = actual_grid_size * 14 if actual_grid_size > 0 else 0
                     rank0_print(f"⚠️ LaViDa baseline (individual): Expected 384×384 → {expected_tokens} tokens, got {actual_resolution}×{actual_resolution} → {actual_tokens} tokens")
@@ -481,6 +482,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             
             if actual_tokens != expected_tokens:
                 # Calculate what resolution this corresponds to
+                import math  # SCOPE-FIX: Ensure math module is available in local scope
                 actual_grid_size = int(math.sqrt(actual_tokens)) if actual_tokens > 0 else 0
                 actual_resolution = actual_grid_size * 14 if actual_grid_size > 0 else 0
                 rank0_print(f"⚠️ LaViDa baseline: Token count mismatch!")
