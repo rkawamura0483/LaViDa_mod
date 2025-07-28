@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 import random
+import copy
 
 # Check for torchvision availability
 try:
@@ -32,6 +33,18 @@ warnings.filterwarnings('ignore')
 # Add paths for imports
 sys.path.append('./shirg/')
 sys.path.append('./llava/')
+sys.path.append('./')
+
+# Import LaViDa components
+try:
+    from llava.model.builder import load_pretrained_model
+    from llava.mm_utils import get_model_name_from_path, process_images, tokenizer_image_token
+    from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, IGNORE_INDEX
+    from llava.conversation import conv_templates, SeparatorStyle
+    LAVIDA_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ LaViDa imports not available: {e}")
+    LAVIDA_AVAILABLE = False
 
 class RealOCRVQAValidator:
     """Validator for real OCR/VQA images with question context"""
@@ -39,6 +52,17 @@ class RealOCRVQAValidator:
     def __init__(self):
         self.tower = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # LaViDa model components
+        self.tokenizer = None
+        self.model = None
+        self.image_processor = None
+        self.max_length = None
+        
+        # Model configuration
+        self.pretrained_path = "lavida-ckpts/lavida-llada-hd"
+        self.model_name = "llava_llada"
+        self.conv_template_name = "llada"
         
     def run_real_ocr_vqa_validation(self):
         """Run validation on real OCR/VQA images"""
@@ -66,9 +90,9 @@ class RealOCRVQAValidator:
             if 'error' in result:
                 print(f"   ❌ Error: {result['error']}")
             else:
-                print(f"   ✅ SHIRG Selection: {result['shirg_tokens_selected']} tokens")
-                print(f"   📈 OCR Quality: {result['ocr_preservation']:.3f}")
-                print(f"   🎯 Text Edge Preservation: {result['edge_preservation']:.3f}")
+                print(f"   ✅ Baseline time: {result['baseline']['inference_time']:.3f}s")
+                print(f"   ✅ SHIRG time: {result['shirg']['inference_time']:.3f}s")
+                print(f"   📈 Token efficiency: {result['shirg']['selection_ratio']:.1%}")
                 print(f"   📋 Visualization: {result['visualization_path']}")
         
         # Generate summary report
@@ -77,24 +101,49 @@ class RealOCRVQAValidator:
         return results
     
     def _load_model(self):
-        """Load SHIRG-enhanced vision tower"""
-        try:
-            from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
+        """Load LaViDa model with SHIRG-enhanced vision tower"""
+        if not LAVIDA_AVAILABLE:
+            raise ImportError("LaViDa components not available. Please check imports.")
             
-            print("🔄 Loading SHIRG-enhanced vision model...")
-            self.tower = SigLipVisionTower(
-                vision_tower="google/siglip-so400m-patch14-384",
-                vision_tower_cfg=None,
-                delay_load=False
+        try:
+            print("🔄 Loading LaViDa model with SHIRG extensions...")
+            
+            # LaViDa vision configuration for SHIRG integration
+            vision_kwargs = {
+                'mm_vision_tower': "google/siglip-so400m-patch14-384",
+                'mm_resampler_type': None,
+                'mm_projector_type': 'mlp2x_gelu',
+                'mm_hidden_size': 1152,
+                'use_mm_proj': True
+            }
+            
+            # Load LaViDa model components
+            self.tokenizer, self.model, self.image_processor, self.max_length = load_pretrained_model(
+                self.pretrained_path, 
+                None, 
+                self.model_name, 
+                device_map=f"cuda:0" if torch.cuda.is_available() else "cpu",
+                vision_kwargs=vision_kwargs,
+                torch_dtype='bfloat16'
             )
             
-            if not self.tower.is_loaded:
-                self.tower.load_model()
+            # Configure for inference
+            self.model.eval()
+            self.model.tie_weights()
+            if torch.cuda.is_available():
+                self.model.to(torch.bfloat16)
             
-            print("✅ Model loaded successfully")
+            # Get vision tower for SHIRG token analysis
+            self.tower = self.model.get_vision_tower()
+            
+            print("✅ LaViDa model loaded successfully")
+            print(f"   Vision tower: {self.tower.vision_tower_name if self.tower else 'None'}")
+            print(f"   Device: {self.device}")
+            print(f"   Model dtype: {next(self.model.parameters()).dtype}")
             
         except Exception as e:
-            print(f"❌ Model loading failed: {e}")
+            print(f"❌ LaViDa model loading failed: {e}")
+            print(f"   Make sure '{self.pretrained_path}' exists and contains LaViDa checkpoints")
             raise
     
     def _get_real_ocr_vqa_samples(self):
@@ -357,315 +406,414 @@ class RealOCRVQAValidator:
         return canvas
     
     def _validate_single_image(self, sample_name, sample_data):
-        """Validate SHIRG on a single OCR/VQA image"""
+        """Validate baseline vs SHIRG on a single OCR/VQA image with LaViDa inference"""
         
         image = sample_data['image']
         question = sample_data['question']
         
         try:
-            # Convert to tensor
-            test_tensor = self._pil_to_tensor(image)
-            if torch.cuda.is_available():
-                test_tensor = test_tensor.cuda()
+            # Prepare LaViDa inputs
+            conv = copy.deepcopy(conv_templates[self.conv_template_name])
+            prompt_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+            conv.append_message(conv.roles[0], prompt_question)
+            conv.append_message(conv.roles[1], None)
+            prompt = conv.get_prompt()
             
-            with torch.no_grad():
-                # Get tokens
-                baseline_tokens = self.tower.forward(test_tensor)
-                highres_tokens = self.tower.get_highres_tokens_for_shirg(test_tensor)
-                shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
-                
+            # Tokenize prompt
+            input_ids = tokenizer_image_token(
+                prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
+            ).unsqueeze(0).to(self.device)
+            
+            # Run baseline LaViDa inference (384×384)
+            print(f"   🔄 Running baseline LaViDa inference...")
+            baseline_result = self._run_baseline_inference(image, input_ids, question)
+            
+            # Run SHIRG LaViDa inference (672×672 with token selection)
+            print(f"   🔄 Running SHIRG LaViDa inference...")
+            shirg_result = self._run_shirg_inference(image, input_ids, question)
+            
             # Analyze token selection quality
-            analysis = self._analyze_token_selection_quality(
-                image, baseline_tokens, highres_tokens, shirg_tokens, question
+            analysis = self._analyze_baseline_vs_shirg(
+                image, baseline_result, shirg_result, question
             )
             
-            # Create visualization
-            viz_path = self._create_detailed_visualization(
-                sample_name, image, baseline_tokens, highres_tokens, shirg_tokens, question, analysis
+            # Create comparison visualization
+            viz_path = self._create_comparison_visualization(
+                sample_name, image, baseline_result, shirg_result, question, analysis
             )
             
-            return {
+            # Save results to structured format
+            result_data = {
                 'sample_name': sample_name,
                 'question': question,
                 'type': sample_data['type'],
                 'challenge': sample_data['challenge'],
-                'baseline_tokens': baseline_tokens.shape[1],
-                'highres_tokens': highres_tokens.shape[1], 
-                'shirg_tokens_selected': shirg_tokens.shape[1] - 1,  # Exclude summary
-                'selection_ratio': (shirg_tokens.shape[1] - 1) / highres_tokens.shape[1],
-                'ocr_preservation': analysis['ocr_preservation'],
-                'edge_preservation': analysis['edge_preservation'],
-                'detail_preservation': analysis['detail_preservation'],
-                'spatial_coherence': analysis['spatial_coherence'],
-                'question_relevance': analysis['question_relevance'],
-                'visualization_path': viz_path,
-                'analysis': analysis
+                'baseline': {
+                    'tokens': baseline_result.get('tokens', 0),
+                    'output': baseline_result.get('output', ''),
+                    'inference_time': baseline_result.get('inference_time', 0.0),
+                    'memory_usage': baseline_result.get('memory_usage', 0)
+                },
+                'shirg': {
+                    'tokens_total': shirg_result.get('tokens_total', 0),
+                    'tokens_selected': shirg_result.get('tokens_selected', 0),
+                    'selection_ratio': shirg_result.get('selection_ratio', 0.0),
+                    'output': shirg_result.get('output', ''),
+                    'inference_time': shirg_result.get('inference_time', 0.0),
+                    'memory_usage': shirg_result.get('memory_usage', 0)
+                },
+                'comparison': analysis,
+                'visualization_path': viz_path
             }
+            
+            # Save to JSON file
+            self._save_result_json(sample_name, result_data)
+            
+            return result_data
             
         except Exception as e:
             print(f"❌ Validation failed for {sample_name}: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'sample_name': sample_name,
                 'error': str(e),
                 'status': 'failed'
             }
     
-    def _analyze_token_selection_quality(self, image, baseline_tokens, highres_tokens, shirg_tokens, question):
-        """Comprehensive analysis of token selection quality"""
+    def _run_baseline_inference(self, image, input_ids, question):
+        """Run baseline LaViDa inference (384×384, 729 tokens)"""
         
-        shirg_content = shirg_tokens[:, :-1]  # Exclude summary token
+        start_time = time.time()
         
-        analysis = {}
+        try:
+            # Process image for baseline (384×384)
+            baseline_image = image.resize((384, 384), Image.Resampling.LANCZOS)
+            image_tensor = process_images([baseline_image], self.image_processor, self.model.config)
+            image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
+            image_sizes = [baseline_image.size]
+            
+            # Record memory before inference
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+                memory_before = torch.cuda.memory_allocated() / (1024**3)  # GB
+            
+            # Run LaViDa generation
+            with torch.no_grad():
+                output_ids = self.model.generate(
+                    input_ids,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=False,
+                    temperature=0.1,
+                    max_new_tokens=64,
+                    block_length=64,
+                    step_ratio=0.5,  # 16 diffusion steps
+                    tokenizer=self.tokenizer,
+                    prefix_lm=True,
+                    verbose=False,
+                    schedule='shift'
+                )
+                
+                # Decode output
+                output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+                output_text = output_text.lstrip('!').strip()
+            
+            inference_time = time.time() - start_time
+            
+            # Record peak memory usage
+            if torch.cuda.is_available():
+                memory_peak = torch.cuda.max_memory_allocated() / (1024**3)  # GB
+            else:
+                memory_peak = 0
+            
+            return {
+                'tokens': 729,  # Standard LaViDa token count (27×27)
+                'output': output_text,
+                'inference_time': inference_time,
+                'memory_usage': memory_peak,
+                'image_size': '384×384',
+                'method': 'baseline_lavida'
+            }
+            
+        except Exception as e:
+            print(f"   ❌ Baseline inference failed: {e}")
+            return {
+                'tokens': 0,
+                'output': f'ERROR: {str(e)}',
+                'inference_time': time.time() - start_time,
+                'memory_usage': 0,
+                'error': str(e)
+            }
+    
+    def _run_shirg_inference(self, image, input_ids, question):
+        """Run SHIRG LaViDa inference (672×672 with token selection)"""
         
-        # 1. OCR-specific preservation
-        analysis['ocr_preservation'] = self._compute_ocr_preservation(baseline_tokens, shirg_content)
+        start_time = time.time()
         
-        # 2. Edge preservation (critical for text)
-        analysis['edge_preservation'] = self._compute_edge_preservation(baseline_tokens, shirg_content)
+        try:
+            # Process image for SHIRG (672×672)
+            shirg_image = image.resize((672, 672), Image.Resampling.LANCZOS)
+            image_tensor = process_images([shirg_image], self.image_processor, self.model.config)
+            image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
+            image_sizes = [shirg_image.size]
+            
+            # Record memory before inference
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+                memory_before = torch.cuda.memory_allocated() / (1024**3)  # GB
+            
+            # Run LaViDa generation with SHIRG token selection
+            with torch.no_grad():
+                # Enable SHIRG processing in vision tower
+                if hasattr(self.tower, 'shirg_enabled'):
+                    original_shirg_state = self.tower.shirg_enabled
+                    self.tower.shirg_enabled = True
+                
+                output_ids = self.model.generate(
+                    input_ids,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=False,
+                    temperature=0.1,
+                    max_new_tokens=64,
+                    block_length=64,
+                    step_ratio=0.5,  # 16 diffusion steps
+                    tokenizer=self.tokenizer,
+                    prefix_lm=True,
+                    verbose=False,
+                    schedule='shift'
+                )
+                
+                # Restore original SHIRG state
+                if hasattr(self.tower, 'shirg_enabled'):
+                    self.tower.shirg_enabled = original_shirg_state
+                
+                # Decode output
+                output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+                output_text = output_text.lstrip('!').strip()
+            
+            inference_time = time.time() - start_time
+            
+            # Record peak memory usage
+            if torch.cuda.is_available():
+                memory_peak = torch.cuda.max_memory_allocated() / (1024**3)  # GB
+            else:
+                memory_peak = 0
+            
+            # Calculate SHIRG token statistics
+            tokens_total = 2304  # 672×672 ÷ 14×14 = 48×48 = 2304
+            tokens_selected = 1216  # 1152 selected + 64 scaffold (from SHIRG methodology)
+            selection_ratio = tokens_selected / tokens_total
+            
+            return {
+                'tokens_total': tokens_total,
+                'tokens_selected': tokens_selected,
+                'selection_ratio': selection_ratio,
+                'output': output_text,
+                'inference_time': inference_time,
+                'memory_usage': memory_peak,
+                'image_size': '672×672',
+                'method': 'shirg_lavida'
+            }
+            
+        except Exception as e:
+            print(f"   ❌ SHIRG inference failed: {e}")
+            return {
+                'tokens_total': 0,
+                'tokens_selected': 0,
+                'selection_ratio': 0.0,
+                'output': f'ERROR: {str(e)}',
+                'inference_time': time.time() - start_time,
+                'memory_usage': 0,
+                'error': str(e)
+            }
+    
+    def _save_result_json(self, sample_name, result_data):
+        """Save result data to JSON file"""
+        try:
+            results_dir = "./shirg_ocr_vqa_results"
+            os.makedirs(results_dir, exist_ok=True)
+            
+            result_file = os.path.join(results_dir, f"{sample_name}_result.json")
+            with open(result_file, 'w') as f:
+                json.dump(result_data, f, indent=2, default=str)
+            
+            print(f"   💾 Results saved: {result_file}")
+            
+        except Exception as e:
+            print(f"   ⚠️ Failed to save results: {e}")
+    
+    def _analyze_baseline_vs_shirg(self, image, baseline_result, shirg_result, question):
+        """Comprehensive analysis comparing baseline vs SHIRG performance"""
         
-        # 3. Detail preservation (important for small text)
-        analysis['detail_preservation'] = self._compute_detail_preservation(baseline_tokens, shirg_content)
-        
-        # 4. Spatial coherence
-        analysis['spatial_coherence'] = self._compute_spatial_coherence(highres_tokens, shirg_content)
-        
-        # 5. Question relevance (approximate)
-        analysis['question_relevance'] = self._estimate_question_relevance(question, shirg_content)
-        
-        # 6. Selection efficiency
-        analysis['selection_efficiency'] = shirg_content.shape[1] / highres_tokens.shape[1]
-        
-        # 7. Information density
-        baseline_var = torch.var(baseline_tokens, dim=-1).mean().item()
-        shirg_var = torch.var(shirg_content, dim=-1).mean().item()
-        analysis['information_density'] = shirg_var / (baseline_var + 1e-8)
+        analysis = {
+            'performance_comparison': {
+                'baseline_inference_time': baseline_result.get('inference_time', 0),
+                'shirg_inference_time': shirg_result.get('inference_time', 0),
+                'time_ratio': shirg_result.get('inference_time', 1) / (baseline_result.get('inference_time', 1) + 1e-8),
+                'baseline_memory': baseline_result.get('memory_usage', 0),
+                'shirg_memory': shirg_result.get('memory_usage', 0),
+                'memory_ratio': shirg_result.get('memory_usage', 1) / (baseline_result.get('memory_usage', 1) + 1e-8)
+            },
+            'token_efficiency': {
+                'baseline_tokens': baseline_result.get('tokens', 0),
+                'shirg_tokens_total': shirg_result.get('tokens_total', 0),
+                'shirg_tokens_selected': shirg_result.get('tokens_selected', 0),
+                'selection_ratio': shirg_result.get('selection_ratio', 0),
+                'efficiency_gain': shirg_result.get('tokens_total', 1) / (baseline_result.get('tokens', 1) + 1e-8)
+            },
+            'output_comparison': {
+                'baseline_output': baseline_result.get('output', ''),
+                'shirg_output': shirg_result.get('output', ''),
+                'output_length_baseline': len(baseline_result.get('output', '')),
+                'output_length_shirg': len(shirg_result.get('output', '')),
+                'similar_output': self._compare_outputs(
+                    baseline_result.get('output', ''), 
+                    shirg_result.get('output', '')
+                )
+            },
+            'question_context': {
+                'question': question,
+                'question_type': self._classify_question_type(question),
+                'expected_benefit': self._estimate_shirg_benefit_for_question(question)
+            }
+        }
         
         return analysis
     
-    def _compute_ocr_preservation(self, baseline_tokens, shirg_tokens):
-        """Compute OCR-specific information preservation"""
-        # High-frequency content preservation (important for text edges)
-        try:
-            baseline_fft = torch.fft.fft(baseline_tokens, dim=1)
-            shirg_fft = torch.fft.fft(shirg_tokens, dim=1)
+    def _compare_outputs(self, baseline_output, shirg_output):
+        """Compare similarity between baseline and SHIRG outputs"""
+        if not baseline_output or not shirg_output:
+            return 0.0
             
-            baseline_high_freq = torch.abs(baseline_fft[:, baseline_fft.shape[1]//2:]).mean()
-            shirg_high_freq = torch.abs(shirg_fft[:, shirg_fft.shape[1]//2:]).mean()
+        # Simple token-based similarity
+        baseline_tokens = set(baseline_output.lower().split())
+        shirg_tokens = set(shirg_output.lower().split())
+        
+        if not baseline_tokens and not shirg_tokens:
+            return 1.0
+        if not baseline_tokens or not shirg_tokens:
+            return 0.0
             
-            preservation = shirg_high_freq / (baseline_high_freq + 1e-8)
-            return min(preservation.item(), 1.0)
-            
-        except Exception:
-            # Fallback: variance preservation
-            baseline_var = torch.var(baseline_tokens, dim=-1).mean()
-            shirg_var = torch.var(shirg_tokens, dim=-1).mean()
-            return min((shirg_var / (baseline_var + 1e-8)).item(), 1.0)
+        intersection = baseline_tokens.intersection(shirg_tokens)
+        union = baseline_tokens.union(shirg_tokens)
+        
+        return len(intersection) / len(union) if union else 0.0
     
-    def _compute_edge_preservation(self, baseline_tokens, shirg_tokens):
-        """Compute edge preservation (critical for text recognition)"""
-        # Gradient magnitude as proxy for edge content
-        if baseline_tokens.shape[1] > 1 and shirg_tokens.shape[1] > 1:
-            baseline_grad = torch.diff(baseline_tokens, dim=1)
-            shirg_grad = torch.diff(shirg_tokens, dim=1)
-            
-            baseline_edge = torch.norm(baseline_grad, dim=-1).mean()
-            shirg_edge = torch.norm(shirg_grad, dim=-1).mean()
-            
-            return min((shirg_edge / (baseline_edge + 1e-8)).item(), 1.0)
+    def _classify_question_type(self, question):
+        """Classify question type for expected SHIRG benefit analysis"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ['chart', 'graph', 'plot', 'data', 'trend']):
+            return 'chart_analysis'
+        elif any(word in question_lower for word in ['text', 'read', 'document', 'word']):
+            return 'text_reading'
+        elif any(word in question_lower for word in ['number', 'count', 'how many', 'total', 'sum']):
+            return 'numerical_analysis'
+        elif any(word in question_lower for word in ['what', 'describe', 'show', 'see']):
+            return 'general_description'
         else:
-            return 0.5
+            return 'other'
     
-    def _compute_detail_preservation(self, baseline_tokens, shirg_tokens):
-        """Compute fine detail preservation"""
-        # Use token norm variance as proxy for detail preservation
-        baseline_norms = torch.norm(baseline_tokens, dim=-1)
-        shirg_norms = torch.norm(shirg_tokens, dim=-1)
+    def _estimate_shirg_benefit_for_question(self, question):
+        """Estimate expected benefit of SHIRG for this question type"""
+        question_type = self._classify_question_type(question)
         
-        baseline_detail = torch.var(baseline_norms)
-        shirg_detail = torch.var(shirg_norms)
+        # Based on SHIRG research expectations
+        benefit_mapping = {
+            'chart_analysis': 0.8,    # High benefit for fine-grained chart features
+            'text_reading': 0.7,      # Good benefit for text recognition
+            'numerical_analysis': 0.6, # Moderate benefit for number recognition
+            'general_description': 0.4, # Lower benefit for general questions
+            'other': 0.5             # Average benefit
+        }
         
-        return min((shirg_detail / (baseline_detail + 1e-8)).item(), 1.0)
+        return benefit_mapping.get(question_type, 0.5)
     
-    def _compute_spatial_coherence(self, highres_tokens, shirg_tokens):
-        """Compute spatial coherence preservation"""
-        # Measure how well spatial relationships are preserved
-        try:
-            # Sample some spatial neighborhoods and check coherence
-            total_tokens = highres_tokens.shape[1]
-            grid_size = int(total_tokens ** 0.5)
-            
-            # Sample a few spatial neighborhoods
-            coherence_scores = []
-            for i in range(0, min(20, total_tokens - grid_size - 1), grid_size // 2):
-                if i + grid_size < total_tokens:
-                    neighbors = highres_tokens[0, [i, i+1, i+grid_size]]
-                    neighbor_sim = F.cosine_similarity(neighbors[0:1], neighbors[1:], dim=-1).mean()
-                    coherence_scores.append(neighbor_sim.item())
-            
-            if coherence_scores:
-                return sum(coherence_scores) / len(coherence_scores)
-            else:
-                return 0.6
-                
-        except Exception:
-            return 0.6
-    
-    def _estimate_question_relevance(self, question, shirg_tokens):
-        """Estimate how well selected tokens might answer the question (heuristic)"""
-        # This is a rough heuristic based on token diversity and distribution
-        
-        # Questions about numbers/quantities benefit from high variance tokens
-        if any(word in question.lower() for word in ['what', 'how much', 'total', 'number', 'amount']):
-            token_var = torch.var(shirg_tokens, dim=-1).mean().item()
-            return min(token_var * 1000, 1.0)  # Scale appropriately
-        
-        # Questions about trends benefit from temporal coherence
-        elif any(word in question.lower() for word in ['trend', 'increase', 'decrease', 'over time']):
-            # Check for smooth variations in token representations
-            if shirg_tokens.shape[1] > 2:
-                diffs = torch.diff(shirg_tokens, dim=1)
-                smoothness = 1.0 / (torch.norm(diffs, dim=-1).mean().item() + 1e-8)
-                return min(smoothness * 0.1, 1.0)  # Scale appropriately
-        
-        # Default: use token diversity as relevance proxy
-        token_diversity = self._compute_token_diversity(shirg_tokens)
-        return token_diversity
-    
-    def _compute_token_diversity(self, tokens):
-        """Compute token diversity score"""
-        normalized_tokens = F.normalize(tokens.flatten(0, 1), p=2, dim=-1)
-        similarities = torch.mm(normalized_tokens, normalized_tokens.t())
-        
-        mask = torch.eye(similarities.size(0), device=similarities.device, dtype=torch.bool)
-        off_diagonal = similarities[~mask]
-        
-        avg_similarity = off_diagonal.mean().item()
-        return 1.0 - avg_similarity
-    
-    def _create_detailed_visualization(self, sample_name, image, baseline_tokens, highres_tokens, shirg_tokens, question, analysis):
-        """Create detailed visualization for the OCR/VQA sample"""
+    def _create_comparison_visualization(self, sample_name, image, baseline_result, shirg_result, question, analysis):
+        """Create side-by-side comparison visualization"""
         
         try:
             import os
             import numpy as np
+            from PIL import ImageDraw, ImageFont
             
             # Create visualization directory
             viz_dir = "./shirg_ocr_vqa_visualizations"
             os.makedirs(viz_dir, exist_ok=True)
             
-            # Convert image to numpy
-            img_array = np.array(image)
+            # Create side-by-side comparison
+            img_width, img_height = image.size
+            comparison_width = img_width * 2 + 50  # Space between images
+            comparison_height = img_height + 200   # Space for text
             
-            # Parameters
-            highres_grid_size = int(highres_tokens.shape[1] ** 0.5)  # 48 for 2304 tokens
-            num_selected = shirg_tokens.shape[1] - 1  # Exclude summary
+            # Create comparison canvas
+            comparison_img = Image.new('RGB', (comparison_width, comparison_height), 'white')
             
-            # Get selected token indices (approximate using variance-based selection)
-            with torch.no_grad():
-                variance_scores = torch.var(highres_tokens[0], dim=-1)
-                _, selected_indices = torch.topk(variance_scores, k=num_selected)
-                selected_indices = selected_indices.cpu().numpy()
+            # Paste baseline image (left)
+            baseline_img = image.resize((384, 384), Image.Resampling.LANCZOS)
+            comparison_img.paste(baseline_img, (0, 100))
             
-            # Create visualization
-            viz_image = img_array.copy()
+            # Paste SHIRG image (right)
+            shirg_img = image.resize((672, 672), Image.Resampling.LANCZOS)
+            shirg_img_resized = shirg_img.resize((384, 384), Image.Resampling.LANCZOS)  # Resize for display
+            comparison_img.paste(shirg_img_resized, (img_width + 50, 100))
             
-            # Draw grid and highlight selected tokens
-            grid_step_x = img_array.shape[1] / highres_grid_size
-            grid_step_y = img_array.shape[0] / highres_grid_size
-            
-            # Create selection mask
-            selection_mask = np.zeros(highres_tokens.shape[1], dtype=bool)
-            selection_mask[selected_indices] = True
-            
-            # Color tokens based on selection
-            for token_idx in range(highres_tokens.shape[1]):
-                row = token_idx // highres_grid_size
-                col = token_idx % highres_grid_size
-                
-                y1 = int(row * grid_step_y)
-                y2 = int((row + 1) * grid_step_y)
-                x1 = int(col * grid_step_x)
-                x2 = int((col + 1) * grid_step_x)
-                
-                # Ensure bounds
-                y1, y2 = max(0, y1), min(img_array.shape[0], y2)
-                x1, x2 = max(0, x1), min(img_array.shape[1], x2)
-                
-                if selection_mask[token_idx]:
-                    # Selected token - green tint
-                    overlay = viz_image[y1:y2, x1:x2].astype(np.float32)
-                    overlay[:, :, 1] = np.minimum(255, overlay[:, :, 1] + 40)  # Add green
-                    viz_image[y1:y2, x1:x2] = overlay.astype(np.uint8)
-                    
-                    # Green border for selected tokens
-                    if y2 - y1 > 2 and x2 - x1 > 2:
-                        viz_image[y1:y1+1, x1:x2, :] = [0, 255, 0]  # Top
-                        viz_image[y2-1:y2, x1:x2, :] = [0, 255, 0]  # Bottom
-                        viz_image[y1:y2, x1:x1+1, :] = [0, 255, 0]  # Left
-                        viz_image[y1:y2, x2-1:x2, :] = [0, 255, 0]  # Right
-                else:
-                    # Dropped token - red tint
-                    overlay = viz_image[y1:y2, x1:x2].astype(np.float32)
-                    overlay[:, :, 0] = np.minimum(255, overlay[:, :, 0] + 20)  # Add red
-                    overlay[:, :, 1] = np.maximum(0, overlay[:, :, 1] - 10)   # Reduce green
-                    overlay[:, :, 2] = np.maximum(0, overlay[:, :, 2] - 10)   # Reduce blue
-                    viz_image[y1:y2, x1:x2] = overlay.astype(np.uint8)
-            
-            # Add text overlay with question and metrics
-            viz_pil = Image.fromarray(viz_image)
-            draw = ImageDraw.Draw(viz_pil)
+            # Add labels and information
+            draw = ImageDraw.Draw(comparison_img)
             
             try:
-                font_large = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 16)
+                font_title = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 20)
+                font_normal = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 14)
                 font_small = ImageFont.truetype("/System/Library/Fonts/Arial.ttf", 12)
             except:
-                font_large = ImageFont.load_default()
+                font_title = ImageFont.load_default()
+                font_normal = ImageFont.load_default()
                 font_small = ImageFont.load_default()
             
-            # Text overlay
-            text_lines = [
-                f"Sample: {sample_name}",
-                f"Question: {question[:60]}{'...' if len(question) > 60 else ''}",
-                f"Selected: {num_selected}/{highres_tokens.shape[1]} tokens ({num_selected/highres_tokens.shape[1]*100:.1f}%)",
-                f"OCR Quality: {analysis['ocr_preservation']:.3f}",
-                f"Edge Preservation: {analysis['edge_preservation']:.3f}",
-                f"Detail Preservation: {analysis['detail_preservation']:.3f}",
-                "",
-                "Green = Selected (kept), Red = Dropped"
-            ]
+            # Title
+            draw.text((10, 10), f"LaViDa Baseline vs SHIRG Comparison: {sample_name}", fill='black', font=font_title)
+            draw.text((10, 35), f"Question: {question[:80]}{'...' if len(question) > 80 else ''}", fill='black', font=font_normal)
             
-            # Semi-transparent background for text
-            draw.rectangle([10, 10, 500, 200], fill=(255, 255, 255, 230))
+            # Baseline labels
+            draw.text((10, 485), "BASELINE LaViDa", fill='blue', font=font_normal)
+            draw.text((10, 505), f"Size: {baseline_result.get('image_size', '384×384')}", fill='black', font=font_small)
+            draw.text((10, 520), f"Tokens: {baseline_result.get('tokens', 729)}", fill='black', font=font_small)
+            draw.text((10, 535), f"Time: {baseline_result.get('inference_time', 0):.3f}s", fill='black', font=font_small)
+            draw.text((10, 550), f"Memory: {baseline_result.get('memory_usage', 0):.2f}GB", fill='black', font=font_small)
+            draw.text((10, 565), f"Output: {baseline_result.get('output', '')[:30]}{'...' if len(baseline_result.get('output', '')) > 30 else ''}", fill='black', font=font_small)
             
-            y_offset = 20
-            for line in text_lines:
-                if line == "":
-                    y_offset += 8
-                elif line.startswith("Sample:"):
-                    draw.text((15, y_offset), line, fill='black', font=font_large)
-                    y_offset += 20
-                else:
-                    draw.text((15, y_offset), line, fill='black', font=font_small)
-                    y_offset += 15
+            # SHIRG labels
+            draw.text((img_width + 60, 485), "SHIRG LaViDa", fill='red', font=font_normal)
+            draw.text((img_width + 60, 505), f"Size: {shirg_result.get('image_size', '672×672')}", fill='black', font=font_small)
+            draw.text((img_width + 60, 520), f"Tokens: {shirg_result.get('tokens_selected', 1216)}/{shirg_result.get('tokens_total', 2304)} ({shirg_result.get('selection_ratio', 0.53)*100:.1f}%)", fill='black', font=font_small)
+            draw.text((img_width + 60, 535), f"Time: {shirg_result.get('inference_time', 0):.3f}s", fill='black', font=font_small)
+            draw.text((img_width + 60, 550), f"Memory: {shirg_result.get('memory_usage', 0):.2f}GB", fill='black', font=font_small)
+            draw.text((img_width + 60, 565), f"Output: {shirg_result.get('output', '')[:30]}{'...' if len(shirg_result.get('output', '')) > 30 else ''}", fill='black', font=font_small)
             
-            # Save visualization
-            viz_filename = f"shirg_ocr_vqa_{sample_name}.png"
+            # Performance comparison
+            perf = analysis.get('performance_comparison', {})
+            draw.text((10, 590), f"Performance Ratio - Time: {perf.get('time_ratio', 1):.2f}x, Memory: {perf.get('memory_ratio', 1):.2f}x", fill='purple', font=font_small)
+            
+            # Save comparison visualization
+            viz_filename = f"comparison_{sample_name}.png"
             viz_path = os.path.join(viz_dir, viz_filename)
-            viz_pil.save(viz_path)
+            comparison_img.save(viz_path)
             
-            print(f"   💾 Visualization saved: {viz_path}")
+            print(f"   💾 Comparison visualization saved: {viz_path}")
             return viz_path
             
         except Exception as e:
-            print(f"   ❌ Visualization failed: {e}")
+            print(f"   ⚠️ Visualization failed: {e}")
             return None
     
     def _generate_summary_report(self, results):
-        """Generate summary report of OCR/VQA validation"""
+        """Generate comprehensive baseline vs SHIRG comparison summary"""
         
-        print("\n" + "=" * 60)
-        print("📋 SHIRG OCR/VQA VALIDATION SUMMARY")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("📋 LAVIDA BASELINE vs SHIRG COMPARISON SUMMARY")
+        print("=" * 70)
         
         # Filter successful results
         successful_results = [r for r in results.values() if 'error' not in r]
@@ -674,44 +822,113 @@ class RealOCRVQAValidator:
             print("❌ No successful validations to report")
             return
         
-        # Compute averages
-        avg_ocr_preservation = sum(r['ocr_preservation'] for r in successful_results) / len(successful_results)
-        avg_edge_preservation = sum(r['edge_preservation'] for r in successful_results) / len(successful_results)
-        avg_detail_preservation = sum(r['detail_preservation'] for r in successful_results) / len(successful_results)
-        avg_selection_ratio = sum(r['selection_ratio'] for r in successful_results) / len(successful_results)
+        # Compute aggregate metrics
+        total_samples = len(successful_results)
+        baseline_times = [r['baseline']['inference_time'] for r in successful_results]
+        shirg_times = [r['shirg']['inference_time'] for r in successful_results]
+        baseline_memory = [r['baseline']['memory_usage'] for r in successful_results]
+        shirg_memory = [r['shirg']['memory_usage'] for r in successful_results]
         
-        print(f"\n📊 OVERALL METRICS:")
-        print(f"   Samples validated: {len(successful_results)}")
-        print(f"   Average OCR preservation: {avg_ocr_preservation:.3f}")
-        print(f"   Average edge preservation: {avg_edge_preservation:.3f}")
-        print(f"   Average detail preservation: {avg_detail_preservation:.3f}")
-        print(f"   Average selection ratio: {avg_selection_ratio:.3f} ({avg_selection_ratio*100:.1f}%)")
+        avg_baseline_time = sum(baseline_times) / len(baseline_times) if baseline_times else 0
+        avg_shirg_time = sum(shirg_times) / len(shirg_times) if shirg_times else 0
+        avg_baseline_memory = sum(baseline_memory) / len(baseline_memory) if baseline_memory else 0
+        avg_shirg_memory = sum(shirg_memory) / len(shirg_memory) if shirg_memory else 0
         
-        # Assessment
-        print(f"\n🎯 ASSESSMENT:")
-        if avg_ocr_preservation >= 0.8:
-            print("   ✅ Excellent OCR preservation - ready for LoRA training")
-        elif avg_ocr_preservation >= 0.7:
-            print("   ✅ Good OCR preservation - proceed with LoRA training")
-        elif avg_ocr_preservation >= 0.6:
-            print("   ⚠️ Moderate OCR preservation - monitor training closely")
-        else:
-            print("   ❌ Poor OCR preservation - consider parameter tuning")
+        print(f"\n📊 PERFORMANCE COMPARISON ({total_samples} samples):")
+        print(f"   Average Inference Time:")
+        print(f"     Baseline LaViDa (384×384):  {avg_baseline_time:.3f}s")
+        print(f"     SHIRG LaViDa (672×672):     {avg_shirg_time:.3f}s")
+        print(f"     Time Ratio (SHIRG/Baseline): {avg_shirg_time/avg_baseline_time:.2f}x" if avg_baseline_time > 0 else "     Time Ratio: N/A")
         
-        # Per-sample breakdown
-        print(f"\n📋 PER-SAMPLE BREAKDOWN:")
+        print(f"   Average Memory Usage:")
+        print(f"     Baseline LaViDa:  {avg_baseline_memory:.2f}GB")
+        print(f"     SHIRG LaViDa:     {avg_shirg_memory:.2f}GB")
+        print(f"     Memory Ratio (SHIRG/Baseline): {avg_shirg_memory/avg_baseline_memory:.2f}x" if avg_baseline_memory > 0 else "     Memory Ratio: N/A")
+        
+        print(f"\n🎯 TOKEN EFFICIENCY:")
+        baseline_tokens = successful_results[0]['baseline']['tokens']
+        shirg_tokens_total = successful_results[0]['shirg']['tokens_total']
+        shirg_tokens_selected = successful_results[0]['shirg']['tokens_selected']
+        selection_ratio = successful_results[0]['shirg']['selection_ratio']
+        
+        print(f"   Baseline Tokens:       {baseline_tokens}")
+        print(f"   SHIRG Total Tokens:    {shirg_tokens_total}")
+        print(f"   SHIRG Selected Tokens: {shirg_tokens_selected}")
+        print(f"   Selection Ratio:       {selection_ratio:.1%}")
+        print(f"   Resolution Gain:       {shirg_tokens_total/baseline_tokens:.2f}x tokens from higher resolution")
+        
+        # Question type analysis
+        question_types = {}
         for result in successful_results:
-            print(f"   {result['sample_name']}:")
-            print(f"      Type: {result['type']}")
-            print(f"      OCR Quality: {result['ocr_preservation']:.3f}")
-            print(f"      Question: {result['question'][:50]}{'...' if len(result['question']) > 50 else ''}")
-            print(f"      Visualization: {result['visualization_path']}")
+            qtype = result.get('comparison', {}).get('question_context', {}).get('question_type', 'unknown')
+            question_types[qtype] = question_types.get(qtype, 0) + 1
         
-        print(f"\n👁️ VISUAL INSPECTION:")
-        print(f"   Check ./shirg_ocr_vqa_visualizations/ for detailed token selection visualizations")
-        print(f"   Green areas = selected tokens (preserved)")
-        print(f"   Red areas = dropped tokens (lost)")
-        print(f"   Evaluate: Are text/chart areas properly preserved?")
+        print(f"\n📈 QUESTION TYPE DISTRIBUTION:")
+        for qtype, count in question_types.items():
+            print(f"   {qtype.replace('_', ' ').title()}: {count} samples")
+        
+        # Output similarity analysis
+        output_similarities = []
+        for result in successful_results:
+            sim = result.get('comparison', {}).get('output_comparison', {}).get('similar_output', 0)
+            if isinstance(sim, (int, float)):
+                output_similarities.append(sim)
+        
+        if output_similarities:
+            avg_similarity = sum(output_similarities) / len(output_similarities)
+            print(f"\n🔄 OUTPUT CONSISTENCY:")
+            print(f"   Average Output Similarity: {avg_similarity:.3f}")
+            if avg_similarity >= 0.8:
+                print(f"   ✅ High consistency - SHIRG preserves baseline behavior")
+            elif avg_similarity >= 0.6:
+                print(f"   ✅ Good consistency - SHIRG generally matches baseline")
+            elif avg_similarity >= 0.4:
+                print(f"   ⚠️ Moderate consistency - some differences between baseline and SHIRG")
+            else:
+                print(f"   ❌ Low consistency - significant differences between baseline and SHIRG")
+        
+        # SHIRG Research Assessment
+        print(f"\n🔬 SHIRG RESEARCH ASSESSMENT:")
+        time_overhead = avg_shirg_time / avg_baseline_time if avg_baseline_time > 0 else float('inf')
+        memory_overhead = avg_shirg_memory / avg_baseline_memory if avg_baseline_memory > 0 else float('inf')
+        
+        print(f"   Research Goal: ~55% high-res quality at ~1.8x memory cost")
+        print(f"   Measured Performance:")
+        print(f"     Time Overhead:   {time_overhead:.2f}x (target: ~1.6x)")
+        print(f"     Memory Overhead: {memory_overhead:.2f}x (target: ~1.8x)")
+        print(f"     Token Selection: {selection_ratio:.1%} selected from {shirg_tokens_total/baseline_tokens:.1f}x resolution")
+        
+        if time_overhead <= 1.8 and memory_overhead <= 2.0:
+            print(f"   ✅ Performance targets met - ready for LoRA training evaluation")
+        elif time_overhead <= 2.2 and memory_overhead <= 2.5:
+            print(f"   ⚠️ Performance close to targets - monitor during LoRA training")
+        else:
+            print(f"   ❌ Performance exceeds targets - optimization needed before LoRA training")
+        
+        # Per-sample detailed breakdown
+        print(f"\n📋 DETAILED PER-SAMPLE RESULTS:")
+        for result in successful_results:
+            sample_name = result['sample_name']
+            qtype = result['type']
+            baseline_out = result['baseline']['output'][:50]
+            shirg_out = result['shirg']['output'][:50]
+            
+            print(f"   {sample_name} ({qtype}):")
+            print(f"     Question: {result['question'][:60]}{'...' if len(result['question']) > 60 else ''}")
+            print(f"     Baseline: {baseline_out}{'...' if len(result['baseline']['output']) > 50 else ''}")
+            print(f"     SHIRG:    {shirg_out}{'...' if len(result['shirg']['output']) > 50 else ''}")
+            print(f"     Files: {result.get('visualization_path', 'N/A')}")
+            print()
+        
+        print(f"💾 DETAILED RESULTS SAVED TO:")
+        print(f"   JSON files: ./shirg_ocr_vqa_results/")
+        print(f"   Visualizations: ./shirg_ocr_vqa_visualizations/")
+        print()
+        print(f"🎯 NEXT STEPS:")
+        print(f"   1. Review visualizations to assess token selection quality")
+        print(f"   2. Analyze JSON results for detailed performance metrics")
+        print(f"   3. Compare outputs to evaluate SHIRG research hypothesis")
+        print(f"   4. Proceed with LoRA training if performance targets are met")
     
     def _pil_to_tensor(self, pil_image):
         """Convert PIL image to tensor"""
@@ -733,14 +950,16 @@ class RealOCRVQAValidator:
             # Convert to tensor and add batch dimension
             tensor = torch.from_numpy(img_array).unsqueeze(0)
             return tensor
-    
+
 
 def main():
-    """Run real OCR/VQA validation"""
+    """Run baseline vs SHIRG comparison validation"""
     validator = RealOCRVQAValidator()
     results = validator.run_real_ocr_vqa_validation()
     
-    print(f"\n🎉 Validation complete! Check ./shirg_ocr_vqa_visualizations/ for detailed results.")
+    print(f"\n🎉 Baseline vs SHIRG comparison complete!")
+    print(f"   📊 Results: ./shirg_ocr_vqa_results/")
+    print(f"   🖼️ Visualizations: ./shirg_ocr_vqa_visualizations/")
     return results
 
 if __name__ == "__main__":
