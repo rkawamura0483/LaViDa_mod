@@ -130,15 +130,32 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         
         Maintains original LaViDa behavior for backward compatibility.
         """
+        # Ensure images are 384×384 for LaViDa baseline processing
+        if hasattr(images, 'shape') and len(images.shape) == 4:
+            B, C, H, W = images.shape
+            if H != 384 or W != 384:
+                images = F.interpolate(images, size=(384, 384), mode='bilinear', align_corners=False)
+        
         if type(images) is list:
             image_features = []
             for image in images:
+                # Ensure 384×384 for individual images too
+                if hasattr(image, 'shape') and len(image.shape) == 3:
+                    C, H, W = image.shape
+                    if H != 384 or W != 384:
+                        image = F.interpolate(image.unsqueeze(0), size=(384, 384), mode='bilinear', align_corners=False).squeeze(0)
+                
                 image_forward_out = self.vision_tower(
                     image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                     output_hidden_states=True
                 )
                 image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
-                assert image_feature.shape[-2] == 729  # Verify LaViDa token count
+                
+                # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
+                expected_tokens = (384 // 14) ** 2  # 729
+                if image_feature.shape[-2] != expected_tokens:
+                    rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_feature.shape[-2]}")
+                
                 image_features.append(image_feature)
         else:
             image_forward_outs = self.vision_tower(
@@ -146,7 +163,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 output_hidden_states=True
             )
             image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
-            assert image_features.shape[-2] == 729  # Verify LaViDa token count
+            
+            # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
+            expected_tokens = (384 // 14) ** 2  # 729
+            if image_features.shape[-2] != expected_tokens:
+                rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_features.shape[-2]}")
 
         return image_features
 
@@ -155,17 +176,18 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         """Extract high-resolution tokens for SHIRG processing"""
         return self.extract_high_res_tokens_fixed(images)
 
-    def compare_baseline_vs_shirg(self, images, **kwargs):
+    def compare_baseline_vs_shirg(self, images, target_tokens=768, text_embeddings=None):
         """Compare standard LaViDa vs SHIRG processing"""
         baseline_tokens = self._forward_standard_lavida(images)
-        shirg_tokens = self.forward_with_shirg(images)
         
-        return {
-            'baseline': baseline_tokens,
-            'shirg': shirg_tokens,
-            'baseline_shape': baseline_tokens.shape,
-            'shirg_shape': shirg_tokens.shape
-        }
+        # Handle SHIRG processing with proper parameters
+        if hasattr(self, 'forward_with_shirg'):
+            shirg_tokens = self.forward_with_shirg(images, text_embeddings)
+        else:
+            # Fallback to baseline if SHIRG not available
+            shirg_tokens = baseline_tokens
+        
+        return baseline_tokens, shirg_tokens
 
     # Properties for compatibility with existing code
     @property

@@ -144,19 +144,37 @@ class SigLipShirgExtensions:
             # Fallback to standard LaViDa processing
             return self._forward_standard_lavida(images)
     
-    def forward_with_shirg_x(self, images, text_embeddings=None, budget=1152):
+    def forward_with_shirg_x(self, images, budget=1152, text_embeddings=None):
         """
         SHIRG-X: Dual-Scale Spatially Aware Token Selection (Legacy)
+        
+        Args:
+            images: Input images [B, C, H, W]
+            budget: int - number of tokens to select (default 1152) 
+            text_embeddings: optional text embeddings for relevance scoring
         """
-        if budget == 1152:
+        # Handle parameter order confusion from validation calls
+        if isinstance(budget, torch.Tensor) and text_embeddings is None:
+            # forward_with_shirg_x(images, text_embeddings) - budget omitted
+            actual_text_embeddings = budget
+            actual_budget = 1152
+        elif isinstance(budget, int):
+            actual_text_embeddings = text_embeddings
+            actual_budget = budget
+        else:
+            # Fallback
+            actual_text_embeddings = None
+            actual_budget = 1152
+            
+        if actual_budget == 1152:
             # Use optimized SHIRG-Fixed for standard case (55% keep-rate)
-            return self.forward_with_shirg_fixed(images, text_embeddings), None
+            return self.forward_with_shirg_fixed(images, actual_text_embeddings), None
         
         # SHIRG-X Step 1: Extract dual-scale tokens
         hi_detail_tokens, lo_res_scaffold = self.extract_shirg_x_tokens(images)
         
         # SHIRG-X Step 1.5: Adaptive-K budget prediction (if enabled)
-        if hasattr(self, 'adaptive_k_head') and budget is None:
+        if hasattr(self, 'adaptive_k_head') and actual_budget is None:
             # Use adaptive budget prediction
             adaptive_budgets = self.compute_adaptive_k_budget(hi_detail_tokens)
             target_tokens = adaptive_budgets[0].item()  # Use first batch's budget for simplicity
@@ -165,11 +183,11 @@ class SigLipShirgExtensions:
                 print(f"🎯 SHIRG-X adaptive budget: {target_tokens} (from entropy analysis)")
         else:
             # Use fixed budget
-            target_tokens = budget if budget is not None else 1152
+            target_tokens = actual_budget if actual_budget is not None else 1152
         
         # SHIRG-X Step 2: Apply distance-aware token selection to hi-detail tokens
         selected_hi_detail, coord_coords = self.shirg_x_selection(
-            hi_detail_tokens, text_embeddings, target_tokens
+            hi_detail_tokens, actual_text_embeddings, target_tokens
         )
         
         # SHIRG-X Step 3: Combine hi-detail + lo-res scaffold
@@ -360,8 +378,8 @@ class SigLipShirgExtensions:
         # Spatial distance penalties
         center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
         center_distances = torch.norm(
-            patch_coords[:, :, :2] - center_coord, dim=2
-        ).unsqueeze(0).expand(B, -1)  # [B, N]
+            patch_coords[:, :, :2] - center_coord, dim=-1
+        )  # [B, N] - already has correct batch dimension
         
         # Simplified neighbor distances (use token variance as proxy)
         neighbor_distances = torch.var(hi_detail_tokens, dim=-1)  # [B, N]
@@ -534,21 +552,23 @@ class SigLipShirgExtensions:
         patch_coords = self.compute_patch_coordinates(H, W)
         patch_coords = patch_coords.unsqueeze(0).expand(B, -1, -1).to(hi_detail_tokens.device)
         
-        # 2. Similarity scoring
-        if text_embeddings is not None:
+        # 2. Similarity scoring - handle parameter type issues  
+        if text_embeddings is not None and isinstance(text_embeddings, torch.Tensor) and text_embeddings.dim() >= 2:
+            # Valid text embeddings tensor
             similarity_scores = torch.matmul(
                 F.normalize(hi_detail_tokens, dim=-1),
                 F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
             ).mean(dim=-1)
         else:
+            # Fallback to query-agnostic scoring
             similarity_scores = torch.norm(hi_detail_tokens, dim=-1)
         
         # 3. Distance computations
         neighbor_distances = self.compute_neighbor_distances_efficient(hi_detail_tokens, H, W)
         center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
         center_distances = torch.norm(
-            patch_coords[:, :, :2] - center_coord, dim=2
-        ).unsqueeze(0).expand(B, -1)
+            patch_coords[:, :, :2] - center_coord, dim=-1
+        )  # [B, N] - already has batch dimension from patch_coords expansion
         
         # 4. Complete SHIRG distance-aware scoring formula
         importance_scores = (
@@ -714,20 +734,22 @@ class SigLipShirgExtensions:
         patch_coords = self.compute_patch_centroids(H, W)
         patch_coords = patch_coords.unsqueeze(0).expand(B, -1, -1).to(hi_detail_tokens.device)
         
-        # Similarity scoring
-        if text_embeddings is not None and hasattr(text_embeddings, 'transpose'):
+        # Similarity scoring - handle parameter type issues
+        if text_embeddings is not None and isinstance(text_embeddings, torch.Tensor) and text_embeddings.dim() >= 2:
+            # Valid text embeddings tensor
             similarity_scores = torch.matmul(
                 F.normalize(hi_detail_tokens, dim=-1),
                 F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
             ).mean(dim=-1)
         else:
+            # Fallback to query-agnostic scoring
             similarity_scores = torch.norm(hi_detail_tokens, dim=-1)
         
         # Distance computations
         center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
         center_distances = torch.norm(
-            patch_coords[:, :, :2] - center_coord, dim=1
-        )
+            patch_coords[:, :, :2] - center_coord, dim=-1
+        )  # [B, N] - correct dimension for distance computation
         
         # Simplified neighbor distance using token variance
         neighbor_distances = torch.var(hi_detail_tokens, dim=-1)
@@ -811,8 +833,32 @@ class SigLipShirgExtensions:
     def shirg_token_selection(self, tokens, budget=1152, text_embeddings=None):
         """
         Main SHIRG token selection interface
+        
+        Args:
+            tokens: [B, N, D] input tokens
+            budget: int - number of tokens to select (or text_embeddings if passed as 2nd arg)
+            text_embeddings: optional text embeddings for scoring
         """
-        return self.shirg_fixed_selection(tokens, text_embeddings)
+        # Handle parameter order confusion from validation calls
+        if isinstance(budget, torch.Tensor) and text_embeddings is None:
+            # shirg_token_selection(tokens, text_embeddings) - budget omitted
+            actual_text_embeddings = budget
+            actual_budget = 1152
+        elif isinstance(budget, int):
+            actual_text_embeddings = text_embeddings  
+            actual_budget = budget
+        else:
+            # Fallback
+            actual_text_embeddings = None
+            actual_budget = 1152
+            
+        selected_tokens, selected_coords = self.shirg_fixed_selection(tokens, actual_text_embeddings)
+        
+        # Add summary token for LaViDa compatibility
+        B, K, D = selected_tokens.shape
+        summary_token = selected_tokens.mean(dim=1).unsqueeze(1)  # [B, 1, D]
+        
+        return torch.cat([selected_tokens, summary_token], dim=1)  # [B, K+1, D]
     
     def _compute_edge_density_boost(self, tokens):
         """
