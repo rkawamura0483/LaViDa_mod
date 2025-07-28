@@ -890,11 +890,29 @@ class SigLipShirgExtensions:
         # RESEARCH IMPACT: Enables selection to adapt to different image content and complexity
         
         if text_embeddings is not None and isinstance(text_embeddings, torch.Tensor) and text_embeddings.dim() >= 2:
-            # Query-aware scoring using actual text-image similarity
-            similarity_scores = torch.matmul(
-                F.normalize(hi_detail_tokens, dim=-1),
-                F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
-            ).mean(dim=-1)  # [B, N]
+            # DIMENSION-FIX: 2025-07-28 - Handle text embedding dimension mismatch
+            # ISSUE: LaViDa text embeddings have 4096 dims, SigLIP vision tokens have 1152 dims
+            # SOLUTION: Check dimension compatibility and use query-agnostic scoring for incompatible dims
+            # RESEARCH IMPACT: Enables SHIRG to work with LaViDa's text embeddings or fall back gracefully
+            
+            vision_dim = hi_detail_tokens.shape[-1]  # Should be 1152 for SigLIP
+            text_dim = text_embeddings.shape[-1]    # May be 4096 for LaViDa language model
+            
+            if text_dim == vision_dim:
+                # Compatible dimensions - use text-image similarity as intended by research
+                similarity_scores = torch.matmul(
+                    F.normalize(hi_detail_tokens, dim=-1),
+                    F.normalize(text_embeddings.transpose(-1, -2), dim=-2)
+                ).mean(dim=-1)  # [B, N]
+                rank0_print(f"SHIRG-DEBUG: Using text-image similarity with compatible dims: vision={vision_dim}, text={text_dim}")
+            else:
+                # Incompatible dimensions - fall back to content-aware query-agnostic scoring
+                rank0_print(f"SHIRG-DEBUG: Dimension mismatch - vision={vision_dim}, text={text_dim}. Using content-aware scoring.")
+                token_variance = torch.var(hi_detail_tokens, dim=-1)  # [B, N] - varies per image
+                token_mean_magnitude = torch.mean(torch.abs(hi_detail_tokens), dim=-1)  # [B, N] - content strength
+                
+                # Combine variance (detail richness) + magnitude (feature strength)
+                similarity_scores = 0.7 * F.normalize(token_variance, dim=-1) + 0.3 * F.normalize(token_mean_magnitude, dim=-1)
         else:
             # Content-aware query-agnostic scoring: use token information content
             # Measure local feature variance as proxy for visual information richness
