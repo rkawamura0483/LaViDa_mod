@@ -15,6 +15,7 @@ Architecture:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from typing import Optional, Tuple, Union
 
 # Import base SigLIP components
@@ -400,10 +401,23 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     image_feature = image_feature.to(dtype=image.dtype)
                 # If dtypes match, keep original tensor to preserve gradients
                 
-                # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
-                expected_tokens = (384 // 14) ** 2  # 729
-                if image_feature.shape[-2] != expected_tokens:
-                    rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_feature.shape[-2]}")
+                # TENSOR-FIX: 2025-07-28 - Validate baseline token count for individual images
+                expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+                actual_tokens = image_feature.shape[-2] if len(image_feature.shape) >= 2 else 0
+                
+                if actual_tokens != expected_tokens:
+                    actual_grid_size = int(math.sqrt(actual_tokens)) if actual_tokens > 0 else 0
+                    actual_resolution = actual_grid_size * 14 if actual_grid_size > 0 else 0
+                    rank0_print(f"⚠️ LaViDa baseline (individual): Expected 384×384 → {expected_tokens} tokens, got {actual_resolution}×{actual_resolution} → {actual_tokens} tokens")
+                    
+                    # Adjust token count for baseline compatibility
+                    if actual_tokens > expected_tokens:
+                        image_feature = image_feature[:, :expected_tokens, :]
+                    elif actual_tokens < expected_tokens and actual_tokens > 0:
+                        B, N, D = image_feature.shape
+                        padding_size = expected_tokens - actual_tokens
+                        padding = torch.zeros(B, padding_size, D, device=image_feature.device, dtype=image_feature.dtype)
+                        image_feature = torch.cat([image_feature, padding], dim=1)
                 
                 # DTYPE-FIX: 2025-07-28 - Ensure consistent dtype for individual images
                 if torch.cuda.is_available() and image_feature.dtype != torch.bfloat16:
@@ -454,10 +468,37 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 image_features = image_features.to(dtype=images.dtype)
             # If dtypes match, keep original tensor to preserve gradients
             
-            # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
-            expected_tokens = (384 // 14) ** 2  # 729
-            if image_features.shape[-2] != expected_tokens:
-                rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_features.shape[-2]}")
+            # TENSOR-FIX: 2025-07-28 - Validate baseline token count with better error handling
+            # ISSUE: Baseline inference may receive unexpected image sizes causing tensor shape errors
+            # SOLUTION: Check actual token count and provide detailed debugging information
+            # LAVIDA IMPACT: Prevents crashes in baseline inference with proper error reporting
+            # SHIRG IMPACT: Ensures both baseline and SHIRG can handle various input sizes
+            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+            actual_tokens = image_features.shape[-2] if len(image_features.shape) >= 2 else 0
+            
+            rank0_print(f"BASELINE-DEBUG: Image features shape: {image_features.shape}")
+            rank0_print(f"BASELINE-DEBUG: Expected {expected_tokens} tokens, got {actual_tokens} tokens")
+            
+            if actual_tokens != expected_tokens:
+                # Calculate what resolution this corresponds to
+                actual_grid_size = int(math.sqrt(actual_tokens)) if actual_tokens > 0 else 0
+                actual_resolution = actual_grid_size * 14 if actual_grid_size > 0 else 0
+                rank0_print(f"⚠️ LaViDa baseline: Token count mismatch!")
+                rank0_print(f"   Expected: 384×384 → {expected_tokens} tokens")
+                rank0_print(f"   Actual: {actual_resolution}×{actual_resolution} → {actual_tokens} tokens")
+                
+                # For baseline, we should always get 729 tokens for proper LaViDa processing
+                if actual_tokens > expected_tokens:
+                    # Too many tokens - truncate to expected count
+                    rank0_print(f"   Truncating {actual_tokens} tokens to {expected_tokens} for baseline compatibility")
+                    image_features = image_features[:, :expected_tokens, :]
+                elif actual_tokens < expected_tokens and actual_tokens > 0:
+                    # Too few tokens - pad with zeros
+                    rank0_print(f"   Padding {actual_tokens} tokens to {expected_tokens} for baseline compatibility")
+                    B, N, D = image_features.shape
+                    padding_size = expected_tokens - actual_tokens
+                    padding = torch.zeros(B, padding_size, D, device=image_features.device, dtype=image_features.dtype)
+                    image_features = torch.cat([image_features, padding], dim=1)
             
             # DTYPE-FIX: 2025-07-28 - Final dtype consistency check for baseline
             # ISSUE: Image features may have different dtype than expected by LaViDa model

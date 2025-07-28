@@ -507,11 +507,29 @@ class RealOCRVQAValidator:
         start_time = time.time()
         
         try:
-            # Process image for baseline (384×384)
+            # TENSOR-FIX: 2025-07-28 - Ensure consistent baseline image processing
+            # ISSUE: Baseline processing may produce unexpected tensor shapes
+            # SOLUTION: Force 384×384 processing and validate tensor dimensions
+            # LAVIDA IMPACT: Ensures baseline LaViDa always gets expected 729 tokens
+            # SHIRG IMPACT: Provides stable baseline for comparison with SHIRG
             baseline_image = image.resize((384, 384), Image.Resampling.LANCZOS)
+            print(f"   BASELINE-DEBUG: Processing {baseline_image.size} image")
+            
             image_tensor = process_images([baseline_image], self.image_processor, self.model.config)
             image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             image_sizes = [baseline_image.size]
+            
+            # Validate tensor dimensions
+            if len(image_tensor) > 0:
+                tensor_shape = image_tensor[0].shape
+                print(f"   BASELINE-DEBUG: Processed tensor shape: {tensor_shape}")
+                expected_size = 384
+                if len(tensor_shape) >= 3:
+                    actual_h, actual_w = tensor_shape[-2], tensor_shape[-1]
+                    if actual_h != expected_size or actual_w != expected_size:
+                        print(f"   ⚠️ BASELINE WARNING: Expected {expected_size}×{expected_size}, got {actual_h}×{actual_w}")
+            else:
+                print(f"   ❌ BASELINE ERROR: Empty image tensor list")
             
             # Record memory before inference
             if torch.cuda.is_available():
@@ -594,11 +612,26 @@ class RealOCRVQAValidator:
             )
             
             # Process with SHIRG image processor to preserve 672×672 resolution
+            print(f"   SHIRG-DEBUG: Processing {shirg_image.size} image with custom processor")
             image_tensor = shirg_image_processor.preprocess([shirg_image], return_tensors="pt")["pixel_values"]
             if not isinstance(image_tensor, list):
                 image_tensor = [image_tensor]
             image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             image_sizes = [shirg_image.size]
+            
+            # Validate SHIRG tensor dimensions
+            if len(image_tensor) > 0:
+                tensor_shape = image_tensor[0].shape
+                print(f"   SHIRG-DEBUG: Processed tensor shape: {tensor_shape}")
+                expected_size = 672
+                if len(tensor_shape) >= 3:
+                    actual_h, actual_w = tensor_shape[-2], tensor_shape[-1]
+                    if actual_h != expected_size or actual_w != expected_size:
+                        print(f"   ⚠️ SHIRG WARNING: Expected {expected_size}×{expected_size}, got {actual_h}×{actual_w}")
+                    else:
+                        print(f"   ✅ SHIRG: Confirmed {expected_size}×{expected_size} processing")
+            else:
+                print(f"   ❌ SHIRG ERROR: Empty image tensor list")
             
             # Record memory before inference
             if torch.cuda.is_available():
