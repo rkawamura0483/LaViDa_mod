@@ -86,81 +86,36 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         target_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         rank0_print(f"SHIRG META-TENSOR-FIX: Loading vision tower on device: {target_device}")
         
+        # SHIRG-FIX: 2025-07-28 - Simplified loading approach to avoid meta tensor issues
+        # ISSUE: Complex meta tensor handling is causing loading failures
+        # SOLUTION: Force CPU loading first, then move to GPU - avoids meta tensors entirely
+        # LAVIDA IMPACT: Ensures reliable vision tower loading for LaViDa model
+        # SHIRG IMPACT: Enables SHIRG extensions to work with stable SigLIP base
+        
         try:
-            # First attempt: Load model without device_map to avoid meta tensor issues
-            rank0_print("Attempting model loading without device_map to avoid meta tensors...")
+            # Load model on CPU first to avoid meta tensor complications
+            rank0_print("Loading SigLIP model on CPU to avoid meta tensors...")
             self.vision_tower = SigLipVisionModel.from_pretrained(
-                self.vision_tower_name, 
-                torch_dtype=target_dtype,
-                low_cpu_mem_usage=False  # Disable to avoid meta tensors
+                self.vision_tower_name,
+                torch_dtype=torch.float32,  # Use float32 on CPU
+                low_cpu_mem_usage=False,    # Disable meta tensors
+                device_map=None             # Force CPU loading
             )
             
-            # Manually move to target device after successful loading
-            if target_device.type == 'cuda':
+            rank0_print("✅ SigLIP model loaded successfully on CPU")
+            
+            # Now move to target device with proper dtype conversion
+            if target_device.type == 'cuda' and torch.cuda.is_available():
+                rank0_print(f"Moving SigLIP model to {target_device} with dtype {target_dtype}")
                 self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
+                rank0_print("✅ SigLIP model moved to GPU successfully")
+            else:
+                rank0_print("Keeping SigLIP model on CPU")
+                target_dtype = torch.float32
                 
         except Exception as e:
-            rank0_print(f"Standard loading failed: {e}")
-            rank0_print("Attempting alternative loading with meta tensor handling...")
-            
-            try:
-                # Alternative: Load with low_cpu_mem_usage but handle meta tensors properly
-                self.vision_tower = SigLipVisionModel.from_pretrained(
-                    self.vision_tower_name,
-                    torch_dtype=target_dtype,
-                    low_cpu_mem_usage=True
-                )
-                
-                # Check if model has meta tensors and handle appropriately
-                has_meta_tensors = any(param.is_meta for param in self.vision_tower.parameters())
-                
-                if has_meta_tensors:
-                    rank0_print("Meta tensors detected, using to_empty() for device migration...")
-                    # Use to_empty() for meta tensors
-                    empty_model = self.vision_tower.to_empty(device=target_device)
-                    # Load state dict to populate the empty tensors
-                    try:
-                        # Load a reference model with the same class to get weights
-                        ref_model = SigLipVisionModel.from_pretrained(
-                            self.vision_tower_name,
-                            torch_dtype=torch.float32,
-                            low_cpu_mem_usage=False
-                        )
-                        empty_model.load_state_dict(ref_model.state_dict())
-                        self.vision_tower = empty_model.to(dtype=target_dtype)
-                        rank0_print("Successfully loaded with meta tensor handling")
-                    except Exception as load_error:
-                        # Fallback to CPU loading and manual migration
-                        rank0_print(f"Meta tensor loading failed: {load_error}")
-                        rank0_print("Using CPU fallback with manual state dict loading")
-                        ref_model = SigLipVisionModel.from_pretrained(
-                            self.vision_tower_name,
-                            torch_dtype=torch.float32,
-                            low_cpu_mem_usage=False
-                        )
-                        self.vision_tower = ref_model.to(device=target_device, dtype=target_dtype)
-                else:
-                    # No meta tensors, use standard migration
-                    self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
-                    
-            except Exception as e2:
-                rank0_print(f"Alternative loading also failed: {e2}")
-                # Final fallback: Load on CPU and migrate manually
-                rank0_print("Using CPU fallback loading...")
-                self.vision_tower = SigLipVisionModel.from_pretrained(
-                    self.vision_tower_name,
-                    torch_dtype=torch.float32,
-                    low_cpu_mem_usage=False
-                )
-                
-                # Convert to target device/dtype if possible
-                try:
-                    if target_device.type == 'cuda':
-                        self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
-                except Exception as e3:
-                    rank0_print(f"Device migration failed, using CPU: {e3}")
-                    target_device = torch.device('cpu')
-                    target_dtype = torch.float32
+            rank0_print(f"❌ SigLIP loading failed with error: {e}")
+            raise RuntimeError(f"Failed to load SigLIP vision model from {self.vision_tower_name}: {e}")
         
 
         # SHIRG: Maintain LaViDa architecture - delete last layer for 26-layer config

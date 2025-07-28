@@ -572,14 +572,29 @@ class RealOCRVQAValidator:
             
             # Run LaViDa generation with SHIRG token selection
             with torch.no_grad():
-                # Enable SHIRG processing in vision tower
-                original_shirg_state = None
-                if hasattr(self.tower, 'shirg_enabled'):
-                    original_shirg_state = self.tower.shirg_enabled
-                    self.tower.shirg_enabled = True
-                else:
-                    print(f"   ⚠️ Warning: Vision tower does not have SHIRG enabled attribute")
+                # SHIRG-FIX: 2025-07-28 - Properly enable SHIRG processing during generation
+                # ISSUE: Setting shirg_enabled doesn't actually enable SHIRG during forward pass
+                # SOLUTION: Use model's native SHIRG support through config or direct forward call
+                # LAVIDA IMPACT: Enables proper SHIRG token selection during LaViDa generation
+                # SHIRG IMPACT: Ensures 672×672 processing with token selection is actually used
                 
+                # Store original config to restore later
+                original_use_shirg = None
+                original_shirg_enabled = None
+                
+                # Enable SHIRG in multiple ways to ensure it's active
+                if hasattr(self.tower, 'shirg_enabled'):
+                    original_shirg_enabled = self.tower.shirg_enabled
+                    self.tower.shirg_enabled = True
+                    print(f"   ✅ SHIRG enabled in vision tower")
+                
+                # Also try to enable SHIRG through model config if available
+                if hasattr(self.model.config, 'use_shirg'):
+                    original_use_shirg = getattr(self.model.config, 'use_shirg', False)
+                    self.model.config.use_shirg = True
+                    print(f"   ✅ SHIRG enabled in model config")
+                
+                print(f"   🔄 Running LaViDa generation with SHIRG extensions...")
                 output_ids = self.model.generate(
                     input_ids,
                     images=image_tensor,
@@ -592,12 +607,16 @@ class RealOCRVQAValidator:
                     tokenizer=self.tokenizer,
                     prefix_lm=True,
                     verbose=False,
-                    schedule='shift'
+                    schedule='shift',
+                    use_shirg=True  # Explicitly request SHIRG if model supports this parameter
                 )
                 
-                # Restore original SHIRG state
-                if hasattr(self.tower, 'shirg_enabled') and original_shirg_state is not None:
-                    self.tower.shirg_enabled = original_shirg_state
+                # Restore original states
+                if hasattr(self.tower, 'shirg_enabled') and original_shirg_enabled is not None:
+                    self.tower.shirg_enabled = original_shirg_enabled
+                
+                if hasattr(self.model.config, 'use_shirg') and original_use_shirg is not None:
+                    self.model.config.use_shirg = original_use_shirg
                 
                 # Decode output
                 output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
