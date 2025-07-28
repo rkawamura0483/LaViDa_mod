@@ -59,8 +59,8 @@ class RealOCRVQAValidator:
         self.image_processor = None
         self.max_length = None
         
-        # Model configuration
-        self.pretrained_path = "lavida-ckpts/lavida-llada-hd"
+        # Model configuration - using HuggingFace model directly
+        self.pretrained_path = "jacklishufan/lavida-llada-v1.0-instruct"
         self.model_name = "llava_llada"
         self.conv_template_name = "llada"
         
@@ -114,7 +114,8 @@ class RealOCRVQAValidator:
                 'mm_resampler_type': None,
                 'mm_projector_type': 'mlp2x_gelu',
                 'mm_hidden_size': 1152,
-                'use_mm_proj': True
+                'use_mm_proj': True,
+                'enable_shirg': True  # Enable SHIRG extensions
             }
             
             # Load LaViDa model components
@@ -566,9 +567,12 @@ class RealOCRVQAValidator:
             # Run LaViDa generation with SHIRG token selection
             with torch.no_grad():
                 # Enable SHIRG processing in vision tower
+                original_shirg_state = None
                 if hasattr(self.tower, 'shirg_enabled'):
                     original_shirg_state = self.tower.shirg_enabled
                     self.tower.shirg_enabled = True
+                else:
+                    print(f"   ⚠️ Warning: Vision tower does not have SHIRG enabled attribute")
                 
                 output_ids = self.model.generate(
                     input_ids,
@@ -586,7 +590,7 @@ class RealOCRVQAValidator:
                 )
                 
                 # Restore original SHIRG state
-                if hasattr(self.tower, 'shirg_enabled'):
+                if hasattr(self.tower, 'shirg_enabled') and original_shirg_state is not None:
                     self.tower.shirg_enabled = original_shirg_state
                 
                 # Decode output
