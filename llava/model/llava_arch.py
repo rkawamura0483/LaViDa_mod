@@ -224,7 +224,11 @@ class LlavaMetaForCausalLM(ABC):
             rank0_print(f"SHIRG-POOLING: Full hi-res tokens {num_tokens} → {height}×{width} grid")
         else:
             # Dynamic grid size based on actual token count
-            import math
+            # MATH-FIX: 2025-07-28 - Remove redundant math import that causes scope issues
+            # ISSUE: Local import math conflicts with global math import causing variable access error
+            # SOLUTION: Use already imported math module from top of file (line 18)
+            # LAVIDA IMPACT: Fixes pooling operations for non-standard token counts
+            # SHIRG IMPACT: Enables dynamic grid sizing for custom token selections
             # Try to find the closest square grid
             height = width = int(math.sqrt(num_tokens))
             if height * width != num_tokens:

@@ -326,7 +326,7 @@ class SigLipShirgExtensions:
         # Step 2: Create lo-res scaffold (64 tokens from 8×8 average pooling)
         # Reshape hi-detail tokens to spatial grid: [B, N, D] → [B, grid_size, grid_size, D]
         B, N, D = hi_detail_tokens.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         grid_size = int(math.sqrt(N))  # Should be 48 for 2304 tokens
         
         if grid_size * grid_size != N:
@@ -345,7 +345,7 @@ class SigLipShirgExtensions:
         rank0_print(f"TENSOR-DEBUG: hi_detail_tokens shape: {hi_detail_tokens.shape}, total elements: {total_elements}")
         
         # Calculate actual grid size from token count  
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         grid_size = int(math.sqrt(N))
         expected_spatial_elements = grid_size * grid_size
         
@@ -661,7 +661,7 @@ class SigLipShirgExtensions:
         B, N, D = hi_detail_tokens.shape
         
         # Setup spatial processing parameters
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))  # 48×48 grid for 2304 tokens
         
         # PERFORMANCE-FIX: 2025-07-28 - Optimized similarity scoring
@@ -946,7 +946,7 @@ class SigLipShirgExtensions:
             selected_tokens: [B, budget, D] selected tokens
         """
         B, N, D = hi_detail_tokens.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))  # Assume square grid
         
         # PERFORMANCE-FIX: 2025-07-28 - Simplified similarity scoring (20ms → 8ms)
@@ -1036,7 +1036,7 @@ class SigLipShirgExtensions:
         # but applies a smoothing operation based on neighbor similarities
         
         B, N, D = tokens.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))
         
         # Reshape for spatial operations
@@ -1077,7 +1077,7 @@ class SigLipShirgExtensions:
         SHIRG IMPACT: Fixes critical tensor dimension mismatch in forward_with_shirg_x
         """
         B, N, D = hi_detail_tokens.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))
         
         # Setup spatial parameters (no coordinate computation needed)
@@ -1232,7 +1232,7 @@ class SigLipShirgExtensions:
             edge_boost: [B, N] edge density scores
         """
         B, N, D = tokens.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))
         
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operations
@@ -1280,7 +1280,7 @@ class SigLipShirgExtensions:
             coverage_tokens: [B, coverage_regions²] indices of coverage-guaranteed tokens
         """
         B, N = importance_scores.shape
-        import math  # SCOPE-FIX: Ensure math module is available in local scope
+        # MATH-FIX: 2025-07-28 - Use math module imported at top of file (line 20)
         H = W = int(math.sqrt(N))
         
         # Ensure coverage_regions divides grid size evenly
