@@ -83,7 +83,12 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         
         # Determine target device
         target_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        target_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        # DTYPE-FIX: 2025-07-28 - Use BFloat16 for LaViDa compatibility
+        # ISSUE: Vision tower loads with Float16 but LaViDa model uses BFloat16, causing dtype mismatch
+        # SOLUTION: Align vision tower dtype with LaViDa model dtype (BFloat16)
+        # LAVIDA IMPACT: Eliminates dtype mismatches in matrix operations between vision tower and language model
+        # SHIRG IMPACT: Ensures SHIRG token processing maintains consistent dtypes throughout pipeline
+        target_dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
         rank0_print(f"SHIRG META-TENSOR-FIX: Loading vision tower on device: {target_device}")
         
         # SHIRG-FIX: 2025-07-28 - Proper meta tensor handling using to_empty()
@@ -370,8 +375,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                         image_input = image_input.requires_grad_(True)
                 
                 # For dtype conversion, be extra careful with gradients
-                if image_input.dtype != self.dtype and self.dtype == torch.float16:
-                    # Only convert to float16 if needed, keep gradients
+                if image_input.dtype != self.dtype and self.dtype in (torch.float16, torch.bfloat16):
+                    # Only convert to float16/bfloat16 if needed, keep gradients
                     image_input = image_input.to(dtype=self.dtype)
                     # Restore gradient requirement if lost during dtype conversion
                     if original_requires_grad and not image_input.requires_grad:
@@ -400,6 +405,10 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 if image_feature.shape[-2] != expected_tokens:
                     rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_feature.shape[-2]}")
                 
+                # DTYPE-FIX: 2025-07-28 - Ensure consistent dtype for individual images
+                if torch.cuda.is_available() and image_feature.dtype != torch.bfloat16:
+                    image_feature = image_feature.to(torch.bfloat16)
+                
                 image_features.append(image_feature)
         else:
             # GRADIENT-FIX: 2025-07-28 - Preserve gradients during device/dtype conversion
@@ -420,8 +429,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     images_input = images_input.requires_grad_(True)
             
             # For dtype conversion, be extra careful with gradients
-            if images_input.dtype != self.dtype and self.dtype == torch.float16:
-                # Only convert to float16 if needed, keep gradients
+            if images_input.dtype != self.dtype and self.dtype in (torch.float16, torch.bfloat16):
+                # Only convert to float16/bfloat16 if needed, keep gradients
                 images_input = images_input.to(dtype=self.dtype)
                 # Restore gradient requirement if lost during dtype conversion
                 if original_requires_grad and not images_input.requires_grad:
@@ -449,13 +458,21 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             expected_tokens = (384 // 14) ** 2  # 729
             if image_features.shape[-2] != expected_tokens:
                 rank0_print(f"⚠️ LaViDa baseline: Expected {expected_tokens} tokens, got {image_features.shape[-2]}")
+            
+            # DTYPE-FIX: 2025-07-28 - Final dtype consistency check for baseline
+            # ISSUE: Image features may have different dtype than expected by LaViDa model
+            # SOLUTION: Ensure final output tokens match LaViDa's expected BFloat16 dtype
+            # LAVIDA IMPACT: Prevents dtype mismatches in mm_projector and attention layers
+            if torch.cuda.is_available() and image_features.dtype != torch.bfloat16:
+                rank0_print(f"DTYPE-FIX: Converting baseline tokens from {image_features.dtype} to BFloat16")
+                image_features = image_features.to(torch.bfloat16)
 
         return image_features
 
     def to(self, *args, **kwargs):
         """
         META-TENSOR-FIX: 2025-07-28 - Override to() method to handle meta tensors safely
-        ISSUE: LaViDa builder calls vision_tower.to(device="cuda", dtype=torch.float16) which fails on meta tensors
+        ISSUE: LaViDa builder calls vision_tower.to(device="cuda", dtype=torch.bfloat16) which fails on meta tensors
         SOLUTION: Check for meta tensors and use to_empty() when needed
         LAVIDA IMPACT: Prevents crashes during vision tower device migration in builder.py
         SHIRG IMPACT: Ensures SHIRG-enabled vision tower loads correctly
@@ -522,9 +539,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # LAVIDA IMPACT: Enables proper error diagnosis for LoRA training setup
         # SHIRG IMPACT: Exposes token selection implementation issues for resolution
         
-        # Use the working SHIRG implementation from extensions
-        # This calls the main SHIRG method that handles all the steps
-        shirg_result = self.forward_with_shirg_x(images, text_embeddings)
+        # SHIRG-FIX: 2025-07-28 - Call the correct SHIRG method from extensions
+        # ISSUE: Multiple forward_with_shirg methods can cause method resolution conflicts
+        # SOLUTION: Explicitly call the main SHIRG implementation from the extensions mixin
+        # LAVIDA IMPACT: Ensures proper SHIRG method resolution for token selection
+        # SHIRG IMPACT: Uses the optimized SHIRG implementation for high-resolution processing
+        
+        # Call the main SHIRG method from the SigLipShirgExtensions mixin
+        # This method implements the complete SHIRG methodology with dual-scale tokens
+        shirg_result = super(SigLipVisionTower, self).forward_with_shirg(images, text_embeddings)
         
         # GRADIENT-FIX: 2025-07-28 - Handle tuple return from SHIRG extensions
         # ISSUE: forward_with_shirg_x returns (tokens, coords) tuple for some cases

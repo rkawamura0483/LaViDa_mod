@@ -77,6 +77,15 @@ class SigLipShirgExtensions:
             # Step 5: Ensure gradient flow for LoRA training
             visual_tokens = self.ensure_gradient_flow(visual_tokens, images)
             
+            # DTYPE-FIX: 2025-07-28 - Final dtype consistency check
+            # ISSUE: Visual tokens may have different dtype than expected by LaViDa model
+            # SOLUTION: Ensure final output tokens match LaViDa's expected BFloat16 dtype
+            # LAVIDA IMPACT: Prevents dtype mismatches in mm_projector and attention layers
+            # SHIRG IMPACT: Ensures SHIRG tokens are compatible with LaViDa pipeline
+            if torch.cuda.is_available() and visual_tokens.dtype != torch.bfloat16:
+                rank0_print(f"DTYPE-FIX: Converting SHIRG tokens from {visual_tokens.dtype} to BFloat16")
+                visual_tokens = visual_tokens.to(torch.bfloat16)
+            
             # Step 6: Validate cache compatibility
             is_valid, message = self.validate_cache_compatibility(visual_tokens)
             if not is_valid:
@@ -139,7 +148,10 @@ class SigLipShirgExtensions:
         dual_scale_tokens = torch.cat([selected_hi_detail, lo_res_scaffold], dim=1)
         
         # GRADIENT-FIX: 2025-07-28 - Preserve gradient flow through dtype conversion
-        target_dtype = images.dtype if hasattr(images, 'dtype') else torch.float32
+        # DTYPE-FIX: 2025-07-28 - Ensure BFloat16 consistency with LaViDa model
+        # ISSUE: Target dtype should match LaViDa model expectations (BFloat16)
+        # SOLUTION: Use BFloat16 if available, otherwise use input dtype
+        target_dtype = torch.bfloat16 if torch.cuda.is_available() and hasattr(images, 'dtype') else (images.dtype if hasattr(images, 'dtype') else torch.float32)
         if dual_scale_tokens.dtype != target_dtype:
             dual_scale_tokens = dual_scale_tokens.to(dtype=target_dtype)
         return dual_scale_tokens, coord_coords

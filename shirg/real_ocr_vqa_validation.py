@@ -138,7 +138,20 @@ class RealOCRVQAValidator:
             self.model.eval()
             self.model.tie_weights()
             if torch.cuda.is_available():
+                # DTYPE-FIX: 2025-07-28 - Ensure vision tower also uses BFloat16
+                # ISSUE: Vision tower may load with different dtype than language model
+                # SOLUTION: Explicitly set both language model and vision tower to BFloat16
+                # LAVIDA IMPACT: Ensures consistent dtypes across all model components
+                # SHIRG IMPACT: Eliminates dtype mismatches in SHIRG token processing
                 self.model.to(torch.bfloat16)
+                # Also ensure vision tower uses consistent dtype
+                if hasattr(self.model, 'get_vision_tower') and self.model.get_vision_tower() is not None:
+                    vision_tower = self.model.get_vision_tower()
+                    if hasattr(vision_tower, 'vision_tower') and vision_tower.vision_tower is not None:
+                        vision_tower.vision_tower.to(torch.bfloat16)
+                        print(f"   Vision tower dtype set to: {next(vision_tower.vision_tower.parameters()).dtype}")
+                    else:
+                        print("   ⚠️ Vision tower not found or not loaded yet")
             
             # Get vision tower for SHIRG token analysis
             self.tower = self.model.get_vision_tower()
