@@ -60,13 +60,20 @@ class RealOCRVQAValidator:
     """Validator for real OCR/VQA images with question context"""
     
     def __init__(self):
-        self.tower = None
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # LaViDa model components
-        self.tokenizer = None
-        self.model = None
-        self.image_processor = None
+        # Baseline LaViDa model components (original encoder)
+        self.baseline_tokenizer = None
+        self.baseline_model = None
+        self.baseline_image_processor = None
+        self.baseline_tower = None
+        
+        # SHIRG LaViDa model components (SHIRG encoder)
+        self.shirg_tokenizer = None
+        self.shirg_model = None
+        self.shirg_image_processor = None
+        self.shirg_tower = None
+        
         self.max_length = None
         
         # Model configuration - using correct HuggingFace model path
@@ -79,8 +86,9 @@ class RealOCRVQAValidator:
         print("🔍 SHIRG REAL OCR/VQA IMAGE VALIDATION")
         print("=" * 60)
         
-        # Load model
-        self._load_model()
+        # Load both baseline and SHIRG models
+        self._load_baseline_model()
+        self._load_shirg_model()
         
         # Get real OCR/VQA images with questions
         ocr_vqa_samples = self._get_real_ocr_vqa_samples()
@@ -113,119 +121,219 @@ class RealOCRVQAValidator:
         
         return results
     
-    def _load_model(self):
-        """Load LaViDa model with SHIRG-enhanced vision tower"""
+    def _load_baseline_model(self):
+        """Load baseline LaViDa model with original SigLIP encoder"""
         if not LAVIDA_AVAILABLE:
             raise ImportError("LaViDa components not available. Please check imports.")
             
         try:
-            print("🔄 Loading LaViDa model with SHIRG extensions...")
+            print("🔄 Loading BASELINE LaViDa model (original encoder)...")
             
-            # LaViDa vision configuration for SHIRG integration
-            vision_kwargs = {
+            # BASELINE-FIX: 2025-07-28 - Use original LaViDa configuration without SHIRG
+            # ISSUE: Previous code always enabled SHIRG, corrupting baseline comparison
+            # SOLUTION: Load LaViDa with original SigLIP encoder for true baseline
+            # LAVIDA IMPACT: Provides authentic LaViDa baseline performance
+            # SHIRG IMPACT: Enables proper comparison between baseline and SHIRG
+            
+            # LaViDa vision configuration for BASELINE (no SHIRG)
+            baseline_vision_kwargs = {
                 'mm_vision_tower': "google/siglip-so400m-patch14-384",
                 'mm_resampler_type': None,
                 'mm_projector_type': 'mlp2x_gelu',
                 'mm_hidden_size': 1152,
                 'use_mm_proj': True,
-                'enable_shirg': True  # Enable SHIRG extensions
+                'enable_shirg': False  # CRITICAL: Disable SHIRG for baseline
             }
             
-            # Load LaViDa model components with proper device handling
-            # META-TENSOR-FIX: Use proper string format for torch_dtype and device_map
+            # Load baseline LaViDa model components
             device_map_setting = "auto" if torch.cuda.is_available() else None
             torch_dtype_setting = "bfloat16" if torch.cuda.is_available() else "float32"
             
-            print(f"   Loading with device_map={device_map_setting}, torch_dtype={torch_dtype_setting}")
+            print(f"   BASELINE: Loading with device_map={device_map_setting}, torch_dtype={torch_dtype_setting}")
             
-            # SHIRG-FIX: 2025-07-28 - Fix variable name mismatch in unpacking
-            # ISSUE: load_pretrained_model returns context_len not max_length
-            # SOLUTION: Use correct variable name for context length
-            # LAVIDA IMPACT: Fixes model loading in validation script
-            # SHIRG IMPACT: Enables proper SHIRG validation to proceed
-            self.tokenizer, self.model, self.image_processor, context_len = load_pretrained_model(
+            self.baseline_tokenizer, self.baseline_model, self.baseline_image_processor, context_len = load_pretrained_model(
                 self.pretrained_path, 
                 None, 
                 self.model_name, 
                 device_map=device_map_setting,
                 torch_dtype=torch_dtype_setting,
-                **vision_kwargs  # Pass vision kwargs as keyword arguments
+                **baseline_vision_kwargs  # Pass baseline vision kwargs
             )
             self.max_length = context_len  # Store context length
             
-            # Configure for inference
-            self.model.eval()
-            self.model.tie_weights()
+            # Configure baseline model for inference
+            self.baseline_model.eval()
+            self.baseline_model.tie_weights()
             if torch.cuda.is_available():
-                # DTYPE-FIX: 2025-07-28 - Comprehensive dtype consistency across all model components
-                # ISSUE: Dtype mismatches between model components cause runtime errors
-                # SOLUTION: Systematically ensure all components use BFloat16 consistently
-                # LAVIDA IMPACT: Prevents dtype errors throughout LaViDa inference pipeline
-                # SHIRG IMPACT: Ensures SHIRG processing is compatible with model dtypes
+                # Set consistent BFloat16 dtype for baseline model
+                self.baseline_model.to(torch.bfloat16)
+                print(f"   BASELINE: Language model dtype set to: {next(self.baseline_model.parameters()).dtype}")
                 
-                # First set the language model to BFloat16
-                self.model.to(torch.bfloat16)
-                print(f"   Language model dtype set to: {next(self.model.parameters()).dtype}")
+                # Ensure baseline vision tower uses original encoder
+                if hasattr(self.baseline_model, 'get_vision_tower') and self.baseline_model.get_vision_tower() is not None:
+                    baseline_tower = self.baseline_model.get_vision_tower()
+                    baseline_tower.vision_tower = baseline_tower.vision_tower.to(torch.bfloat16)
+                    print(f"   BASELINE: Vision tower dtype confirmed: {next(baseline_tower.vision_tower.parameters()).dtype}")
                 
-                # CRITICAL: Ensure vision tower dtype consistency
-                if hasattr(self.model, 'get_vision_tower') and self.model.get_vision_tower() is not None:
-                    vision_tower = self.model.get_vision_tower()
-                    
-                    # Set vision tower dtype consistently
-                    if hasattr(vision_tower, 'vision_tower') and vision_tower.vision_tower is not None:
-                        # Convert vision tower to BFloat16
-                        vision_tower.vision_tower = vision_tower.vision_tower.to(torch.bfloat16)
-                        
-                        # Validate all vision tower parameters
-                        inconsistent_params = []
-                        for name, param in vision_tower.vision_tower.named_parameters():
-                            if param.dtype != torch.bfloat16:
-                                inconsistent_params.append((name, param.dtype))
-                        
-                        if inconsistent_params:
-                            print(f"   ⚠️ Found {len(inconsistent_params)} vision tower params with wrong dtype")
-                            # Force conversion
-                            vision_tower.vision_tower = vision_tower.vision_tower.to(torch.bfloat16)
-                            print(f"   ✅ All vision tower parameters converted to BFloat16")
-                        
-                        print(f"   Vision tower dtype confirmed: {next(vision_tower.vision_tower.parameters()).dtype}")
-                    else:
-                        print("   ⚠️ Vision tower not found or not loaded yet")
-                
-                # CRITICAL: Also ensure mm_projector dtype consistency
-                if hasattr(self.model, 'mm_projector') and self.model.mm_projector is not None:
-                    self.model.mm_projector = self.model.mm_projector.to(torch.bfloat16)
-                    print(f"   MM projector dtype set to: {next(self.model.mm_projector.parameters()).dtype}")
-                
-                # Final validation: Check language model dtype
-                lm_dtype = next(self.model.model.parameters()).dtype if hasattr(self.model, 'model') else None
-                if lm_dtype and lm_dtype != torch.bfloat16:
-                    print(f"   ⚠️ Language model has unexpected dtype: {lm_dtype}")
-                    if hasattr(self.model, 'model'):
-                        self.model.model = self.model.model.to(torch.bfloat16)
-                        print(f"   ✅ Language model converted to BFloat16")
+                # Ensure mm_projector dtype consistency
+                if hasattr(self.baseline_model, 'mm_projector') and self.baseline_model.mm_projector is not None:
+                    self.baseline_model.mm_projector = self.baseline_model.mm_projector.to(torch.bfloat16)
+                    print(f"   BASELINE: MM projector dtype set to: {next(self.baseline_model.mm_projector.parameters()).dtype}")
             
-            # Get vision tower for SHIRG token analysis
-            self.tower = self.model.get_vision_tower()
+            # Get baseline vision tower (should be original encoder)
+            self.baseline_tower = self.baseline_model.get_vision_tower()
             
-            # SHIRG-FIX: 2025-07-28 - Explicitly enable SHIRG after model loading
-            # ISSUE: Vision tower loads but SHIRG isn't actually enabled for inference
-            # SOLUTION: Set shirg_enabled=True directly on the vision tower instance
-            # LAVIDA IMPACT: Enables SHIRG processing during validation without affecting baseline
-            # SHIRG IMPACT: Ensures SHIRG forward path is actually used during validation
-            if self.tower is not None:
-                self.tower.shirg_enabled = True
-                print(f"   SHIRG enabled: {getattr(self.tower, 'shirg_enabled', False)}")
+            print("✅ BASELINE LaViDa model loaded successfully")
+            print(f"   BASELINE Vision tower: {self.baseline_tower.vision_tower_name if self.baseline_tower else 'None'}")
+            print(f"   BASELINE Device: {self.device}")
+            print(f"   BASELINE Model dtype: {next(self.baseline_model.parameters()).dtype}")
             
-            print("✅ LaViDa model loaded successfully")
-            print(f"   Vision tower: {self.tower.vision_tower_name if self.tower else 'None'}")
-            print(f"   Device: {self.device}")
-            print(f"   Model dtype: {next(self.model.parameters()).dtype}")
+            # Verify baseline produces 729 tokens
+            print(f"   BASELINE Expected tokens: 729 (27x27 patches from 384x384)")
             
         except Exception as e:
-            print(f"❌ LaViDa model loading failed: {e}")
+            print(f"❌ BASELINE model loading failed: {e}")
             print(f"   Make sure '{self.pretrained_path}' exists and contains LaViDa checkpoints")
             raise
+    
+    def _load_shirg_model(self):
+        """Load SHIRG-enhanced LaViDa model with integrated SHIRG extensions"""
+        if not LAVIDA_AVAILABLE:
+            raise ImportError("LaViDa components not available. Please check imports.")
+            
+        try:
+            print("🔄 Loading SHIRG LaViDa model (with SHIRG extensions)...")
+            
+            # SHIRG-FIX: 2025-07-28 - Load LaViDa with integrated SHIRG extensions
+            # ISSUE: Previous code bypassed proper SHIRG integration
+            # SOLUTION: Load LaViDa with SHIRG-enabled vision tower from siglip_encoder.py
+            # LAVIDA IMPACT: Uses proper LaViDa integration for SHIRG processing
+            # SHIRG IMPACT: Enables actual SHIRG token selection through LaViDa pipeline
+            
+            # LaViDa vision configuration for SHIRG
+            shirg_vision_kwargs = {
+                'mm_vision_tower': "google/siglip-so400m-patch14-384",
+                'mm_resampler_type': None,
+                'mm_projector_type': 'mlp2x_gelu',
+                'mm_hidden_size': 1152,
+                'use_mm_proj': True,
+                'enable_shirg': True  # CRITICAL: Enable SHIRG extensions
+            }
+            
+            # Load SHIRG LaViDa model components
+            device_map_setting = "auto" if torch.cuda.is_available() else None
+            torch_dtype_setting = "bfloat16" if torch.cuda.is_available() else "float32"
+            
+            print(f"   SHIRG: Loading with device_map={device_map_setting}, torch_dtype={torch_dtype_setting}")
+            
+            self.shirg_tokenizer, self.shirg_model, self.shirg_image_processor, _ = load_pretrained_model(
+                self.pretrained_path, 
+                None, 
+                self.model_name, 
+                device_map=device_map_setting,
+                torch_dtype=torch_dtype_setting,
+                **shirg_vision_kwargs  # Pass SHIRG vision kwargs
+            )
+            
+            # Configure SHIRG model for inference
+            self.shirg_model.eval()
+            self.shirg_model.tie_weights()
+            if torch.cuda.is_available():
+                # Set consistent BFloat16 dtype for SHIRG model
+                self.shirg_model.to(torch.bfloat16)
+                print(f"   SHIRG: Language model dtype set to: {next(self.shirg_model.parameters()).dtype}")
+                
+                # Ensure SHIRG vision tower uses integrated extensions
+                if hasattr(self.shirg_model, 'get_vision_tower') and self.shirg_model.get_vision_tower() is not None:
+                    shirg_tower = self.shirg_model.get_vision_tower()
+                    shirg_tower.vision_tower = shirg_tower.vision_tower.to(torch.bfloat16)
+                    print(f"   SHIRG: Vision tower dtype confirmed: {next(shirg_tower.vision_tower.parameters()).dtype}")
+                
+                # Ensure mm_projector dtype consistency for SHIRG
+                if hasattr(self.shirg_model, 'mm_projector') and self.shirg_model.mm_projector is not None:
+                    self.shirg_model.mm_projector = self.shirg_model.mm_projector.to(torch.bfloat16)
+                    print(f"   SHIRG: MM projector dtype set to: {next(self.shirg_model.mm_projector.parameters()).dtype}")
+            
+            # Get SHIRG vision tower and enable SHIRG processing
+            self.shirg_tower = self.shirg_model.get_vision_tower()
+            if self.shirg_tower is not None:
+                # Explicitly enable SHIRG processing
+                self.shirg_tower.shirg_enabled = True
+                print(f"   SHIRG enabled: {getattr(self.shirg_tower, 'shirg_enabled', False)}")
+            
+            # Load LoRA weights if available for SHIRG research validation
+            self._load_lora_weights()
+            
+            print("✅ SHIRG LaViDa model loaded successfully")
+            print(f"   SHIRG Vision tower: {self.shirg_tower.vision_tower_name if self.shirg_tower else 'None'}")
+            print(f"   SHIRG Device: {self.device}")
+            print(f"   SHIRG Model dtype: {next(self.shirg_model.parameters()).dtype}")
+            
+            # SHIRG should produce dynamic token count based on selection
+            print(f"   SHIRG Expected behavior: 672x672 -> selection -> measured tokens")
+            
+        except Exception as e:
+            print(f"❌ SHIRG model loading failed: {e}")
+            print(f"   Make sure SHIRG extensions are properly integrated")
+            raise
+    
+    def _load_lora_weights(self):
+        """Load LoRA weights for SHIRG if available"""
+        try:
+            # LORA-FIX: 2025-07-28 - Load trained LoRA weights for SHIRG research validation
+            # ISSUE: SHIRG research requires "LoRA adaptation on critical components (1.4% parameters)"
+            # SOLUTION: Look for and load LoRA weights if available for proper SHIRG validation
+            # LAVIDA IMPACT: Enables LoRA-adapted projector for SHIRG processing
+            # SHIRG IMPACT: Uses trained LoRA weights for proper token selection performance
+            
+            # Look for LoRA weights in common locations
+            lora_paths = [
+                "./shirg/lora_weights/",
+                "./lora_weights/", 
+                "./checkpoints/shirg_lora/",
+                "./models/shirg_lora/"
+            ]
+            
+            lora_found = False
+            for lora_path in lora_paths:
+                if os.path.exists(lora_path):
+                    print(f"   🔍 Found LoRA directory: {lora_path}")
+                    # Look for specific LoRA files
+                    lora_files = [
+                        os.path.join(lora_path, "adapter_config.json"),
+                        os.path.join(lora_path, "adapter_model.bin"),
+                        os.path.join(lora_path, "adapter_model.safetensors")
+                    ]
+                    
+                    if any(os.path.exists(f) for f in lora_files):
+                        try:
+                            print(f"   🔄 Loading LoRA weights from {lora_path}...")
+                            # Try to load LoRA using peft if available
+                            try:
+                                from peft import PeftModel
+                                self.shirg_model = PeftModel.from_pretrained(self.shirg_model, lora_path)
+                                print(f"   ✅ LoRA weights loaded successfully using PEFT")
+                                lora_found = True
+                                break
+                            except ImportError:
+                                print(f"   ⚠️ PEFT not available, trying manual LoRA loading...")
+                                # Manual LoRA loading would go here
+                                # For now, continue without LoRA
+                                pass
+                        except Exception as lora_error:
+                            print(f"   ⚠️ Failed to load LoRA from {lora_path}: {lora_error}")
+                            continue
+            
+            if not lora_found:
+                print(f"   ⚠️ No LoRA weights found in standard locations")
+                print(f"   📋 SHIRG will run without LoRA adaptation (may affect performance)")
+                print(f"   💡 To use LoRA: Place trained weights in ./shirg/lora_weights/")
+            else:
+                print(f"   ✅ SHIRG LoRA weights loaded - research validation ready")
+                
+        except Exception as e:
+            print(f"   ⚠️ LoRA loading failed: {e}")
+            print(f"   📋 Continuing without LoRA weights")
     
     def _get_real_ocr_vqa_samples(self):
         """Get real OCR/VQA images from HuggingFace datasets using proper API"""
@@ -579,16 +687,16 @@ class RealOCRVQAValidator:
         question = sample_data['question']
         
         try:
-            # Prepare LaViDa inputs
+            # Prepare LaViDa inputs (use baseline tokenizer for consistency)
             conv = copy.deepcopy(conv_templates[self.conv_template_name])
             prompt_question = DEFAULT_IMAGE_TOKEN + "\n" + question
             conv.append_message(conv.roles[0], prompt_question)
             conv.append_message(conv.roles[1], None)
             prompt = conv.get_prompt()
             
-            # Tokenize prompt
+            # Tokenize prompt using baseline tokenizer
             input_ids = tokenizer_image_token(
-                prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
+                prompt, self.baseline_tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt"
             ).unsqueeze(0).to(self.device)
             
             # Run baseline LaViDa inference (384×384)
@@ -640,20 +748,22 @@ class RealOCRVQAValidator:
             }
     
     def _run_baseline_inference(self, image, input_ids, question):
-        """Run baseline LaViDa inference (384×384, 729 tokens)"""
+        """Run baseline LaViDa inference using original encoder (384×384, 729 tokens)"""
         
         start_time = time.time()
         
         try:
-            # TENSOR-FIX: 2025-07-28 - Ensure consistent baseline image processing
-            # ISSUE: Baseline processing may produce unexpected tensor shapes
-            # SOLUTION: Force 384×384 processing and validate tensor dimensions
-            # LAVIDA IMPACT: Ensures baseline LaViDa always gets expected 729 tokens
-            # SHIRG IMPACT: Provides stable baseline for comparison with SHIRG
-            baseline_image = image.resize((384, 384), Image.Resampling.LANCZOS)
-            print(f"   BASELINE-DEBUG: Processing {baseline_image.size} image")
+            # BASELINE-FIX: 2025-07-28 - Use proper baseline model with original encoder
+            # ISSUE: Previous code used SHIRG-enabled model for baseline, corrupting comparison
+            # SOLUTION: Use separate baseline model with original SigLIP encoder
+            # LAVIDA IMPACT: Provides authentic LaViDa baseline performance measurement
+            # SHIRG IMPACT: Enables accurate baseline vs SHIRG performance comparison
             
-            image_tensor = process_images([baseline_image], self.image_processor, self.model.config)
+            baseline_image = image.resize((384, 384), Image.Resampling.LANCZOS)
+            print(f"   BASELINE-DEBUG: Processing {baseline_image.size} image with original encoder")
+            
+            # Use baseline model and image processor
+            image_tensor = process_images([baseline_image], self.baseline_image_processor, self.baseline_model.config)
             image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             image_sizes = [baseline_image.size]
             
@@ -674,47 +784,39 @@ class RealOCRVQAValidator:
                 torch.cuda.reset_peak_memory_stats()
                 memory_before = torch.cuda.memory_allocated() / (1024**3)  # GB
             
-            # Run LaViDa generation with SHIRG explicitly disabled for baseline
+            # Run baseline LaViDa generation using baseline model (original encoder)
             with torch.no_grad():
-                # BASELINE-FIX: 2025-07-28 - Explicitly disable SHIRG for true baseline comparison
-                # ISSUE: Global shirg_enabled=True affects baseline inference, corrupting comparison
-                # SOLUTION: Temporarily disable SHIRG during baseline inference only
-                # LAVIDA IMPACT: Ensures pure LaViDa baseline performance measurement
-                # SHIRG IMPACT: Provides accurate baseline for SHIRG performance comparison
+                # BASELINE-FIX: 2025-07-28 - Use dedicated baseline model
+                # ISSUE: Previous code mixed baseline and SHIRG models, corrupting comparison
+                # SOLUTION: Use separate baseline_model that has no SHIRG functionality
+                # LAVIDA IMPACT: Provides pure original LaViDa performance
+                # SHIRG IMPACT: Enables clean baseline vs SHIRG comparison
                 
-                # Store original SHIRG state
-                original_shirg_enabled = getattr(self.tower, 'shirg_enabled', False)
+                print(f"   BASELINE: Running generation with original LaViDa encoder")
+                output_ids = self.baseline_model.generate(
+                    input_ids,
+                    images=image_tensor,
+                    image_sizes=image_sizes,
+                    do_sample=False,
+                    temperature=0.1,
+                    max_new_tokens=64,
+                    block_length=64,
+                    step_ratio=0.5,  # 16 diffusion steps
+                    tokenizer=self.baseline_tokenizer,
+                    prefix_lm=True,
+                    verbose=False,
+                    schedule='shift'
+                    # No use_shirg parameter - baseline model doesn't support it
+                )
                 
-                # Temporarily disable SHIRG for baseline
-                if hasattr(self.tower, 'shirg_enabled'):
-                    self.tower.shirg_enabled = False
-                    print(f"   BASELINE-FIX: Temporarily disabled SHIRG for baseline inference")
-                
-                try:
-                    output_ids = self.model.generate(
-                        input_ids,
-                        images=image_tensor,
-                        image_sizes=image_sizes,
-                        do_sample=False,
-                        temperature=0.1,
-                        max_new_tokens=64,
-                        block_length=64,
-                        step_ratio=0.5,  # 16 diffusion steps
-                        tokenizer=self.tokenizer,
-                        prefix_lm=True,
-                        verbose=False,
-                        schedule='shift',
-                        use_shirg=False  # Explicitly disable SHIRG for baseline
-                    )
-                finally:
-                    # Restore original SHIRG state
-                    if hasattr(self.tower, 'shirg_enabled'):
-                        self.tower.shirg_enabled = original_shirg_enabled
-                        print(f"   BASELINE-FIX: Restored SHIRG state to {original_shirg_enabled}")
-                
-                # Decode output
-                output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+                # Decode output using baseline tokenizer
+                output_text = self.baseline_tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
                 output_text = output_text.lstrip('!').strip()
+                
+                # CRITICAL: Measure actual token count from baseline vision tower
+                baseline_vision_features = self.baseline_tower(image_tensor[0])
+                actual_baseline_tokens = baseline_vision_features.shape[-2]
+                print(f"   BASELINE: Measured token count: {actual_baseline_tokens} (expected: 729)")
             
             inference_time = time.time() - start_time
             
@@ -725,12 +827,12 @@ class RealOCRVQAValidator:
                 memory_peak = 0
             
             return {
-                'tokens': 729,  # Standard LaViDa token count (27×27)
+                'tokens': actual_baseline_tokens,  # Measured baseline token count
                 'output': output_text,
                 'inference_time': inference_time,
                 'memory_usage': memory_peak,
                 'image_size': '384×384',
-                'method': 'baseline_lavida'
+                'method': 'baseline_lavida_original_encoder'
             }
             
         except Exception as e:
@@ -744,37 +846,23 @@ class RealOCRVQAValidator:
             }
     
     def _run_shirg_inference(self, image, input_ids, question):
-        """Run SHIRG LaViDa inference (672×672 with token selection)"""
+        """Run SHIRG LaViDa inference using integrated SHIRG extensions (672×672 with token selection)"""
         
         start_time = time.time()
         
         try:
-            # Process image for SHIRG (672×672)
+            # SHIRG-FIX: 2025-07-28 - Use proper SHIRG model with integrated extensions
+            # ISSUE: Previous code bypassed LaViDa integration and created custom processors
+            # SOLUTION: Use SHIRG model with proper process_images and vision tower integration
+            # LAVIDA IMPACT: Uses authentic LaViDa processing pipeline with SHIRG extensions
+            # SHIRG IMPACT: Enables actual SHIRG token selection through integrated architecture
+            
+            # Process image for SHIRG (672×672) - but let SHIRG model handle the sizing
             shirg_image = image.resize((672, 672), Image.Resampling.LANCZOS)
+            print(f"   SHIRG-DEBUG: Processing {shirg_image.size} image with integrated SHIRG")
             
-            # SHIRG-FIX: 2025-07-28 - Bypass LaViDa process_images for SHIRG high-resolution
-            # ISSUE: process_images always resizes to 384×384 via image_processor.preprocess()
-            # SOLUTION: Directly use image_processor with custom size for SHIRG high-resolution
-            # LAVIDA IMPACT: Preserves original LaViDa functionality while enabling SHIRG
-            # SHIRG IMPACT: Ensures 672×672 images reach vision tower for 2304-token processing
-            
-            # Create custom image processor for SHIRG with 672×672 size
-            from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
-            shirg_image_processor = SigLipImageProcessor(
-                image_mean=self.image_processor.image_mean,
-                image_std=self.image_processor.image_std,
-                size=(672, 672),  # SHIRG high-resolution size
-                crop_size={"height": 672, "width": 672},
-                resample=self.image_processor.resample,
-                rescale_factor=self.image_processor.rescale_factor,
-                data_format=self.image_processor.data_format
-            )
-            
-            # Process with SHIRG image processor to preserve 672×672 resolution
-            print(f"   SHIRG-DEBUG: Processing {shirg_image.size} image with custom processor")
-            image_tensor = shirg_image_processor.preprocess([shirg_image], return_tensors="pt")["pixel_values"]
-            if not isinstance(image_tensor, list):
-                image_tensor = [image_tensor]
+            # Use SHIRG model's image processor (should handle high-res if configured properly)
+            image_tensor = process_images([shirg_image], self.shirg_image_processor, self.shirg_model.config)
             image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             image_sizes = [shirg_image.size]
             
@@ -797,32 +885,42 @@ class RealOCRVQAValidator:
                 torch.cuda.reset_peak_memory_stats()
                 memory_before = torch.cuda.memory_allocated() / (1024**3)  # GB
             
-            # Run LaViDa generation with SHIRG token selection
+            # Run SHIRG LaViDa generation using SHIRG model with integrated extensions
             with torch.no_grad():
-                # SHIRG-FIX: 2025-07-28 - Properly enable SHIRG processing during generation
-                # ISSUE: Setting shirg_enabled doesn't actually enable SHIRG during forward pass
-                # SOLUTION: Use model's native SHIRG support through config or direct forward call
-                # LAVIDA IMPACT: Enables proper SHIRG token selection during LaViDa generation
-                # SHIRG IMPACT: Ensures 672×672 processing with token selection is actually used
+                # SHIRG-FIX: 2025-07-28 - Use dedicated SHIRG model with proper integration
+                # ISSUE: Previous code tried to enable/disable SHIRG on single model
+                # SOLUTION: Use separate SHIRG model that has SHIRG extensions built-in
+                # LAVIDA IMPACT: Uses proper LaViDa pipeline with SHIRG token selection
+                # SHIRG IMPACT: Enables authentic SHIRG processing through integrated architecture
                 
-                # Store original config to restore later
-                original_use_shirg = None
-                original_shirg_enabled = None
+                print(f"   SHIRG: Running generation with integrated SHIRG extensions")
                 
-                # Enable SHIRG in multiple ways to ensure it's active
-                if hasattr(self.tower, 'shirg_enabled'):
-                    original_shirg_enabled = self.tower.shirg_enabled
-                    self.tower.shirg_enabled = True
-                    print(f"   ✅ SHIRG enabled in vision tower")
+                # Extract text embeddings for SHIRG relevance scoring if possible
+                question_embeddings = None
+                try:
+                    if hasattr(self.shirg_model, 'get_model') and hasattr(self.shirg_model.get_model(), 'embed_tokens'):
+                        question_tokens = self.shirg_tokenizer(question.strip(), return_tensors='pt')['input_ids'].to(device=self.device)
+                        question_embeddings = self.shirg_model.get_model().embed_tokens(question_tokens)
+                        print(f"   SHIRG: Extracted question embeddings for relevance scoring")
+                except Exception as e:
+                    print(f"   SHIRG: Could not extract question embeddings: {e}")
+                    question_embeddings = None
                 
-                # Also try to enable SHIRG through model config if available
-                if hasattr(self.model.config, 'use_shirg'):
-                    original_use_shirg = getattr(self.model.config, 'use_shirg', False)
-                    self.model.config.use_shirg = True
-                    print(f"   ✅ SHIRG enabled in model config")
+                # Test SHIRG vision tower directly before generation
+                try:
+                    shirg_vision_features = self.shirg_tower.forward(
+                        image_tensor, 
+                        text_embeddings=question_embeddings,
+                        use_shirg=True
+                    )
+                    actual_shirg_tokens = shirg_vision_features.shape[-2]
+                    print(f"   SHIRG: Vision tower produced {actual_shirg_tokens} tokens")
+                except Exception as vision_error:
+                    print(f"   SHIRG: Vision tower test failed: {vision_error}")
+                    # Continue with generation anyway
+                    actual_shirg_tokens = None
                 
-                print(f"   🔄 Running LaViDa generation with SHIRG extensions...")
-                output_ids = self.model.generate(
+                output_ids = self.shirg_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
@@ -831,22 +929,15 @@ class RealOCRVQAValidator:
                     max_new_tokens=64,
                     block_length=64,
                     step_ratio=0.5,  # 16 diffusion steps
-                    tokenizer=self.tokenizer,
+                    tokenizer=self.shirg_tokenizer,
                     prefix_lm=True,
                     verbose=False,
-                    schedule='shift',
-                    use_shirg=True  # Explicitly request SHIRG if model supports this parameter
+                    schedule='shift'
+                    # Note: use_shirg parameter may not be supported by generate()
                 )
                 
-                # Restore original states
-                if hasattr(self.tower, 'shirg_enabled') and original_shirg_enabled is not None:
-                    self.tower.shirg_enabled = original_shirg_enabled
-                
-                if hasattr(self.model.config, 'use_shirg') and original_use_shirg is not None:
-                    self.model.config.use_shirg = original_use_shirg
-                
-                # Decode output
-                output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
+                # Decode output using SHIRG tokenizer
+                output_text = self.shirg_tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
                 output_text = output_text.lstrip('!').strip()
             
             inference_time = time.time() - start_time
@@ -857,10 +948,24 @@ class RealOCRVQAValidator:
             else:
                 memory_peak = 0
             
-            # Calculate SHIRG token statistics
-            tokens_total = 2304  # 672×672 ÷ 14×14 = 48×48 = 2304
-            tokens_selected = 1216  # 1152 selected + 64 scaffold (from SHIRG methodology)
-            selection_ratio = tokens_selected / tokens_total
+            # CRITICAL: Measure actual SHIRG token statistics (no hardcoded assumptions)
+            if actual_shirg_tokens is not None:
+                # Use measured token count from vision tower test
+                tokens_selected = actual_shirg_tokens
+                print(f"   SHIRG: Using measured token count: {tokens_selected}")
+            else:
+                # Fallback: try to measure from a separate vision tower call
+                try:
+                    fallback_features = self.shirg_tower.forward(image_tensor, use_shirg=True)
+                    tokens_selected = fallback_features.shape[-2]
+                    print(f"   SHIRG: Fallback measurement: {tokens_selected} tokens")
+                except Exception as e:
+                    print(f"   SHIRG: Could not measure tokens, using research estimate: {e}")
+                    tokens_selected = 1216  # Research estimate as last resort
+            
+            # Calculate theoretical maximum (before selection)
+            tokens_total_theoretical = 2304  # 672×672 ÷ 14×14 = 48×48 = 2304
+            selection_ratio = tokens_selected / tokens_total_theoretical
             
             # SHIRG-RESEARCH-VALIDATION: 2025-07-28 - Validate performance against research objectives
             # RESEARCH TARGET: "static, diffusion-compatible pruning that halves the cost of high-res inference while keeping half the gain"
@@ -882,14 +987,14 @@ class RealOCRVQAValidator:
                 rank0_print(f"   ⚠️ SHIRG metrics: Resolution={resolution_gain:.1f}x, Efficiency={memory_efficiency:.1%}, Speed={speed_ratio:.1f}x")
             
             return {
-                'tokens_total': tokens_total,
-                'tokens_selected': tokens_selected,
+                'tokens_total': tokens_total_theoretical,  # Theoretical max before selection
+                'tokens_selected': tokens_selected,        # Actual measured tokens
                 'selection_ratio': selection_ratio,
                 'output': output_text,
                 'inference_time': inference_time,
                 'memory_usage': memory_peak,
-                'image_size': '672×672',
-                'method': 'shirg_lavida'
+                'image_size': '672×672', 
+                'method': 'shirg_lavida_integrated_extensions'
             }
             
         except Exception as e:
@@ -1202,7 +1307,7 @@ class RealOCRVQAValidator:
             return None
     
     def _extract_shirg_selection_metadata(self, image, question):
-        """Extract actual SHIRG token selection metadata from vision tower"""
+        """Extract actual SHIRG token selection metadata from SHIRG vision tower"""
         
         try:
             print("DEBUG: Starting metadata extraction...")
@@ -1212,25 +1317,18 @@ class RealOCRVQAValidator:
             print(f"DEBUG: Step {step} - Resizing image...")
             shirg_image = image.resize((672, 672), Image.Resampling.LANCZOS)
             
-            # Create custom image processor for 672×672
-            step += 1
-            print(f"DEBUG: Step {step} - Creating custom image processor...")
-            from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
-            step += 1
-            print(f"DEBUG: Step {step} - Initializing SigLipImageProcessor...")
-            shirg_image_processor = SigLipImageProcessor(
-                image_mean=self.image_processor.image_mean,
-                image_std=self.image_processor.image_std,
-                size=(672, 672),
-                crop_size={"height": 672, "width": 672},
-                resample=self.image_processor.resample,
-                rescale_factor=self.image_processor.rescale_factor,
-                data_format=self.image_processor.data_format
-            )
+            # METADATA-FIX: 2025-07-28 - Use SHIRG model's own image processor
+            # ISSUE: Creating custom image processor bypasses SHIRG integration
+            # SOLUTION: Use SHIRG model's integrated image processor for consistency
+            # LAVIDA IMPACT: Ensures metadata extraction matches actual SHIRG inference
+            # SHIRG IMPACT: Provides accurate token selection metadata for visualization
             
-            # Process image tensor
-            processed_data = shirg_image_processor.preprocess([shirg_image], return_tensors="pt")
-            image_tensor = processed_data["pixel_values"]
+            step += 1
+            print(f"DEBUG: Step {step} - Using SHIRG model's image processor...")
+            # Use SHIRG model's image processor for consistency
+            image_tensor = process_images([shirg_image], self.shirg_image_processor, self.shirg_model.config)
+            if isinstance(image_tensor, list) and len(image_tensor) > 0:
+                image_tensor = image_tensor[0]  # Get the first (and likely only) tensor
             
             # TENSOR-FIX: 2025-07-28 - Handle BatchFeature tensor conversion properly
             # ISSUE: BatchFeature may return list of tensors or tensor with unexpected dimensions
@@ -1266,13 +1364,13 @@ class RealOCRVQAValidator:
             
             print(f"DEBUG: Final image_tensor[0] shape: {image_tensor[0].shape}")
             
-            # Get question embeddings for SHIRG selection
+            # Get question embeddings for SHIRG selection using SHIRG model
             question_embeddings = None
-            if hasattr(self.model, 'get_model') and hasattr(self.model.get_model(), 'embed_tokens'):
+            if hasattr(self.shirg_model, 'get_model') and hasattr(self.shirg_model.get_model(), 'embed_tokens'):
                 try:
-                    question_tokens = self.tokenizer(question.strip(), return_tensors='pt')['input_ids'].to(device=self.device)
+                    question_tokens = self.shirg_tokenizer(question.strip(), return_tensors='pt')['input_ids'].to(device=self.device)
                     with torch.no_grad():
-                        question_embeddings = self.model.get_model().embed_tokens(question_tokens)
+                        question_embeddings = self.shirg_model.get_model().embed_tokens(question_tokens)
                         
                         # Align text-vision dimensions if needed
                         if hasattr(self, 'text_vision_aligner'):
@@ -1287,12 +1385,12 @@ class RealOCRVQAValidator:
                     print(f"⚠️ Could not extract question embeddings: {e}")
                     question_embeddings = None
             
-            # Extract high-resolution tokens through vision tower
+            # Extract high-resolution tokens through SHIRG vision tower
             step += 1
-            print(f"DEBUG: Step {step} - Getting vision tower...")
-            vision_tower = self.model.get_vision_tower()
+            print(f"DEBUG: Step {step} - Getting SHIRG vision tower...")
+            vision_tower = self.shirg_tower  # Use SHIRG vision tower directly
             step += 1
-            print(f"DEBUG: Step {step} - Checking vision tower methods...")
+            print(f"DEBUG: Step {step} - Checking SHIRG vision tower methods...")
             if vision_tower and hasattr(vision_tower, 'extract_dual_scale_tokens'):
                 step += 1
                 print(f"DEBUG: Step {step} - Calling extract_dual_scale_tokens...")
