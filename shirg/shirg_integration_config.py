@@ -36,16 +36,13 @@ class SHIRGConfig:
     
     # LoRA training configuration
     enable_lora: bool = True
-    coordinate_embedding_dim: int = 128
     lora_rank_projector: int = 64
     lora_rank_siglip: int = 64
-    lora_rank_coordinate: int = 8
     lora_alpha: int = 128
     
     # LoRA target modules (as specified in research proposal)
     lora_targets_projector: List[str] = None
     lora_targets_siglip: List[str] = None
-    lora_targets_coordinate: List[str] = None
     
     # Performance optimization
     max_selection_time_ms: float = 30.0  # Target <30ms for token selection

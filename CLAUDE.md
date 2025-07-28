@@ -23,7 +23,6 @@ The vision encoder has been refactored into a modular architecture for better co
 
 - **`siglip_shirg.py`**: SHIRG research extensions containing:
   - `SigLipShirgExtensions`: Mixin class with SHIRG methods
-  - `RotaryCoordinateEmbedding`: 2D rotary position encoding
   - High-resolution token extraction (672×672 → 2304 tokens)
   - Distance-aware token selection algorithms
   - Dual-scale processing (hi-detail + lo-res scaffold)
@@ -33,7 +32,7 @@ The vision encoder has been refactored into a modular architecture for better co
   - `SigLipVisionTower`: Main class that combines base + SHIRG
   - Backward compatibility with existing LaViDa code
   - Configurable SHIRG enable/disable functionality
-  - LoRA training support for coordinate embeddings
+  - LoRA training support for token selection
   - Gradient flow management for selective training
 
 - **`original_siglip_encoder.py`**: Reference implementation (unchanged LaViDa original)
@@ -43,7 +42,7 @@ The vision encoder has been refactored into a modular architecture for better co
 - **SHIRG Mode**: 672×672 → 1216 tokens (1152 selected + 64 scaffold)
 - **Dynamic Switching**: Runtime switching between modes via `use_shirg` parameter
 - **Cache Compatibility**: SHIRG maintains LaViDa's prefix KV-cache benefits
-- **LoRA Integration**: Selective gradient flow for coordinate embedding training
+- **LoRA Integration**: Selective gradient flow for token selection training
 
 ### Usage Patterns
 ```python

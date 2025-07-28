@@ -87,7 +87,6 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
 4. Hierarchical Selection:
    - Keep all 64 scaffold tokens (global context)
    - Select top-K hi-detail tokens (K=1,152 fixed, 55% keep-rate)
-   - Add 2D rotary coordinate embeddings: (x,y,h,w) → 128-d vectors
 
 5. LoRA-Adapted Projection:
    - Process [K+64] tokens through mm_projector + LoRA
@@ -110,11 +109,10 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
 - Provides global context and spatial anchors
 - Ensures coverage of entire image region
 
-**Coordinate Embedding**:
-- Each selected token gets (x,y,width,height) coordinates
-- Mapped through 2D rotary embeddings: ℝ⁴ → ℝ¹²⁸
-- Added to token embeddings before projection
-- Preserves spatial relationships after pruning with rotary position encoding
+**Spatial Preservation**:
+- Selected tokens maintain their original positional embeddings from SigLIP
+- No additional coordinate processing required
+- Spatial relationships preserved through existing position encoding
 
 #### 3.3.2 Distance-Aware Importance Scoring
 
@@ -147,12 +145,7 @@ siglip_lora:
   rank: 128
   alpha: 256
 
-coordinate_lora:
-  targets: ["coord_rotary"]
-  rank: 16
-  alpha: 32
-
-Total trainable: ~230M parameters (2.7% of 8B model)
+Total trainable: ~220M parameters (2.6% of 8B model)
 ```
 
 **Training Configuration**:
@@ -179,49 +172,41 @@ def extract_shirg_tokens(self, pixel_values):
     scaffold = F.avg_pool2d(features.view(B, 48, 48, D), 
                            kernel_size=6, stride=6)  # [B, 64, D]
     
-    # Compute patch coordinates
-    coords = self.compute_patch_coordinates(features)  # [B, 2304, 4]
-    
-    return features, scaffold, coords
+    return features, scaffold
 ```
 
 **SHIRG Selector** (`shirg/shirg_selector.py`):
 ```python
-def select_tokens(self, features, text_features, coordinates, K=1152):
+def select_tokens(self, features, text_features, K=1152):
     # Distance-aware importance scoring
     similarity_scores = self.compute_similarity(features, text_features)
-    neighbor_distances = self.compute_neighbor_distances(coordinates)
-    center_distances = self.compute_center_distances(coordinates)
+    neighbor_distances = self.compute_neighbor_distances(features)
+    center_distances = self.compute_center_distances(features)
     
     importance_scores = (0.7 * similarity_scores - 
                         0.2 * neighbor_distances - 
                         0.1 * center_distances)
     
     # Neighbor-aware merging
-    merged_features, merged_coords = self.merge_neighbors(
-        features, coordinates, importance_scores, epsilon=0.05)
+    merged_features = self.merge_neighbors(
+        features, importance_scores, epsilon=0.05)
     
     # Top-K selection
     selected_indices = torch.topk(importance_scores, K).indices
     selected_features = merged_features[selected_indices]
-    selected_coords = merged_coords[selected_indices]
     
-    return selected_features, selected_coords
+    return selected_features
 ```
 
 **Integration Layer** (`shirg/lavida_shirg_integration.py`):
 ```python
 def forward_with_shirg(self, images, text_features):
     # Extract dual-scale tokens
-    hi_detail, scaffold, coords = self.vision_tower.extract_shirg_tokens(images)
+    hi_detail, scaffold = self.vision_tower.extract_shirg_tokens(images)
     
     # Select high-importance tokens
-    selected_tokens, selected_coords = self.shirg_selector.select_tokens(
-        hi_detail, text_features, coords, K=1152)
-    
-    # Add 2D rotary coordinate embeddings
-    coord_embeds = self.coord_rotary(selected_coords)  # LoRA layer
-    selected_tokens = selected_tokens + coord_embeds
+    selected_tokens = self.shirg_selector.select_tokens(
+        hi_detail, text_features, K=1152)
     
     # Combine with scaffold
     visual_tokens = torch.cat([scaffold, selected_tokens], dim=1)  # [B, 1216, D]
@@ -268,7 +253,7 @@ def forward_with_shirg(self, images, text_features):
 
 **Component Analysis**:
 1. **Remove lo-res scaffold**: Expected -4 F1 on spatial tasks, -1 CIDEr
-2. **Disable coordinate embedding**: Expected -3 F1, -3 EM on DocVQA  
+2. **Remove neighbor-aware merging**: Expected -2 F1, -2 EM on DocVQA  
 3. **Fixed K vs adaptive**: +3ms latency on sparse images, -2 F1 on dense charts
 4. **Distance-aware vs similarity-only**: Expected -2 CIDEr, worse spatial coherence
 5. **LoRA rank variation**: r=16/32/64 comparison for performance/training trade-offs
@@ -374,7 +359,7 @@ def forward_with_shirg(self, images, text_features):
 
 **Medium Risk**:  
 - Token selection quality degradation → **Mitigation**: Fallback to attention-based scoring
-- Coordinate embedding integration complexity → **Mitigation**: Simplified coordinate features
+- Token merging complexity → **Mitigation**: Simplified similarity-based merging
 - Performance target shortfall → **Mitigation**: Conservative +3 CIDEr target vs. ambitious +8
 
 ### 8.2 Timeline Risks

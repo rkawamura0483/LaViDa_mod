@@ -10,7 +10,7 @@ Research Implementation based on:
 - Static hierarchical token selection (3.2x resolution scaling)
 - Distance-aware importance scoring
 - Cache-compatible processing for LaViDa
-- LoRA-adapted coordinate embeddings
+- Simplified token processing without coordinate embeddings
 """
 
 import torch
@@ -24,77 +24,6 @@ from .siglip_base import SigLipVisionConfig
 from llava.utils import rank0_print
 
 
-class RotaryCoordinateEmbedding(nn.Module):
-    """
-    SHIRG: 2D Rotary Position Encoding for Coordinate Embeddings
-    
-    Implements 2D rotary embeddings for (x,y,h,w) coordinates to provide
-    better spatial inductive bias than linear projections.
-    """
-    
-    def __init__(self, embed_dim=128):
-        super().__init__()
-        self.embed_dim = embed_dim
-        # Create linear projection for (x,y,h,w) -> embed_dim
-        self.coord_proj = nn.Linear(4, embed_dim)
-        
-        # Rotary embedding components
-        half_dim = embed_dim // 2
-        self.inv_freq = 1.0 / (10000 ** (torch.arange(0, half_dim, 2).float() / half_dim))
-        
-    def forward(self, coords):
-        """
-        Args:
-            coords: [B, N, 4] containing (x, y, h, w) normalized coordinates
-        Returns:
-            rotary_embeds: [B, N, embed_dim] rotary position embeddings
-        """
-        B, N, _ = coords.shape
-        
-        # Project coordinates to embedding space
-        coord_embeds = self.coord_proj(coords)  # [B, N, embed_dim]
-        
-        # Apply rotary encoding to x,y components
-        x_pos = coords[:, :, 0:1]  # [B, N, 1]
-        y_pos = coords[:, :, 1:2]  # [B, N, 1]
-        
-        # Generate sinusoidal encodings
-        half_dim = self.embed_dim // 2
-        inv_freq = self.inv_freq.to(coords.device)
-        
-        # X-axis rotary encoding
-        # SHIRG-FIX: 2025-07-28 - Fix tensor reshape error in rotary encoding
-        # ISSUE: torch.outer creates wrong shape for batched input, causing "shape invalid for input size" error
-        # SOLUTION: Use einsum for proper batch-aware computation
-        # LAVIDA IMPACT: Maintains gradient flow for LoRA training
-        # SHIRG IMPACT: Fixes coordinate embedding generation for token selection
-        x_freqs = torch.einsum('bni,j->bnj', x_pos, inv_freq)  # [B, N, half_dim/2]
-        x_sin = torch.sin(x_freqs)
-        x_cos = torch.cos(x_freqs)
-        
-        # Y-axis rotary encoding  
-        y_freqs = torch.einsum('bni,j->bnj', y_pos, inv_freq)  # [B, N, half_dim/2]
-        y_sin = torch.sin(y_freqs)
-        y_cos = torch.cos(y_freqs)
-        
-        # Combine rotary components
-        # SHIRG-FIX: 2025-07-28 - Correct rotary embedding dimensions
-        # ISSUE: Concatenating sin/cos produces wrong dimension (half of embed_dim, not full)
-        # SOLUTION: Each rotary component is half_dim/2, so concatenation gives half_dim
-        # LAVIDA IMPACT: Ensures correct embedding dimensions for projection layers
-        # SHIRG IMPACT: Fixes coordinate embedding shape for proper token augmentation
-        rotary_x = torch.cat([x_sin, x_cos], dim=-1)  # [B, N, half_dim]
-        rotary_y = torch.cat([y_sin, y_cos], dim=-1)  # [B, N, half_dim]
-        
-        # Combine X and Y rotary embeddings to get full embed_dim
-        rotary_combined = torch.cat([rotary_x, rotary_y], dim=-1)  # [B, N, embed_dim]
-        
-        # Add rotary encoding to coordinate projection
-        rotary_embeds = coord_embeds + 0.1 * rotary_combined
-        
-        return rotary_embeds
-
-
 class SigLipShirgExtensions:
     """
     SHIRG Extensions Mixin for SigLipVisionTower
@@ -103,11 +32,6 @@ class SigLipShirgExtensions:
     selection, and cache-compatible processing.
     """
     
-    def _init_rotary_coordinate_embedding(self):
-        """
-        SHIRG: Initialize 2D rotary coordinate embedding for LoRA training
-        """
-        return RotaryCoordinateEmbedding(embed_dim=128)
     
     def forward_with_shirg(self, images, text_embeddings=None):
         """
@@ -117,7 +41,7 @@ class SigLipShirgExtensions:
         1. Dual-scale token extraction (hi-detail 2304 + lo-res scaffold 64)
         2. Distance-aware importance scoring with spatial relationships
         3. Static token selection maintaining cache compatibility
-        4. Coordinate embedding integration
+        4. Direct token combination without coordinate embeddings
         5. Cache validation for LaViDa compatibility
         
         Args:
@@ -132,20 +56,17 @@ class SigLipShirgExtensions:
             hi_detail_tokens, lo_res_scaffold = self.extract_dual_scale_tokens(images)
             
             # Step 2: Distance-aware token selection  
-            selected_tokens, selected_coords = self.distance_aware_selection(
+            selected_tokens = self.distance_aware_selection(
                 hi_detail_tokens, text_embeddings, budget=1152
             )
             
-            # Step 3: Add coordinate embeddings
-            coord_embedded_tokens = self.add_coordinate_embeddings(selected_tokens, selected_coords)
-            
-            # Step 4: Combine with lo-res scaffold
+            # Step 3: Combine with lo-res scaffold
             # SHIRG-FIX: 2025-07-28 - Ensure proper token concatenation order
             # ISSUE: Scaffold tokens should come first for proper cache compatibility
             # SOLUTION: Place scaffold tokens first, then selected hi-detail tokens
             # LAVIDA IMPACT: Maintains expected token ordering for projection layer
             # SHIRG IMPACT: Ensures 1216 total tokens (64 scaffold + 1152 selected)
-            visual_tokens = torch.cat([lo_res_scaffold, coord_embedded_tokens], dim=1)
+            visual_tokens = torch.cat([lo_res_scaffold, selected_tokens], dim=1)
             
             # Verify token count
             B, N, D = visual_tokens.shape
@@ -513,14 +434,11 @@ class SigLipShirgExtensions:
             
         Returns:
             selected_tokens: [B, 1152, D] selected high-importance tokens
-            selected_coords: [B, 1152, 4] coordinate information for selected tokens
         """
         B, N, D = hi_detail_tokens.shape
         
-        # Compute patch coordinates for distance-aware scoring
+        # Setup spatial processing parameters
         H = W = int(math.sqrt(N))  # 48×48 grid for 2304 tokens
-        patch_coords = self.compute_patch_coordinates(H, W)
-        patch_coords = patch_coords.unsqueeze(0).expand(B, -1, -1).to(hi_detail_tokens.device)
         
         # Distance-aware importance scoring
         if text_embeddings is not None and hasattr(text_embeddings, 'transpose'):
@@ -533,11 +451,14 @@ class SigLipShirgExtensions:
             # Query-agnostic scoring (better for caching)
             similarity_scores = torch.norm(hi_detail_tokens, dim=-1)  # [B, N]
         
-        # Spatial distance penalties
-        center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
-        center_distances = torch.norm(
-            patch_coords[:, :, :2] - center_coord, dim=-1
-        )  # [B, N] - already has correct batch dimension
+        # Spatial distance penalties (center bias)
+        center_distances = torch.zeros(B, N, device=hi_detail_tokens.device)
+        center_point = N // 2  # Center patch index
+        for i in range(N):
+            row, col = divmod(i, W)
+            center_row, center_col = divmod(center_point, W)
+            distance = ((row - center_row) ** 2 + (col - center_col) ** 2) ** 0.5
+            center_distances[:, i] = distance / (H * 0.7)  # Normalized distance
         
         # Simplified neighbor distances (use token variance as proxy)
         neighbor_distances = torch.var(hi_detail_tokens, dim=-1)  # [B, N]
@@ -562,12 +483,7 @@ class SigLipShirgExtensions:
             selected_indices.unsqueeze(-1).expand(-1, -1, D)
         )  # [B, K, D]
         
-        selected_coords = torch.gather(
-            patch_coords, 1,
-            selected_indices.unsqueeze(-1).expand(-1, -1, 4)
-        )  # [B, K, 4]
-        
-        return selected_tokens, selected_coords
+        return selected_tokens
 
     def ensure_coverage_8x8_fixed(self, importance_scores, H, W):
         """
@@ -698,15 +614,6 @@ class SigLipShirgExtensions:
             # Broadcast connection to all tokens
             tokens = tokens + input_connection
         
-        # Add gradient flow from coordinate embedding parameters
-        if hasattr(self, 'coord_rotary') and self.coord_rotary is not None and self.training:
-            coord_params = list(self.coord_rotary.parameters())
-            if coord_params:
-                trainable_params = [p for p in coord_params if p.requires_grad]
-                if trainable_params:
-                    # Create parameter connection for gradient flow
-                    param_connection = sum(p.sum() * 1e-9 for p in trainable_params)
-                    tokens = tokens + param_connection
         
         # SHIRG-FIX: 2025-07-28 - Add vision tower parameter connections
         # ISSUE: LoRA layers in vision tower may not receive gradients
@@ -743,14 +650,12 @@ class SigLipShirgExtensions:
             
         Returns:
             selected_tokens: [B, budget, D] selected tokens
-            selected_coords: [B, budget, 4] coordinates of selected tokens
         """
         B, N, D = hi_detail_tokens.shape
         H = W = int(math.sqrt(N))  # Assume square grid
         
-        # 1. Compute patch coordinates
-        patch_coords = self.compute_patch_coordinates(H, W)
-        patch_coords = patch_coords.unsqueeze(0).expand(B, -1, -1).to(hi_detail_tokens.device)
+        # 1. Setup spatial grid parameters
+        # No coordinate computation needed for improved SHIRG
         
         # SHIRG-FIX: 2025-07-28 - Improved semantic preservation in token selection
         # ISSUE: Low information density and poor OCR readiness scores
@@ -782,8 +687,14 @@ class SigLipShirgExtensions:
         neighbor_distances = self.compute_neighbor_distances_efficient(hi_detail_tokens, H, W)
         neighbor_distances = F.normalize(neighbor_distances, dim=-1)
         
-        center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
-        center_distances = torch.norm(patch_coords[:, :, :2] - center_coord, dim=-1)
+        # Center bias computation without coordinates
+        center_distances = torch.zeros(B, N, device=hi_detail_tokens.device)
+        center_point = N // 2
+        for i in range(N):
+            row, col = divmod(i, W)
+            center_row, center_col = divmod(center_point, W)
+            distance = ((row - center_row) ** 2 + (col - center_col) ** 2) ** 0.5
+            center_distances[:, i] = distance / (H * 0.7)
         center_distances = F.normalize(center_distances, dim=-1)
         
         # 5. Enhanced SHIRG scoring with edge preservation
@@ -798,8 +709,8 @@ class SigLipShirgExtensions:
         importance_scores = self.ensure_coverage_8x8_fixed(importance_scores, H, W)
         
         # 7. Neighbor-aware merging for better spatial coherence
-        merged_tokens, merged_coords = self.neighbor_aware_merging(
-            hi_detail_tokens, patch_coords, importance_scores, epsilon=0.05
+        merged_tokens = self.neighbor_aware_merging(
+            hi_detail_tokens, importance_scores, epsilon=0.05
         )
         
         # 8. Top-K selection with diversity
@@ -808,34 +719,8 @@ class SigLipShirgExtensions:
             merged_tokens, 1,
             selected_indices.unsqueeze(-1).expand(-1, -1, D)
         )
-        selected_coords = torch.gather(
-            merged_coords, 1,
-            selected_indices.unsqueeze(-1).expand(-1, -1, 4)
-        )
-        
-        return selected_tokens, selected_coords
+        return selected_tokens
 
-    def compute_patch_coordinates(self, H, W):
-        """
-        SHIRG: Generate normalized (x,y,h,w) coordinates for each patch
-        
-        Args:
-            H: Grid height (48 for 672×672 images)
-            W: Grid width (48 for 672×672 images)
-            
-        Returns:
-            patch_coords: [H*W, 4] normalized coordinates
-        """
-        coords = []
-        for i in range(H):
-            for j in range(W):
-                x = (j + 0.5) / W  # Normalized x coordinate [0, 1]
-                y = (i + 0.5) / H  # Normalized y coordinate [0, 1] 
-                h = 1.0 / H        # Normalized height
-                w = 1.0 / W        # Normalized width
-                coords.append([x, y, h, w])
-        
-        return torch.tensor(coords, dtype=torch.float32)
 
     def compute_neighbor_distances_efficient(self, tokens, H, W):
         """
@@ -871,19 +756,17 @@ class SigLipShirgExtensions:
         
         return neighbor_distances
 
-    def neighbor_aware_merging(self, tokens, coords, scores, epsilon=0.05):
+    def neighbor_aware_merging(self, tokens, scores, epsilon=0.05):
         """
-        SHIRG: Neighbor-aware token merging with area-weighted centroids
+        SHIRG: Neighbor-aware token merging with spatial smoothing
         
         Args:
             tokens: [B, N, D] input tokens
-            coords: [B, N, 4] coordinate information
             scores: [B, N] importance scores
             epsilon: Threshold for merging similar tokens
             
         Returns:
             merged_tokens: [B, N, D] tokens after merging
-            merged_coords: [B, N, 4] updated coordinates
         """
         # For efficiency, implement a simplified version that doesn't actually merge
         # but applies a smoothing operation based on neighbor similarities
@@ -914,38 +797,9 @@ class SigLipShirgExtensions:
         # Reshape back
         # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor for view operation
         merged_tokens = merged_spatial.reshape(B, N, D)
-        merged_coords = coords  # Coordinates remain unchanged in this simplified version
         
-        return merged_tokens, merged_coords
+        return merged_tokens
 
-    def add_coordinate_embeddings(self, selected_tokens, selected_coords):
-        """
-        SHIRG: Add coordinate embeddings to selected tokens
-        
-        Args:
-            selected_tokens: [B, K, D] selected visual tokens
-            selected_coords: [B, K, 4] coordinate information
-            
-        Returns:
-            coord_embedded_tokens: [B, K, D] tokens with coordinate embeddings added
-        """
-        if hasattr(self, 'coord_rotary') and self.coord_rotary is not None:
-            # Generate coordinate embeddings
-            coord_embeds = self.coord_rotary(selected_coords)  # [B, K, 128]
-            
-            # Project coordinate embeddings to token dimension if needed
-            D = selected_tokens.shape[-1]
-            if coord_embeds.shape[-1] != D:
-                if not hasattr(self, '_coord_proj'):
-                    self._coord_proj = nn.Linear(coord_embeds.shape[-1], D).to(selected_tokens.device)
-                coord_embeds = self._coord_proj(coord_embeds)
-            
-            # Add coordinate embeddings to tokens
-            coord_embedded_tokens = selected_tokens + 0.1 * coord_embeds
-        else:
-            coord_embedded_tokens = selected_tokens
-        
-        return coord_embedded_tokens
 
     def shirg_x_selection(self, hi_detail_tokens, text_embeddings=None, budget=1152):
         """
@@ -954,9 +808,7 @@ class SigLipShirgExtensions:
         B, N, D = hi_detail_tokens.shape
         H = W = int(math.sqrt(N))
         
-        # Compute patch coordinates  
-        patch_coords = self.compute_patch_centroids(H, W)
-        patch_coords = patch_coords.unsqueeze(0).expand(B, -1, -1).to(hi_detail_tokens.device)
+        # Setup spatial parameters (no coordinate computation needed)
         
         # Similarity scoring - handle parameter type issues
         if text_embeddings is not None and isinstance(text_embeddings, torch.Tensor) and text_embeddings.dim() >= 2:
@@ -969,11 +821,14 @@ class SigLipShirgExtensions:
             # Fallback to query-agnostic scoring
             similarity_scores = torch.norm(hi_detail_tokens, dim=-1)
         
-        # Distance computations
-        center_coord = torch.tensor([0.5, 0.5], device=hi_detail_tokens.device)
-        center_distances = torch.norm(
-            patch_coords[:, :, :2] - center_coord, dim=-1
-        )  # [B, N] - correct dimension for distance computation
+        # Distance computations using grid positions
+        center_distances = torch.zeros(B, N, device=hi_detail_tokens.device)
+        center_point = N // 2
+        for i in range(N):
+            row, col = divmod(i, W)
+            center_row, center_col = divmod(center_point, W)
+            distance = ((row - center_row) ** 2 + (col - center_col) ** 2) ** 0.5
+            center_distances[:, i] = distance / (H * 0.7)
         
         # Simplified neighbor distance using token variance
         neighbor_distances = torch.var(hi_detail_tokens, dim=-1)
@@ -998,12 +853,7 @@ class SigLipShirgExtensions:
             hi_detail_tokens, 1,
             selected_indices.unsqueeze(-1).expand(-1, -1, D)
         )
-        selected_coords = torch.gather(
-            patch_coords, 1,
-            selected_indices.unsqueeze(-1).expand(-1, -1, 4)
-        )
-        
-        return selected_tokens, selected_coords
+        return selected_tokens
 
     def compute_patch_centroids(self, H=48, W=48):
         """
@@ -1047,12 +897,9 @@ class SigLipShirgExtensions:
         hi_detail_tokens = self.extract_high_res_tokens_fixed(images)
         
         # Apply fixed token selection (K=1152)
-        selected_tokens, selected_coords = self.shirg_fixed_selection(hi_detail_tokens, text_embeddings)
+        selected_tokens = self.shirg_fixed_selection(hi_detail_tokens, text_embeddings)
         
-        # Add coordinate embeddings
-        coord_embedded_tokens = self.add_coordinate_embeddings(selected_tokens, selected_coords)
-        
-        return coord_embedded_tokens
+        return selected_tokens
     
     def shirg_token_selection(self, tokens, budget=1152, text_embeddings=None):
         """
@@ -1079,12 +926,12 @@ class SigLipShirgExtensions:
         # Use adaptive selection if budget differs from default
         if actual_budget != 1152:
             # Use distance-aware selection with custom budget
-            selected_tokens, selected_coords = self.distance_aware_selection(
+            selected_tokens = self.distance_aware_selection(
                 tokens, actual_text_embeddings, budget=actual_budget
             )
         else:
             # Use optimized fixed selection for default case
-            selected_tokens, selected_coords = self.shirg_fixed_selection(tokens, actual_text_embeddings)
+            selected_tokens = self.shirg_fixed_selection(tokens, actual_text_embeddings)
         
         # Add summary token for LaViDa compatibility
         B, K, D = selected_tokens.shape

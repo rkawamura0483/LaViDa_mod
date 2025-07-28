@@ -99,20 +99,6 @@ class SHIRGCacheManager:
             return {"status": "standard_cache", "compression": "none"}
 
 
-class CoordinateEmbedding(nn.Module):
-    """
-    SHIRG-X: Centroid coordinate embedding layer
-    
-    Embeds (x, y, h, w) coordinates into SigLIP hidden dimension (1152) for spatial awareness
-    """
-    
-    def __init__(self, input_dim=4, output_dim=1152):
-        super().__init__()
-        self.coord_linear = nn.Linear(input_dim, output_dim)
-        
-    def forward(self, coord_features):
-        """Embed (x, y, h, w) coordinates"""
-        return self.coord_linear(coord_features)
 
 
 class TextVisionAligner(nn.Module):
@@ -270,10 +256,6 @@ class LaViDaSHIRGWrapper:
             # Initialize SHIRG selector
             self.shirg_selector = create_shirg_selector(self.shirg_config)
             
-            # SHIRG-X: Initialize coordinate embedding layer
-            # Match SigLIP hidden dimension (1152) for proper token integration
-            vision_hidden_dim = 1152  # SigLIP-SO400M hidden size
-            self.coord_embedding = CoordinateEmbedding(input_dim=4, output_dim=vision_hidden_dim)
             
             # SHIRG-X-FIX: Initialize text-vision aligner for dimension compatibility
             text_hidden_dim = 4096  # LLaDA text embedding size
@@ -343,7 +325,7 @@ class LaViDaSHIRGWrapper:
     def _ensure_shirg_x_device_consistency(self):
         """
         SHIRG-X-FIX: 2025-07-28 - Centralized device/dtype consistency for all SHIRG-X components
-        ISSUE: SHIRG-X components (coord_embedding, text_vision_aligner, adaptive_k_head) may be on different devices
+        ISSUE: SHIRG-X components (text_vision_aligner, adaptive_k_head) may be on different devices
         SOLUTION: Move all components to model's device with correct dtype
         RESEARCH IMPACT: Prevents device/dtype mismatch errors during SHIRG-X forward passes
         """
@@ -353,7 +335,6 @@ class LaViDaSHIRGWrapper:
         
         # List of SHIRG-X components to synchronize
         shirg_x_components = [
-            ('coord_embedding', self.coord_embedding),
             ('text_vision_aligner', self.text_vision_aligner), 
             ('adaptive_k_head', self.adaptive_k_head)
         ]
@@ -470,7 +451,7 @@ class LaViDaSHIRGWrapper:
                         try:
                             # SHIRG-X-FIX: 2025-07-28 - Use dual-scale SHIRG-X processing
                             # ISSUE: Original SHIRG loses spatial fidelity with aggressive pruning
-                            # SOLUTION: Use SHIRG-X dual-scale architecture with coordinate embedding
+                            # SOLUTION: Use SHIRG-X dual-scale architecture without coordinate embeddings
                             # RESEARCH IMPACT: Tests SHIRG-X spatial preservation hypothesis
                             
                             shirg_mode = wrapper.shirg_config.get('mode', 'shirg-fixed')  # Default to SHIRG-Fixed
@@ -508,7 +489,7 @@ class LaViDaSHIRGWrapper:
                                     raise shirg_fixed_error
                                     
                             elif shirg_mode == 'shirg-x' and hasattr(vision_tower, 'forward_with_shirg_x'):
-                                # SHIRG-X: Dual-scale processing with coordinate embedding
+                                # SHIRG-X: Dual-scale processing
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🔍 Using SHIRG-X dual-scale processing")
                                 
@@ -557,7 +538,7 @@ class LaViDaSHIRGWrapper:
                                             print("🧹 Cleared CUDA cache before SHIRG-X processing")
                                     
                                     # Call SHIRG-X with validated parameters
-                                    dual_scale_features, coord_embeddings = vision_tower.forward_with_shirg_x(
+                                    dual_scale_features = vision_tower.forward_with_shirg_x(
                                         images=images, 
                                         text_embeddings=text_embeddings,
                                         budget=budget
@@ -574,56 +555,7 @@ class LaViDaSHIRGWrapper:
                                 
                                 if wrapper.shirg_config.get('debug', False):
                                     print(f"🎯 SHIRG-X dual-scale: {dual_scale_features.shape}")
-                                    print(f"📍 Coordinate embeddings: {coord_embeddings.shape}")
                                 
-                                # SHIRG-X-FIX: 2025-07-28 - Enhanced coordinate embedding integration with shape validation
-                                # ISSUE: Need robust shape handling for coordinate embedding
-                                # SOLUTION: Comprehensive validation and fallback handling
-                                # RESEARCH IMPACT: Ensures stable SHIRG-X spatial embedding integration
-                                
-                                if hasattr(wrapper, 'coord_embedding') and coord_embeddings is not None:
-                                    try:
-                                        budget = wrapper.shirg_config.get('budget', 768)
-                                        
-                                        # Validate coordinate embeddings shape
-                                        expected_coord_shape = (dual_scale_features.shape[0], budget, 4)
-                                        if coord_embeddings.shape != expected_coord_shape:
-                                            if wrapper.shirg_config.get('debug', False):
-                                                print(f"🔧 Reshaping coordinates: {coord_embeddings.shape} -> {expected_coord_shape}")
-                                            
-                                            # Handle shape mismatch - trim or pad as needed
-                                            B, actual_tokens, coord_dim = coord_embeddings.shape
-                                            if actual_tokens > budget:
-                                                coord_embeddings = coord_embeddings[:, :budget, :]
-                                            elif actual_tokens < budget:
-                                                # Pad with zero coordinates
-                                                padding = torch.zeros(B, budget - actual_tokens, coord_dim, 
-                                                                    device=coord_embeddings.device, dtype=coord_embeddings.dtype)
-                                                coord_embeddings = torch.cat([coord_embeddings, padding], dim=1)
-                                        
-                                        # Apply coordinate embedding layer
-                                        coord_features = wrapper.coord_embedding(coord_embeddings)  # [B, budget, 4] -> [B, budget, 1152]
-                                        
-                                        # Verify and apply embedding to hi-detail tokens
-                                        if (coord_features.shape[0] == dual_scale_features.shape[0] and 
-                                            coord_features.shape[1] <= dual_scale_features.shape[1] and
-                                            coord_features.shape[2] == dual_scale_features.shape[2]):
-                                            
-                                            actual_budget = coord_features.shape[1]
-                                            dual_scale_features[:, :actual_budget, :] += coord_features
-                                            
-                                            if wrapper.shirg_config.get('debug', False):
-                                                print(f"✅ SHIRG-X coordinate embedding integrated: {coord_features.shape}")
-                                        else:
-                                            if wrapper.shirg_config.get('debug', False):
-                                                print(f"⚠️ Final shape mismatch - skipping coordinate embedding")
-                                                print(f"   Coord features: {coord_features.shape}")
-                                                print(f"   Dual-scale tokens: {dual_scale_features.shape}")
-                                    
-                                    except Exception as coord_error:
-                                        if wrapper.shirg_config.get('debug', False):
-                                            print(f"⚠️ Coordinate embedding failed: {coord_error}")
-                                        # Continue without coordinate embedding
                                 
                                 image_features = dual_scale_features
                                 
@@ -642,7 +574,7 @@ class LaViDaSHIRGWrapper:
                                     
                                     # Apply SHIRG selection to hi-detail tokens
                                     budget = wrapper.shirg_config.get('budget', 768)
-                                    selected_hi_detail, coord_coords = vision_tower.shirg_x_selection(
+                                    selected_hi_detail = vision_tower.shirg_x_selection(
                                         hi_detail_tokens, wrapper._current_question_tokens, budget
                                     )
                                     
@@ -1065,10 +997,6 @@ class LaViDaSHIRGWrapper:
             del self.shirg_selector
             self.shirg_selector = None
             
-        # SHIRG-X-FIX: 2025-07-28 - Clean up SHIRG-X components
-        if hasattr(self, 'coord_embedding') and self.coord_embedding is not None:
-            del self.coord_embedding
-            self.coord_embedding = None
             
         if hasattr(self, 'text_vision_aligner') and self.text_vision_aligner is not None:
             del self.text_vision_aligner
@@ -1306,7 +1234,6 @@ def setup_shirg_x_lora(model, lora_config=None):
         'target_modules': [
             "mm_projector.fc1",     # First linear layer of projector
             "mm_projector.fc2",     # Second linear layer of projector
-            "coord_linear"          # NEW: Coordinate embedding layer
         ],
         'lora_dropout': 0.05,       # Low dropout for stable adaptation
         'bias': "lora",             # LoRA bias for coordinate layer
@@ -1327,7 +1254,6 @@ def setup_shirg_x_lora(model, lora_config=None):
     for name, param in model.named_parameters():
         if ("lora_" not in name and 
             "adaptive_k_head" not in name and
-            "coord_embedding" not in name and
             "text_vision_aligner" not in name):
             param.requires_grad = False
         else:
@@ -1405,7 +1331,7 @@ def prepare_shirg_x_training_data():
         "source": "EntityGrid-QA + ChartQA + DocVQA + TextVQA",
         "size": 50000,
         "format": "spatial layout-aware QA pairs",
-        "purpose": "Coordinate embedding and adaptive-K training"
+        "purpose": "Adaptive-K training for token selection"
     }
     
     # SHIRG-X training configuration
@@ -1417,7 +1343,6 @@ def prepare_shirg_x_training_data():
         "total_steps": 4750,     # 608K / 128 = 4,750 steps
         "warmup_steps": 475,     # 10% warmup
         "learning_rate": 2e-4,   # For projector LoRA
-        "coord_learning_rate": 1e-3,  # Higher LR for coordinate layer
         "weight_decay": 0.01,
         "lr_scheduler": "cosine",
         "mixed_budget_training": True,  # Train with 512, 768, 1024 budgets

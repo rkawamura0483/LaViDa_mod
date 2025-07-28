@@ -55,8 +55,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         self.vision_tower_name = vision_tower
         self.image_processor = SigLipImageProcessor()
         
-        # SHIRG: Initialize coordinate embedding for LoRA training
-        self.coord_rotary = self._init_rotary_coordinate_embedding()
         self.shirg_enabled = getattr(vision_tower_cfg, 'enable_shirg', False)
 
         if not delay_load:
@@ -94,10 +92,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32
         )
         
-        # Ensure coordinate embedding is also on the same device
-        if torch.cuda.is_available():
-            self.coord_rotary = self.coord_rotary.cuda()
-            rank0_print(f"SHIRG GPU-FIX: Moved coordinate embedding to GPU")
 
         # SHIRG: Maintain LaViDa architecture - delete last layer for 26-layer config
         del self.vision_tower.vision_model.encoder.layers[-1:]
@@ -108,14 +102,12 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG: Enable gradient flow for LoRA training on specific layers
         self.vision_tower.requires_grad_(False)
         
-        # SHIRG LoRA: Enable gradients for coordinate embedding layer
-        self.coord_rotary.requires_grad_(True)
         
         # GRADIENT-FIX: 2025-07-28 - Enable minimal gradient path for LoRA training
         # ISSUE: Validation script tests gradient flow but vision tower is completely frozen
         # SOLUTION: Enable gradients on embeddings + LoRA target layers to maintain gradient chain
         # LAVIDA IMPACT: Maintains original LaViDa behavior while enabling LoRA training capability
-        # SHIRG IMPACT: Provides gradient path for SHIRG coordinate embeddings and token selection
+        # SHIRG IMPACT: Provides gradient path for SHIRG token selection
         
         # Enable gradients for essential components to maintain gradient flow
         self._enable_lora_gradients()
@@ -162,18 +154,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 param.requires_grad_(True)
             rank0_print("SHIRG LoRA: Enabled gradients for post_layernorm")
 
-    def _init_rotary_coordinate_embedding(self):
-        """
-        Initialize rotary coordinate embedding for SHIRG LoRA training
-        
-        SHIRG-FIX: 2025-07-28 - Add missing coordinate embedding initialization
-        ISSUE: Method called in __init__ but not defined, causing AttributeError
-        SOLUTION: Create RotaryCoordinateEmbedding instance for LoRA training
-        LAVIDA IMPACT: Enables coordinate embedding for spatial token relationships
-        SHIRG IMPACT: Essential for 2D rotary position encoding in token selection
-        """
-        from .siglip_shirg import RotaryCoordinateEmbedding
-        return RotaryCoordinateEmbedding(embed_dim=128)
 
     def enable_gradients_for_testing(self):
         """
@@ -186,9 +166,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # Re-enable LoRA gradients that may have been disabled by validation script
         self._enable_lora_gradients()
         
-        # Ensure coordinate embedding has gradients
-        if hasattr(self, 'coord_rotary'):
-            self.coord_rotary.requires_grad_(True)
             
         rank0_print("GRADIENT-FIX: Re-enabled LoRA gradients for testing")
 

@@ -21,7 +21,6 @@ class LoRALayer(nn.Module):
     
     Implements LoRA as specified in SHIRG research proposal:
     - Rank-64 for projector and SigLIP attention layers
-    - Rank-8 for coordinate embedding layer
     """
     def __init__(self, original_layer: nn.Linear, rank: int = 64, alpha: int = 128, dropout: float = 0.1):
         super().__init__()
@@ -73,7 +72,6 @@ def setup_shirg_lora_modules(vision_tower, shirg_config):
     Implements Section 3.3.3 LoRA Target Modules from research proposal:
     - mm_projector.fc1, mm_projector.fc2 (rank-64)
     - blocks.0-3.attn.qkv (rank-64) 
-    - coord_linear (rank-8)
     
     Args:
         vision_tower: SigLipVisionTower instance
@@ -114,13 +112,6 @@ def setup_shirg_lora_modules(vision_tower, shirg_config):
                     
                 logger.info(f"✅ Added LoRA to SigLIP block {i} attention layers")
     
-    # 2. Coordinate embedding layer (rank-8)
-    if hasattr(vision_tower, 'coord_linear'):
-        original_coord = vision_tower.coord_linear
-        lora_coord = add_lora_to_linear_layer(original_coord, rank=shirg_config.lora_rank_coordinate)
-        vision_tower.coord_linear = lora_coord
-        lora_modules['coord_linear'] = lora_coord
-        logger.info("✅ Added LoRA to coordinate embedding layer")
     
     # 3. MM Projector layers (if accessible from vision tower)
     # Note: These are typically in the main LaViDa model, not the vision tower
@@ -168,7 +159,6 @@ def validate_lora_setup(vision_tower, lora_modules: Dict) -> bool:
         'blocks.1.attn.q_proj', 'blocks.1.attn.k_proj', 'blocks.1.attn.v_proj',
         'blocks.2.attn.q_proj', 'blocks.2.attn.k_proj', 'blocks.2.attn.v_proj',
         'blocks.3.attn.q_proj', 'blocks.3.attn.k_proj', 'blocks.3.attn.v_proj',
-        'coord_linear'
     ]
     
     for module_name in expected_modules:
@@ -187,7 +177,7 @@ def validate_lora_setup(vision_tower, lora_modules: Dict) -> bool:
     total_lora_params = sum(p.numel() for p in get_shirg_lora_parameters(lora_modules))
     expected_params = (
         4 * 3 * (64 * 1152 + 1152 * 64) +  # SigLIP attention LoRA (4 blocks × 3 projections)
-        (8 * 4 + 128 * 8)  # Coordinate embedding LoRA
+        0  # No coordinate embedding LoRA
     )
     
     if abs(total_lora_params - expected_params) > expected_params * 0.1:  # 10% tolerance
