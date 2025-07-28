@@ -59,8 +59,8 @@ class RealOCRVQAValidator:
         self.image_processor = None
         self.max_length = None
         
-        # Model configuration - using HuggingFace model directly
-        self.pretrained_path = "jacklishufan/lavida-llada-v1.0-instruct"
+        # Model configuration - using correct HuggingFace model path
+        self.pretrained_path = "KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
         self.model_name = "llava_llada"
         self.conv_template_name = "llada"
         
@@ -118,14 +118,20 @@ class RealOCRVQAValidator:
                 'enable_shirg': True  # Enable SHIRG extensions
             }
             
-            # Load LaViDa model components
+            # Load LaViDa model components with proper device handling
+            # META-TENSOR-FIX: Use proper string format for torch_dtype and device_map
+            device_map_setting = "auto" if torch.cuda.is_available() else None
+            torch_dtype_setting = "bfloat16" if torch.cuda.is_available() else "float32"
+            
+            print(f"   Loading with device_map={device_map_setting}, torch_dtype={torch_dtype_setting}")
+            
             self.tokenizer, self.model, self.image_processor, self.max_length = load_pretrained_model(
                 self.pretrained_path, 
                 None, 
                 self.model_name, 
-                device_map=f"cuda:0" if torch.cuda.is_available() else "cpu",
-                vision_kwargs=vision_kwargs,
-                torch_dtype='bfloat16'
+                device_map=device_map_setting,
+                torch_dtype=torch_dtype_setting,
+                **vision_kwargs  # Pass vision kwargs as keyword arguments
             )
             
             # Configure for inference

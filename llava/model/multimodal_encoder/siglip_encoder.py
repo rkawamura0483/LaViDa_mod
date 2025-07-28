@@ -120,14 +120,25 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     empty_model = self.vision_tower.to_empty(device=target_device)
                     # Load state dict to populate the empty tensors
                     try:
-                        from transformers import SiglipVisionModel as HF_SigLipVisionModel
-                        ref_model = HF_SigLipVisionModel.from_pretrained(self.vision_tower_name)
+                        # Load a reference model with the same class to get weights
+                        ref_model = SigLipVisionModel.from_pretrained(
+                            self.vision_tower_name,
+                            torch_dtype=torch.float32,
+                            low_cpu_mem_usage=False
+                        )
                         empty_model.load_state_dict(ref_model.state_dict())
                         self.vision_tower = empty_model.to(dtype=target_dtype)
-                    except ImportError:
-                        # Fallback if HuggingFace SigLIP not available
-                        rank0_print("HuggingFace SigLIP not available, using direct device migration")
-                        self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
+                        rank0_print("Successfully loaded with meta tensor handling")
+                    except Exception as load_error:
+                        # Fallback to CPU loading and manual migration
+                        rank0_print(f"Meta tensor loading failed: {load_error}")
+                        rank0_print("Using CPU fallback with manual state dict loading")
+                        ref_model = SigLipVisionModel.from_pretrained(
+                            self.vision_tower_name,
+                            torch_dtype=torch.float32,
+                            low_cpu_mem_usage=False
+                        )
+                        self.vision_tower = ref_model.to(device=target_device, dtype=target_dtype)
                 else:
                     # No meta tensors, use standard migration
                     self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
