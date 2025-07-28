@@ -137,6 +137,19 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
 
         self.is_loaded = True
 
+    def _init_rotary_coordinate_embedding(self):
+        """
+        Initialize rotary coordinate embedding for SHIRG LoRA training
+        
+        SHIRG-FIX: 2025-07-28 - Add missing coordinate embedding initialization
+        ISSUE: Method called in __init__ but not defined, causing AttributeError
+        SOLUTION: Create RotaryCoordinateEmbedding instance for LoRA training
+        LAVIDA IMPACT: Enables coordinate embedding for spatial token relationships
+        SHIRG IMPACT: Essential for 2D rotary position encoding in token selection
+        """
+        from .siglip_shirg import RotaryCoordinateEmbedding
+        return RotaryCoordinateEmbedding(embed_dim=128)
+
     def forward(self, images, text_embeddings=None, use_shirg=None):
         """
         Main forward pass with optional SHIRG processing
@@ -157,8 +170,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # LAVIDA IMPACT: Maintains backward compatibility while enabling LoRA training
         # SHIRG IMPACT: Enables gradient flow through token selection for training
         
-        if self.training and hasattr(images, 'requires_grad_') and not images.requires_grad:
+        # Always enable gradients for inputs when testing/training, regardless of mode
+        if isinstance(images, torch.Tensor) and not images.requires_grad:
             images = images.requires_grad_(True)
+        elif isinstance(images, list):
+            # Handle list of images
+            for i, img in enumerate(images):
+                if isinstance(img, torch.Tensor) and not img.requires_grad:
+                    images[i] = img.requires_grad_(True)
         
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
