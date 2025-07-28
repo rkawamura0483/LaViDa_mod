@@ -21,6 +21,15 @@ from io import BytesIO
 import random
 import copy
 
+# SHIRG-FIX: 2025-07-28 - Add missing rank0_print function
+# ISSUE: NameError: name 'rank0_print' is not defined on line 865
+# SOLUTION: Define rank0_print function for distributed training compatibility
+# LAVIDA IMPACT: Enables SHIRG validation to complete without crashes
+# SHIRG IMPACT: Allows proper research validation metrics to be displayed
+def rank0_print(*args, **kwargs):
+    """Print function compatible with distributed training - always prints on rank 0"""
+    print(*args, **kwargs)
+
 # Check for torchvision availability
 try:
     import torchvision.transforms as transforms
