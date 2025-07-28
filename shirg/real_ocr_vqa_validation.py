@@ -141,20 +141,53 @@ class RealOCRVQAValidator:
             self.model.eval()
             self.model.tie_weights()
             if torch.cuda.is_available():
-                # DTYPE-FIX: 2025-07-28 - Ensure vision tower also uses BFloat16
-                # ISSUE: Vision tower may load with different dtype than language model
-                # SOLUTION: Explicitly set both language model and vision tower to BFloat16
-                # LAVIDA IMPACT: Ensures consistent dtypes across all model components
-                # SHIRG IMPACT: Eliminates dtype mismatches in SHIRG token processing
+                # DTYPE-FIX: 2025-07-28 - Comprehensive dtype consistency across all model components
+                # ISSUE: Dtype mismatches between model components cause runtime errors
+                # SOLUTION: Systematically ensure all components use BFloat16 consistently
+                # LAVIDA IMPACT: Prevents dtype errors throughout LaViDa inference pipeline
+                # SHIRG IMPACT: Ensures SHIRG processing is compatible with model dtypes
+                
+                # First set the language model to BFloat16
                 self.model.to(torch.bfloat16)
-                # Also ensure vision tower uses consistent dtype
+                print(f"   Language model dtype set to: {next(self.model.parameters()).dtype}")
+                
+                # CRITICAL: Ensure vision tower dtype consistency
                 if hasattr(self.model, 'get_vision_tower') and self.model.get_vision_tower() is not None:
                     vision_tower = self.model.get_vision_tower()
+                    
+                    # Set vision tower dtype consistently
                     if hasattr(vision_tower, 'vision_tower') and vision_tower.vision_tower is not None:
-                        vision_tower.vision_tower.to(torch.bfloat16)
-                        print(f"   Vision tower dtype set to: {next(vision_tower.vision_tower.parameters()).dtype}")
+                        # Convert vision tower to BFloat16
+                        vision_tower.vision_tower = vision_tower.vision_tower.to(torch.bfloat16)
+                        
+                        # Validate all vision tower parameters
+                        inconsistent_params = []
+                        for name, param in vision_tower.vision_tower.named_parameters():
+                            if param.dtype != torch.bfloat16:
+                                inconsistent_params.append((name, param.dtype))
+                        
+                        if inconsistent_params:
+                            print(f"   ⚠️ Found {len(inconsistent_params)} vision tower params with wrong dtype")
+                            # Force conversion
+                            vision_tower.vision_tower = vision_tower.vision_tower.to(torch.bfloat16)
+                            print(f"   ✅ All vision tower parameters converted to BFloat16")
+                        
+                        print(f"   Vision tower dtype confirmed: {next(vision_tower.vision_tower.parameters()).dtype}")
                     else:
                         print("   ⚠️ Vision tower not found or not loaded yet")
+                
+                # CRITICAL: Also ensure mm_projector dtype consistency
+                if hasattr(self.model, 'mm_projector') and self.model.mm_projector is not None:
+                    self.model.mm_projector = self.model.mm_projector.to(torch.bfloat16)
+                    print(f"   MM projector dtype set to: {next(self.model.mm_projector.parameters()).dtype}")
+                
+                # Final validation: Check language model dtype
+                lm_dtype = next(self.model.model.parameters()).dtype if hasattr(self.model, 'model') else None
+                if lm_dtype and lm_dtype != torch.bfloat16:
+                    print(f"   ⚠️ Language model has unexpected dtype: {lm_dtype}")
+                    if hasattr(self.model, 'model'):
+                        self.model.model = self.model.model.to(torch.bfloat16)
+                        print(f"   ✅ Language model converted to BFloat16")
             
             # Get vision tower for SHIRG token analysis
             self.tower = self.model.get_vision_tower()

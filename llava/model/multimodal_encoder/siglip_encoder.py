@@ -99,85 +99,82 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG IMPACT: Enables SHIRG extensions to work with stable SigLIP base
         
         try:
-            # Load model with explicit meta tensor handling
-            rank0_print("Loading SigLIP model with meta tensor handling...")
+            # DTYPE-FIX: 2025-07-28 - Load with consistent dtype to prevent mismatches
+            # ISSUE: Mixed dtypes between vision tower components cause runtime errors
+            # SOLUTION: Force consistent BFloat16 loading and validate all parameters
+            # LAVIDA IMPACT: Eliminates dtype mismatches throughout LaViDa pipeline
+            # SHIRG IMPACT: Ensures SHIRG token processing has consistent dtypes
+            rank0_print("Loading SigLIP model with dtype consistency enforcement...")
+            
+            # First attempt: Load with simplified parameters to avoid meta tensor issues
             self.vision_tower = SigLipVisionModel.from_pretrained(
                 self.vision_tower_name,
                 torch_dtype=target_dtype,
-                low_cpu_mem_usage=True,     # This may create meta tensors
-                device_map=None             # Load on current device first
+                low_cpu_mem_usage=False,    # Avoid meta tensors initially
+                device_map='cpu'            # Load on CPU first for dtype control
             )
+            
+            # Immediately move to target device and ensure dtype consistency
+            if target_device.type == 'cuda':
+                self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
+                rank0_print(f"✅ SigLIP loaded and moved to {target_device} with {target_dtype}")
+            
+            # CRITICAL-FIX: Validate all parameters have consistent dtype
+            inconsistent_params = []
+            for name, param in self.vision_tower.named_parameters():
+                if param.dtype != target_dtype:
+                    inconsistent_params.append((name, param.dtype))
+            
+            if inconsistent_params:
+                rank0_print(f"⚠️ Found {len(inconsistent_params)} parameters with inconsistent dtypes:")
+                for name, dtype in inconsistent_params[:5]:  # Show first 5
+                    rank0_print(f"   {name}: {dtype} (expected {target_dtype})")
+                    
+                # Force conversion of all parameters to target dtype
+                rank0_print("🔧 Converting all parameters to consistent dtype...")
+                self.vision_tower = self.vision_tower.to(dtype=target_dtype)
+                rank0_print("✅ All parameters converted to consistent dtype")
+            else:
+                rank0_print("✅ All parameters have consistent dtype")
             
             # Check if model has meta tensors and handle properly
             has_meta_tensors = any(param.is_meta for param in self.vision_tower.parameters())
             
             if has_meta_tensors:
-                rank0_print("Meta tensors detected, using to_empty() for proper migration...")
+                rank0_print("⚠️ Meta tensors still detected after CPU loading - this shouldn't happen")
+                rank0_print("Attempting meta tensor resolution...")
                 
-                # Create empty model on target device
-                empty_model = self.vision_tower.to_empty(device=target_device)
-                
-                # Load state dict from a clean model to populate the empty tensors
-                rank0_print("Loading clean state dict to populate empty model...")
+                # Force meta tensor resolution by reloading without meta tensors
                 try:
-                    # Load a clean version without meta tensors for state dict
+                    rank0_print("Loading clean model to resolve meta tensors...")
                     clean_model = SigLipVisionModel.from_pretrained(
                         self.vision_tower_name,
-                        torch_dtype=torch.float32,
-                        low_cpu_mem_usage=False,  # Force no meta tensors
+                        torch_dtype=target_dtype,
+                        low_cpu_mem_usage=False,
                         device_map='cpu'
                     )
                     
-                    # Copy state dict to empty model
-                    empty_model.load_state_dict(clean_model.state_dict(), strict=True)
+                    # Replace vision tower with clean model
+                    self.vision_tower = clean_model.to(device=target_device, dtype=target_dtype)
+                    rank0_print("✅ Meta tensors resolved with clean model reload")
                     
-                    # Convert to target dtype
-                    self.vision_tower = empty_model.to(dtype=target_dtype)
-                    
-                    rank0_print("✅ Successfully loaded SigLIP with meta tensor handling")
-                    
-                except Exception as state_dict_error:
-                    rank0_print(f"State dict loading failed: {state_dict_error}")
-                    
-                    # Final fallback: manual parameter initialization
-                    rank0_print("Using parameter-by-parameter initialization...")
-                    
-                    # Initialize empty model parameters manually
-                    from torch.nn import Parameter
-                    
-                    for name, param in empty_model.named_parameters():
-                        if param.is_meta:
-                            rank0_print(f"Initializing meta parameter: {name}")
-                            # Create new parameter with proper shape and device
-                            new_param = torch.empty(param.shape, device=target_device, dtype=target_dtype)
-                            
-                            # Use proper initialization
-                            if len(new_param.shape) > 1:
-                                torch.nn.init.xavier_uniform_(new_param)
-                            else:
-                                torch.nn.init.zeros_(new_param)
-                            
-                            # Replace meta parameter in the module hierarchy
-                            module = empty_model
-                            attr_path = name.split('.')
-                            for attr in attr_path[:-1]:
-                                module = getattr(module, attr)
-                            
-                            # Set the parameter directly
-                            setattr(module, attr_path[-1], Parameter(new_param))
-                    
-                    self.vision_tower = empty_model
-                    rank0_print("✅ SigLIP loaded with manual parameter initialization")
-                    
+                except Exception as clean_error:
+                    rank0_print(f"❌ Clean model loading failed: {clean_error}")
+                    raise RuntimeError(f"Cannot resolve meta tensors in SigLIP model: {clean_error}")
             else:
-                # No meta tensors, use standard migration
-                rank0_print("No meta tensors detected, using standard device migration...")
-                if target_device.type == 'cuda' and torch.cuda.is_available():
-                    self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
-                    rank0_print("✅ SigLIP moved to GPU successfully")
-                else:
-                    rank0_print("Keeping SigLIP model on CPU")
-                    target_dtype = torch.float32
+                rank0_print("✅ No meta tensors detected - model loaded successfully")
+            
+            # Final validation: ensure no meta tensors remain
+            final_meta_check = any(param.is_meta for param in self.vision_tower.parameters())
+            if final_meta_check:
+                raise RuntimeError("Meta tensors still present after loading - cannot proceed")
+            
+            # Final dtype consistency validation
+            final_dtype_check = all(param.dtype == target_dtype for param in self.vision_tower.parameters())
+            if not final_dtype_check:
+                rank0_print("🔧 Final dtype consistency enforcement...")
+                self.vision_tower = self.vision_tower.to(dtype=target_dtype)
+                rank0_print("✅ Final dtype consistency achieved")
                 
         except Exception as e:
             rank0_print(f"❌ SigLIP loading failed with error: {e}")

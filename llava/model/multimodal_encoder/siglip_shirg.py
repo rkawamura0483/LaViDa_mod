@@ -51,6 +51,25 @@ class SigLipShirgExtensions:
         Returns:
             visual_tokens: [B, 1216, D] selected tokens (1152 hi-detail + 64 scaffold)
         """
+        # DTYPE-FIX: 2025-07-28 - Validate input dtype consistency before processing
+        # ISSUE: Mixed dtypes between inputs and vision tower cause forward pass failures
+        # SOLUTION: Ensure all inputs match vision tower dtype before SHIRG processing
+        # LAVIDA IMPACT: Prevents dtype mismatches in SHIRG token extraction
+        # SHIRG IMPACT: Ensures stable SHIRG forward pass with consistent dtypes
+        
+        # Get vision tower dtype for consistency
+        tower_dtype = next(self.vision_tower.parameters()).dtype
+        
+        # Ensure input images match vision tower dtype
+        if isinstance(images, torch.Tensor) and images.dtype != tower_dtype:
+            rank0_print(f"DTYPE-FIX: Converting input images from {images.dtype} to {tower_dtype}")
+            images = images.to(dtype=tower_dtype)
+        elif isinstance(images, list):
+            for i, img in enumerate(images):
+                if isinstance(img, torch.Tensor) and img.dtype != tower_dtype:
+                    rank0_print(f"DTYPE-FIX: Converting input image {i} from {img.dtype} to {tower_dtype}")
+                    images[i] = img.to(dtype=tower_dtype)
+        
         try:
             # Step 1: Extract dual-scale tokens
             hi_detail_tokens, lo_res_scaffold = self.extract_dual_scale_tokens(images)
