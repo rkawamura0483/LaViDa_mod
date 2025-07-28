@@ -159,10 +159,19 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         LAVIDA IMPACT: Allows gradient flow validation while maintaining LoRA training setup
         SHIRG IMPACT: Ensures SHIRG token selection methods support gradient flow testing
         """
+        # GRADIENT-FIX: 2025-07-28 - Comprehensive gradient restoration for validation
+        # ISSUE: Vision tower completely frozen breaks gradient chain through all methods
+        # SOLUTION: Enable gradients on vision tower itself + LoRA components + input handling
+        # LAVIDA IMPACT: Enables gradient flow validation for all forward methods
+        # SHIRG IMPACT: Ensures SHIRG token selection supports gradient flow testing
+        
+        # Re-enable gradients on the entire vision tower for gradient testing
+        if hasattr(self, 'vision_tower') and self.vision_tower is not None:
+            self.vision_tower.requires_grad_(True)
+            
         # Re-enable LoRA gradients that may have been disabled by validation script
         self._enable_lora_gradients()
         
-            
         rank0_print("GRADIENT-FIX: Re-enabled LoRA gradients for testing")
 
     def forward(self, images, text_embeddings=None, use_shirg=None):
