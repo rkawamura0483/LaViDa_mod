@@ -1,200 +1,248 @@
-# SHIRG-X Implementation Modification Checklist
+# SHIRG Implementation Modification Checklist
 
 ## Overview
-This checklist tracks the implementation of SHIRG-X (dual-scale, spatially aware) modifications to the LaViDa fork. SHIRG-X preserves global spatial information while selecting high-detail tokens through distance-aware scoring and coordinate embedding.
+This checklist tracks the implementation of SHIRG (Static Hierarchical Relevance Gate) modifications to the LaViDa fork. SHIRG enables high-resolution processing (672×672, 2,304 tokens) while maintaining cache compatibility through static token selection with minimal LoRA adaptation (1.4% parameters).
 
 ---
 
-## Core SHIRG-X Components
+## Core SHIRG Components
 
 ### 1. Dual-Scale Token Extraction
 - [ ] **Modify SigLIP encoder** (`llava/model/multimodal_encoder/siglip_encoder.py`)
-  - [ ] Comment out layer removal: `# del self.vision_tower.vision_model.encoder.layers[-1:]`
-  - [ ] Add SHIRG-X configuration flags
-  - [ ] Implement `extract_shirg_x_tokens()` method
-  - [ ] Add lo-res scaffold generation (4×4 avg pooling → 144 tokens)
-  - [ ] Add patch centroid coordinate computation
-
-- [ ] **Dual-scale token output**
-  - [ ] Hi-detail tokens: 2,304 from 672² image (48×48 patches)
-  - [ ] Lo-res scaffold: 144 from 12×12 avg pooling (always kept)
-  - [ ] Coordinate features: (x, y, h, w) for each patch
+  - [ ] Add SHIRG configuration flags and methods
+  - [ ] Implement `extract_shirg_tokens()` method for 672×672 processing
+  - [ ] Add lo-res scaffold generation: 4×4 avg pooling → 144 tokens (always kept)
+  - [ ] Add hi-detail token extraction: 48×48 patches → 2,304 tokens
+  - [ ] Implement patch coordinate computation: (x,y,width,height) per token
+  - [ ] Add positional embedding interpolation: 24×24 → 48×48 for 672p inputs
 
 ### 2. Distance-Aware Token Selection
-- [ ] **Implement TopV-style scoring** (`shirg/shirg_selector.py`)
-  - [ ] Distance-aware importance: `s_i = 0.7*Sim_i - 0.2*||p_i-p_j||_2 - 0.1*||p_i-c||_2`
-  - [ ] Text-image similarity computation
-  - [ ] Distance to image center calculation
-  - [ ] Neighbor-aware scoring (simplified pairwise distance)
+- [ ] **Implement SHIRG selector** (`shirg/shirg_selector.py`)
+  - [ ] Distance-aware importance scoring: `s_i = 0.7×Sim_i - 0.2×||p_i-p_neighbors|| - 0.1×||p_i-center||`
+  - [ ] Text-image similarity computation using cosine similarity
+  - [ ] Neighbor distance calculation (8-connected adjacency, averaged)
+  - [ ] Center distance calculation (Euclidean from patch to image center)
+  - [ ] Fixed K=768 token selection (eliminate adaptive gating variance)
+  - [ ] SAINT-style coverage guarantee ensuring each 4×4 region keeps ≥1 token
 
-- [ ] **Token merge instead of drop** (ToMe-style)
-  - [ ] Identify neighboring tokens with score difference < ε = 0.05
-  - [ ] Merge tokens with area-weighted centroid preservation
+### 3. Neighbor-Aware Token Merging
+- [ ] **Implement token merging** (ToMe-style approach)
+  - [ ] Identify neighboring tokens with score difference < ε=0.05
+  - [ ] Merge tokens using area-weighted centroid preservation
   - [ ] Update coordinate information for merged tokens
+  - [ ] Maintain spatial relationships during pruning
 
-### 3. Centroid Coordinate Embedding
-- [ ] **Add coordinate embedding layer** (`lavida_shirg_integration.py`)
-  - [ ] Create `CoordinateEmbedding` class with 4→128 linear layer
-  - [ ] Add to mm_projector LoRA target modules
-  - [ ] Implement coordinate feature addition to hi-detail tokens
-  - [ ] Ensure gradient flow for LoRA training
+### 4. Coordinate Embedding Integration
+- [ ] **Add coordinate embedding layer** (`shirg/lavida_shirg_integration.py`)
+  - [ ] Create `CoordinateEmbedding` class: ℝ⁴ → ℝ¹²⁸ linear layer
+  - [ ] Integrate with LoRA training pipeline (rank-8 LoRA)
+  - [ ] Add coordinate features to selected hi-detail tokens before projection
+  - [ ] Ensure gradient flow for coordinate embedding training
 
-### 4. Instance-Adaptive Keep-Rate
-- [ ] **Implement adaptive-K gating head**
-  - [ ] 2-layer MLP: patch_entropy → hidden(32) → 3 budget options
-  - [ ] Predict optimal K ∈ {512, 768, 1024} from patch entropy
-  - [ ] Add to trainable parameters (~32k params)
-  - [ ] Implement patch entropy computation
-
-### 5. LoRA Scope Expansion
-- [ ] **Update LoRA configuration**
-  - [ ] Projector LoRA: rank=32, target `["mm_projector.fc1", "mm_projector.fc2"]`
-  - [ ] Coordinate LoRA: rank=8, target `["coord_linear"]`
-  - [ ] Total trainable: ~65M params (~0.8% of model)
-  - [ ] Training time: ~5h on 8×A100
+### 5. LoRA Adaptation Pipeline
+- [ ] **Configure minimal LoRA training**
+  - [ ] **Projector LoRA**: rank-64 on `["mm_projector.fc1", "mm_projector.fc2"]`
+  - [ ] **SigLIP LoRA**: rank-64 on `["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv"]`
+  - [ ] **Coordinate LoRA**: rank-8 on `["coord_linear"]`
+  - [ ] Total trainable: ~120M params (1.4% of 8B model)
+  - [ ] Training configuration: LR 7e-5, batch 16×8 GPUs, 2-3 epochs, <8h training time
 
 ---
 
-## Integration Points
+## Integration Architecture
 
-### 6. SHIRG-X Selection Pipeline
-- [ ] **Update `forward_with_shirg_x()` method**
-  - [ ] Extract dual-scale tokens
+### 6. SHIRG Selection Pipeline
+- [ ] **Update integration layer** (`shirg/lavida_shirg_integration.py`)
+  - [ ] Implement `forward_with_shirg()` method replacing high-res processing
+  - [ ] Extract dual-scale tokens (hi-detail + scaffold)
   - [ ] Apply distance-aware scoring to hi-detail tokens
-  - [ ] Perform neighbor merging
-  - [ ] Select top-K hi-detail tokens
-  - [ ] Combine with lo-res scaffold (K + 144 tokens)
-  - [ ] Add coordinate embeddings
+  - [ ] Perform neighbor-aware merging
+  - [ ] Select top-768 hi-detail tokens
+  - [ ] Combine with 144 scaffold tokens → total 912 tokens
+  - [ ] Add coordinate embeddings to selected tokens
+  - [ ] Process through LoRA-adapted mm_projector
 
-### 7. Modified encode_images
-- [ ] **Update integration patch** (`lavida_shirg_integration.py`)
-  - [ ] Replace `forward_with_high_res()` with `forward_with_shirg_x()`
-  - [ ] Handle dual-scale token processing
-  - [ ] Add coordinate embedding to selected tokens
-  - [ ] Maintain backward compatibility
+### 7. Modified LaViDa Pipeline
+- [ ] **Update encode_images integration**
+  - [ ] Replace existing high-res processing with SHIRG pipeline
+  - [ ] Handle dual-scale token processing seamlessly
+  - [ ] Maintain backward compatibility with 384×384 baseline
+  - [ ] Ensure static token set for prefix KV-cache compatibility
 
-### 8. Training Pipeline Updates
-- [ ] **Mixed-budget training**
-  - [ ] Train with budgets [512, 768, 1024] randomly sampled
-  - [ ] Add coordinate embedding loss component
-  - [ ] Add adaptive-K prediction loss (weight: 0.1)
-  - [ ] Separate learning rates: projector (2e-4), coord (1e-3)
-
----
-
-## Performance Targets
-
-### 9. Latency & Memory
-- [ ] **Performance benchmarks**
-  - [ ] SHIRG-X-768: 48ms for 30 steps (target)
-  - [ ] SHIRG-X-512: 46ms for 30 steps (target)
-  - [ ] Memory usage: <18GB per A100
-  - [ ] Selection overhead: <2ms (well within 30ms budget)
-
-### 10. Quality Metrics
-- [ ] **Spatial reasoning improvements**
-  - [ ] ChartQA: +8 CIDEr improvement (target)
-  - [ ] EntityGrid-QA: +12 F1 improvement (target)
-  - [ ] DocVQA: +3 EM improvement (target)
-  - [ ] Maintain baseline performance on non-spatial tasks
+### 8. Cache Optimization
+- [ ] **Integrate PrefixKV for memory efficiency**
+  - [ ] Add 16-bit KV compression for visual prefix tokens
+  - [ ] Reduce memory footprint by ~40% with <2ms overhead
+  - [ ] Visual prefix: 912 tokens → ~3GB (vs 5GB full precision)
+  - [ ] Total inference memory target: ~8.9GB (vs 20GB full high-res)
 
 ---
 
-## Implementation Order
+## Training and Evaluation
 
-### Phase 1: Core Infrastructure (Day 1)
-1. [ ] Modify SigLIP encoder for dual-scale extraction
-2. [ ] Implement distance-aware scoring algorithm
-3. [ ] Add coordinate embedding layer
-4. [ ] Update LoRA configuration
+### 9. LoRA Training Pipeline
+- [ ] **Setup mixed-resolution training**
+  - [ ] Random sampling: 384², 512², 672² images during training
+  - [ ] PEFT 0.10 integration for LoRA management
+  - [ ] Separate learning rates: LoRA (7e-5), base weights (2e-5)
+  - [ ] Cosine decay scheduler with 500 warmup steps
+  - [ ] Monitor convergence and coordinate embedding loss component
 
-### Phase 2: Integration (Day 1-2)
-5. [ ] Implement SHIRG-X selection pipeline
-6. [ ] Update encode_images integration
-7. [ ] Add adaptive-K gating head
-8. [ ] Test end-to-end pipeline
+### 10. Performance Benchmarking
+- [ ] **Target performance metrics**
+  - [ ] ChartQA CIDEr: +3.3 improvement (baseline 45.2 → 48.5)
+  - [ ] DocVQA EM: +1.8 improvement (baseline 76.3 → 78.1)
+  - [ ] EntityGrid F1: +2.2 improvement (baseline 68.1 → 70.3)
+  - [ ] Latency: 50ms for 30 steps (1.35× baseline, 0.66× full high-res)
+  - [ ] GPU memory: 8.9GB (1.17× baseline, 0.45× full high-res)
 
-### Phase 3: Training (Day 2)
-9. [ ] Setup mixed-budget training loop
-10. [ ] Launch LoRA training (5h on 8×A100)
-11. [ ] Monitor convergence and losses
-12. [ ] Validate on development sets
-
-### Phase 4: Evaluation (Day 2-3)
-13. [ ] Run ablation studies
-14. [ ] Performance profiling and optimization
-15. [ ] Generate qualitative examples
-16. [ ] Document results and create paper
+### 11. Comparison Baselines
+- [ ] **Benchmark against key comparisons**
+  - [ ] LaViDa-384 (current baseline performance)
+  - [ ] LaViDa-672 (full high-res upper bound)
+  - [ ] SAINT pruning (zero-shot token selection)
+  - [ ] HiRes-LLaVA (full fine-tuning comparison)
 
 ---
 
-## Validation Checkpoints
+## Implementation Schedule (3-Day Plan)
 
-### Technical Validation
-- [ ] **Token extraction**: Verify [B, 2304, D] hi-detail + [B, 144, D] lo-res
-- [ ] **Coordinate embedding**: Check (x,y,h,w) → 128-d projection
-- [ ] **Selection quality**: Ensure spatial diversity in selected tokens
-- [ ] **Memory efficiency**: <18GB GPU memory during inference
-- [ ] **Cache compatibility**: Static token set after step 0
+### Day 1: Core Infrastructure (8h)
+**Phase 1A: Token Selection Stabilization (4h)**
+- [ ] Replace adaptive-K gating with fixed K=768
+- [ ] Implement SAINT-style coverage guarantee for 4×4 regions
+- [ ] Fix token selector variance issues
+- [ ] Basic distance-aware scoring implementation
+
+**Phase 1B: LoRA Setup (4h)**
+- [ ] Configure rank-64 LoRA on mm_projector + SigLIP blocks 0-3
+- [ ] Setup training pipeline with PEFT 0.10
+- [ ] Launch training job: 8 GPUs, LR 7e-5, 2 epochs
+- [ ] Monitor initial convergence
+
+### Day 2: Integration and Optimization (10h)
+**Phase 2A: Technical Fixes (2h)**
+- [ ] Implement bicubic interpolation: 24×24 → 48×48 grid
+- [ ] One-line positional embedding fix for 672p compatibility
+
+**Phase 2B: Cache Integration (6h)**
+- [ ] Integrate PrefixKV for 16-bit KV compression
+- [ ] Test memory efficiency and latency impact
+- [ ] Ensure <2ms overhead target met
+- [ ] Validate cache compatibility
+
+**Phase 2C: Benchmark Setup (4h)**
+- [ ] Prepare evaluation datasets: ChartQA, DocVQA, EntityGrid
+- [ ] Setup 4-configuration comparison pipeline
+- [ ] Run initial performance sweep
+
+### Day 3: Results and Analysis (6h+)
+**Phase 3A: Results Generation (4h)**
+- [ ] Complete benchmark sweep across all configurations
+- [ ] Document ΔCIDEr, latency, memory usage metrics
+- [ ] Generate nvprof memory usage graphs
+- [ ] Create performance trade-off analysis
+
+**Phase 3B: Documentation (2h+)**
+- [ ] Compile implementation summary
+- [ ] Document key findings and limitations
+- [ ] Prepare ablation study results
+- [ ] Create final research documentation
+
+---
+
+## Technical Validation Checkpoints
+
+### Infrastructure Validation
+- [ ] **Token extraction**: Verify [B, 2304, D] hi-detail + [B, 144, D] scaffold output
+- [ ] **Coordinate embedding**: Check (x,y,h,w) → 128-d projection functionality
+- [ ] **Selection quality**: Ensure spatial diversity in selected 768 tokens
+- [ ] **Memory efficiency**: Confirm <8.9GB GPU memory during inference
+- [ ] **Cache compatibility**: Validate static token set after step 0
 
 ### Performance Validation
-- [ ] **Spatial reasoning**: Improvement on layout-aware benchmarks
-- [ ] **Speed maintenance**: <50ms latency for dual-scale processing
-- [ ] **Quality preservation**: No degradation on standard VQA tasks
-- [ ] **Adaptive budgeting**: Appropriate K selection based on image complexity
+- [ ] **Speed maintenance**: <50ms latency for 30-step diffusion with dual-scale processing
+- [ ] **Quality preservation**: No degradation on standard VQA tasks (±1% baseline)
+- [ ] **Spatial reasoning**: Measurable improvement on layout-aware benchmarks (+3-5%)
+- [ ] **Training convergence**: LoRA adaptation completes within 8h target
+
+### Integration Validation
+- [ ] **Pipeline compatibility**: SHIRG integrates seamlessly with LaViDa inference
+- [ ] **Backward compatibility**: Can fallback to 384×384 baseline without issues
+- [ ] **Error handling**: Graceful degradation when high-res processing fails
+- [ ] **Resource monitoring**: Proper GPU memory tracking and cleanup
 
 ---
 
-## Risk Mitigation
+## Risk Mitigation Strategies
 
-### Fallback Strategies
-- [ ] **LoRA convergence issues**: Reduce rank to 16 if training unstable
-- [ ] **Memory constraints**: Reduce batch size or use gradient checkpointing
-- [ ] **Selection quality**: Fall back to attention-based scoring if distance-aware fails
-- [ ] **Integration errors**: Maintain original SHIRG path as backup
+### Technical Risks
+- [ ] **LoRA convergence failure**: Backup plan to reduce rank to 32, increase LR
+- [ ] **Memory constraints**: Gradient checkpointing and batch size reduction ready
+- [ ] **Cache compatibility issues**: Extensive prefix validation test suite
+- [ ] **Selection quality degradation**: Fallback to attention-based scoring mechanism
+- [ ] **Integration complexity**: Maintain original processing path as backup
 
-### Debugging Tools
-- [ ] **Debug flags**: Enable detailed logging for each component
-- [ ] **Visualization**: Generate token selection heatmaps
-- [ ] **Profiling**: Track latency for each SHIRG-X component
-- [ ] **Memory monitoring**: GPU memory usage tracking
+### Timeline Risks
+- [ ] **Training delays**: Parallel rank-32 and rank-64 jobs for redundancy
+- [ ] **PrefixKV integration issues**: 32-bit cache fallback implementation ready
+- [ ] **Benchmark infrastructure**: Pre-validated evaluation setup and datasets
+- [ ] **Performance target shortfall**: Conservative +3 CIDEr target vs ambitious +8
 
 ---
 
 ## Success Criteria
 
 ### Must-Have (MVP)
-- [ ] ✅ Dual-scale token extraction working
-- [ ] ✅ Distance-aware selection functional
-- [ ] ✅ Coordinate embedding integrated
-- [ ] ✅ LoRA training converging
-- [ ] ✅ Spatial reasoning improvement >+5%
+- [ ] ✅ Dual-scale token extraction (2,304 hi-detail + 144 scaffold) functional
+- [ ] ✅ Distance-aware selection algorithm working with fixed K=768
+- [ ] ✅ Coordinate embedding integrated and trainable
+- [ ] ✅ LoRA training converging within 8h budget
+- [ ] ✅ Measurable spatial reasoning improvement >+3% on target benchmarks
+- [ ] ✅ Memory usage within 8.9GB target
+- [ ] ✅ Latency within 50ms target for 30-step inference
 
 ### Nice-to-Have (Full Implementation)
-- [ ] ✅ Adaptive-K working optimally
-- [ ] ✅ Token merging implemented
-- [ ] ✅ Full ablation study complete
-- [ ] ✅ Performance optimizations applied
-- [ ] ✅ Paper-ready results generated
+- [ ] ✅ Neighbor-aware token merging optimally implemented
+- [ ] ✅ PrefixKV cache compression achieving 40% memory reduction
+- [ ] ✅ Complete ablation study across all components
+- [ ] ✅ Performance optimizations reducing overhead below 2ms
+- [ ] ✅ Comprehensive comparison against HiRes-LLaVA and SAINT baselines
 
 ---
 
-## Completion Status
+## Progress Tracking
 
-**Overall Progress**: ⬜ 0% Complete
+### Overall Implementation Status
+**Current Progress**: ⬜ 0% Complete
 
-**Phase Breakdown**:
-- Phase 1 (Infrastructure): ⬜ 0/4 tasks
-- Phase 2 (Integration): ⬜ 0/4 tasks  
-- Phase 3 (Training): ⬜ 0/4 tasks
-- Phase 4 (Evaluation): ⬜ 0/4 tasks
+### Phase Breakdown
+- **Phase 1 (Infrastructure)**: ⬜ 0/8 core tasks
+- **Phase 2 (Integration)**: ⬜ 0/6 integration tasks  
+- **Phase 3 (Training)**: ⬜ 0/4 training tasks
+- **Phase 4 (Evaluation)**: ⬜ 0/4 evaluation tasks
 
-**Timeline**: 72-hour crash schedule
-- **Day 1**: Infrastructure + Integration (16 tasks)
-- **Day 2**: Training + Early Evaluation (8 tasks) 
-- **Day 3**: Final Evaluation + Paper (4 tasks)
+### Component Status
+- **Token Extraction**: ⬜ Not Started
+- **Selection Algorithm**: ⬜ Not Started
+- **LoRA Integration**: ⬜ Not Started
+- **Cache Optimization**: ⬜ Not Started
+- **Evaluation Pipeline**: ⬜ Not Started
+
+### Timeline Adherence
+- **72-hour crash schedule**: On track for intensive 3-day implementation
+- **Day 1 Target**: Complete infrastructure + launch training
+- **Day 2 Target**: Integration + optimization + initial benchmarks
+- **Day 3 Target**: Results generation + documentation + analysis
+
+### Critical Path Items
+- [ ] LoRA training launch (Day 1 boundary)
+- [ ] PrefixKV integration success (Day 2 mid-point)
+- [ ] Benchmark infrastructure validation (Day 2 evening)
+- [ ] Performance target achievement (Day 3 morning)
 
 ---
 
-*Last Updated: Initial Creation*
-*Next Milestone: Begin Phase 1 Implementation*
+**Next Milestone**: Begin Phase 1 Implementation - Token Selection Stabilization
+**Timeline**: 72-hour intensive development schedule
+**Success Metric**: +3-5 CIDEr improvement with <50ms latency and <8.9GB memory
