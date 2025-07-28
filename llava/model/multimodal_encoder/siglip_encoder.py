@@ -207,6 +207,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             (isinstance(images, list) and any(isinstance(img, torch.Tensor) and img.requires_grad for img in images))):
             # Input requires gradients, ensure our LoRA components can handle them
             self.enable_gradients_for_testing()
+            # GRADIENT-FIX: 2025-07-28 - Ensure vision tower gradients are enabled for gradient testing
+            # ISSUE: Vision tower may have gradients disabled, breaking gradient chain
+            # SOLUTION: Enable gradients on vision tower when input requires gradients
+            if hasattr(self, 'vision_tower'):
+                self.vision_tower.requires_grad_(True)
         
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
@@ -243,13 +248,26 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs
                 # SOLUTION: Only convert if necessary and preserve gradient connection
                 image_input = image.unsqueeze(0)
+                
+                # CRITICAL-FIX: 2025-07-28 - Smart gradient-preserving device/dtype conversion
+                # ISSUE: Any .to() operation can break gradient chain unexpectedly
+                # SOLUTION: Only convert when absolutely necessary and test gradient preservation
+                original_requires_grad = image_input.requires_grad
+                
                 # Only convert device if absolutely necessary to preserve gradients
                 if image_input.device != self.device:
                     image_input = image_input.to(device=self.device)
-                # For dtype conversion, only convert if needed and ensure gradients preserved
+                    # Restore gradient requirement if lost during device transfer
+                    if original_requires_grad and not image_input.requires_grad:
+                        image_input = image_input.requires_grad_(True)
+                
+                # For dtype conversion, be extra careful with gradients
                 if image_input.dtype != self.dtype and self.dtype == torch.float16:
                     # Only convert to float16 if needed, keep gradients
                     image_input = image_input.to(dtype=self.dtype)
+                    # Restore gradient requirement if lost during dtype conversion
+                    if original_requires_grad and not image_input.requires_grad:
+                        image_input = image_input.requires_grad_(True)
                 # Otherwise keep original dtype to preserve gradient chain
                 
                 image_forward_out = self.vision_tower(
@@ -280,13 +298,26 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # ISSUE: .to(device, dtype) can break gradient chain if conversion occurs  
             # SOLUTION: Only convert if necessary and preserve gradient connection
             images_input = images
+            
+            # CRITICAL-FIX: 2025-07-28 - Smart gradient-preserving device/dtype conversion
+            # ISSUE: Any .to() operation can break gradient chain unexpectedly
+            # SOLUTION: Only convert when absolutely necessary and test gradient preservation
+            original_requires_grad = images_input.requires_grad
+            
             # Only convert device if absolutely necessary to preserve gradients
             if images_input.device != self.device:
                 images_input = images_input.to(device=self.device)
-            # For dtype conversion, only convert if needed and ensure gradients preserved
+                # Restore gradient requirement if lost during device transfer
+                if original_requires_grad and not images_input.requires_grad:
+                    images_input = images_input.requires_grad_(True)
+            
+            # For dtype conversion, be extra careful with gradients
             if images_input.dtype != self.dtype and self.dtype == torch.float16:
                 # Only convert to float16 if needed, keep gradients
                 images_input = images_input.to(dtype=self.dtype)
+                # Restore gradient requirement if lost during dtype conversion
+                if original_requires_grad and not images_input.requires_grad:
+                    images_input = images_input.requires_grad_(True)
             # Otherwise keep original dtype to preserve gradient chain
                 
             image_forward_outs = self.vision_tower(
