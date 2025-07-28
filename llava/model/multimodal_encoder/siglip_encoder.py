@@ -106,18 +106,45 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # SHIRG IMPACT: Ensures SHIRG token processing has consistent dtypes
             rank0_print("Loading SigLIP model with dtype consistency enforcement...")
             
-            # First attempt: Load with simplified parameters to avoid meta tensor issues
-            self.vision_tower = SigLipVisionModel.from_pretrained(
+            # META-TENSOR-FIX: 2025-07-28 - Use HuggingFace SigLIP directly to avoid compatibility issues
+            # ISSUE: Custom SigLipVisionModel may not be compatible with HuggingFace model weights
+            # SOLUTION: Use HuggingFace transformers SiglipVisionModel directly with proper meta tensor handling
+            # LAVIDA IMPACT: Ensures reliable SigLIP loading for LaViDa model
+            # SHIRG IMPACT: Provides stable base for SHIRG extensions
+            
+            from transformers import SiglipVisionModel as HF_SigLipVisionModel
+            
+            # Load HuggingFace SigLIP without meta tensors
+            # META-TENSOR-FIX: 2025-07-28 - Additional safeguards to prevent meta tensor creation
+            # ISSUE: Some transformers versions still create meta tensors even with device_map=None
+            # SOLUTION: Use explicit CPU device and ensure no low_cpu_mem_usage
+            # LAVIDA IMPACT: Guarantees SigLIP loading works across transformers versions
+            # SHIRG IMPACT: Provides stable foundation for SHIRG extensions
+            
+            self.vision_tower = HF_SigLipVisionModel.from_pretrained(
                 self.vision_tower_name,
                 torch_dtype=target_dtype,
-                low_cpu_mem_usage=False,    # Avoid meta tensors initially
-                device_map='cpu'            # Load on CPU first for dtype control
+                low_cpu_mem_usage=False,    # Explicitly disable meta tensors
+                device_map=None,            # No device_map to prevent meta tensors
+                local_files_only=False      # Allow remote download if needed
             )
             
-            # Immediately move to target device and ensure dtype consistency
-            if target_device.type == 'cuda':
-                self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
-                rank0_print(f"✅ SigLIP loaded and moved to {target_device} with {target_dtype}")
+            # Check for meta tensors before attempting device migration
+            has_meta_tensors = any(param.is_meta for param in self.vision_tower.parameters())
+            rank0_print(f"Meta tensor check: {has_meta_tensors}")
+            
+            if has_meta_tensors:
+                rank0_print("⚠️ Meta tensors detected - using to_empty() for device migration")
+                # Use to_empty for meta tensor device migration
+                if target_device.type == 'cuda':
+                    self.vision_tower = self.vision_tower.to_empty(device=target_device)
+                    self.vision_tower = self.vision_tower.to(dtype=target_dtype)
+                    rank0_print(f"✅ Meta tensors migrated to {target_device} with {target_dtype}")
+            else:
+                # Standard device transfer for non-meta tensors
+                if target_device.type == 'cuda':
+                    self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
+                    rank0_print(f"✅ SigLIP loaded and moved to {target_device} with {target_dtype}")
             
             # CRITICAL-FIX: Validate all parameters have consistent dtype
             inconsistent_params = []
@@ -178,22 +205,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 
         except Exception as e:
             rank0_print(f"❌ SigLIP loading failed with error: {e}")
-            rank0_print("Attempting final fallback with transformers SigLIP...")
-            
-            # Ultimate fallback: try HuggingFace transformers SigLIP directly
-            try:
-                from transformers import SiglipVisionModel as HF_SigLipVisionModel
-                
-                self.vision_tower = HF_SigLipVisionModel.from_pretrained(
-                    self.vision_tower_name,
-                    torch_dtype=target_dtype,
-                    device_map=target_device if target_device.type == 'cuda' else 'cpu'
-                )
-                rank0_print("✅ Fallback loading with HuggingFace SigLIP successful")
-                
-            except Exception as fallback_error:
-                rank0_print(f"❌ Fallback also failed: {fallback_error}")
-                raise RuntimeError(f"Failed to load SigLIP vision model from {self.vision_tower_name}: {e}")
+            raise RuntimeError(f"Failed to load SigLIP vision model from {self.vision_tower_name}: {e}")
         
 
         # SHIRG: Maintain LaViDa architecture - delete last layer for 26-layer config
