@@ -2,13 +2,64 @@
 NEVER RUN CODE LOCALLY. I ONLY RUN IT IN COLAB. DO NOT TRY TO TEST LOCALLY
 
 ## Project Overview
-This repository contains a **forked and modified version of LaViDa** with **SHIRG (Static-Hierarchical Relevance Gate)** research integration. The coder has full edit access to both the LaViDa codebase and the SHIRG implementation. The LaViDa codebase is kept the same as original except for siglip_encoder. Please check original_siglip_encoder.py for original implementation.
+This repository contains a **forked and modified version of LaViDa** with **SHIRG (Static-Hierarchical Relevance Gate)** research integration. The coder has full edit access to both the LaViDa codebase and the SHIRG implementation. The LaViDa codebase is kept mostly the same as original except for the modularized siglip encoder architecture.
 
 ## General Rules
 - **Primary Research Focus**: Read `shirg/SHIRG_RESEARCH_IDEA.md` to understand the SHIRG research objective
 - **LaViDa Understanding**: Analyze how LaViDa's bidirectional diffusion-language model works, particularly the prefix KV-cache mechanism
 - **Integration Goals**: SHIRG is designed to improve LaViDa's high-resolution token selection without breaking the cache
 - **Codebase Access**: You can modify both LaViDa core code (`llava/`, `scripts/`, etc.) AND SHIRG code (`shirg/`)
+
+## SigLIP Encoder Architecture
+The vision encoder has been refactored into a modular architecture for better code organization and research extensibility:
+
+### Core Modules
+- **`siglip_base.py`**: Clean base SigLIP implementation containing:
+  - `SigLipVisionConfig`: Configuration class
+  - `SigLipImageProcessor`: Image preprocessing
+  - `SigLipVisionModel`: Core vision transformer
+  - All transformer components (attention, MLP, encoder layers)
+  - Position embedding interpolation for different resolutions
+
+- **`siglip_shirg.py`**: SHIRG research extensions containing:
+  - `SigLipShirgExtensions`: Mixin class with SHIRG methods
+  - `RotaryCoordinateEmbedding`: 2D rotary position encoding
+  - High-resolution token extraction (672×672 → 2304 tokens)
+  - Distance-aware token selection algorithms
+  - Dual-scale processing (hi-detail + lo-res scaffold)
+  - Cache-compatible static selection methods
+
+- **`siglip_encoder.py`**: Integration layer containing:
+  - `SigLipVisionTower`: Main class that combines base + SHIRG
+  - Backward compatibility with existing LaViDa code
+  - Configurable SHIRG enable/disable functionality
+  - LoRA training support for coordinate embeddings
+  - Gradient flow management for selective training
+
+- **`original_siglip_encoder.py`**: Reference implementation (unchanged LaViDa original)
+
+### Key Integration Points
+- **Standard LaViDa Mode**: 384×384 → 729 tokens (maintains original behavior)
+- **SHIRG Mode**: 672×672 → 1216 tokens (1152 selected + 64 scaffold)
+- **Dynamic Switching**: Runtime switching between modes via `use_shirg` parameter
+- **Cache Compatibility**: SHIRG maintains LaViDa's prefix KV-cache benefits
+- **LoRA Integration**: Selective gradient flow for coordinate embedding training
+
+### Usage Patterns
+```python
+# Standard LaViDa processing
+vision_tower = SigLipVisionTower(model_name, config, delay_load=False)
+tokens = vision_tower(images)  # [B, 729, D]
+
+# SHIRG high-resolution processing  
+config.enable_shirg = True
+vision_tower = SigLipVisionTower(model_name, config, delay_load=False)
+tokens = vision_tower(images, use_shirg=True)  # [B, 1216, D]
+
+# Runtime switching
+baseline_tokens = vision_tower(images, use_shirg=False)  # [B, 729, D]
+shirg_tokens = vision_tower(images, use_shirg=True)      # [B, 1216, D]
+```
 
 ## Project Setup & Environment
 - **Execution Environment**: Code runs ONLY in Google Colab with GPU, never locally
@@ -20,6 +71,11 @@ This repository contains a **forked and modified version of LaViDa** with **SHIR
 ```
 LaViDa_mod/                    # Forked LaViDa repository
 ├── llava/                     # Core LaViDa model code (EDITABLE)
+│   └── model/multimodal_encoder/     # Vision encoder components
+│       ├── siglip_base.py           # Base SigLIP implementation (clean)
+│       ├── siglip_shirg.py          # SHIRG extensions and algorithms  
+│       ├── siglip_encoder.py        # Integration layer (main interface)
+│       └── original_siglip_encoder.py # Original LaViDa implementation
 ├── scripts/                   # Training/inference scripts (EDITABLE) 
 ├── eval/                      # Evaluation framework (EDITABLE)
 ├── shirg/                     # SHIRG research implementation (EDITABLE)
@@ -62,6 +118,8 @@ LaViDa_mod/                    # Forked LaViDa repository
 ## Research Objective Adherence
 - **SHIRG Focus**: All code changes must align with SHIRG research objectives (training-free token selection for diffusion VLMs)
 - **LaViDa Integration**: Ensure SHIRG modifications don't break LaViDa's prefix KV-cache mechanism
+- **Modular Architecture**: Maintain clean separation between base SigLIP (`siglip_base.py`) and SHIRG extensions (`siglip_shirg.py`)
+- **Backward Compatibility**: The integration layer (`siglip_encoder.py`) must maintain compatibility with existing LaViDa code
 - **Error Resolution**: When fixing errors, ensure solutions maintain both LaViDa functionality and SHIRG goals
 - **Feature Scope**: Prioritize features that improve high-resolution token selection without requiring training
 - **Cache Preservation**: Any modifications must preserve LaViDa's bidirectional diffusion cache benefits
@@ -90,9 +148,15 @@ LaViDa_mod/                    # Forked LaViDa repository
 - **Docstrings**: Follow Google-style docstrings for all functions and classes
 - **Error Handling**: Implement proper exception handling with informative error messages
 - **Memory Management**: Be mindful of GPU memory constraints (40GB limit), especially for high-res token processing
-- **Code Organization**: Separate LaViDa modifications and SHIRG logic into logical modules
+- **Modular Organization**: 
+  - Keep base SigLIP functionality in `siglip_base.py` (no SHIRG imports)
+  - Place all SHIRG extensions in `siglip_shirg.py` (imports base components)
+  - Use `siglip_encoder.py` only for integration and external API
+  - Maintain `original_siglip_encoder.py` as reference implementation
 - **Integration Points**: Clearly document where SHIRG interfaces with LaViDa components
+- **Import Hygiene**: Base module should not import SHIRG, SHIRG can import base, integration imports both
 - **Backwards Compatibility**: Ensure LaViDa can still run without SHIRG if needed
+- **Mixin Pattern**: Use `SigLipShirgExtensions` as mixin to avoid complex inheritance
 
 ## GPU & Memory Optimization
 - **Memory Monitoring**: Include GPU memory tracking, especially during SHIRG token selection
