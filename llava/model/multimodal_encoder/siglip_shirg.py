@@ -1144,7 +1144,12 @@ class SigLipShirgExtensions:
         spatial_tokens = tokens.reshape(B, H, W, D).permute(0, 3, 1, 2)  # [B, D, H, W]
         
         # Compute local variance using 3×3 convolution as proxy for neighbor distance
-        kernel = torch.ones(1, 1, 3, 3, device=tokens.device) / 9.0
+        # DTYPE-FIX: 2025-07-28 - Ensure kernel dtype matches input tokens (BFloat16)
+        # ISSUE: Kernel created as Float32 but input tokens are BFloat16, causing conv2d error
+        # SOLUTION: Explicitly set kernel dtype to match input tokens dtype
+        # LAVIDA IMPACT: Maintains dtype consistency throughout SHIRG processing pipeline
+        # SHIRG IMPACT: Enables proper neighbor distance computation for token selection
+        kernel = torch.ones(1, 1, 3, 3, device=tokens.device, dtype=tokens.dtype) / 9.0
         kernel = kernel.expand(D, 1, 3, 3)
         
         # Local mean computation

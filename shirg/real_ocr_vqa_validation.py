@@ -658,22 +658,43 @@ class RealOCRVQAValidator:
                 torch.cuda.reset_peak_memory_stats()
                 memory_before = torch.cuda.memory_allocated() / (1024**3)  # GB
             
-            # Run LaViDa generation
+            # Run LaViDa generation with SHIRG explicitly disabled for baseline
             with torch.no_grad():
-                output_ids = self.model.generate(
-                    input_ids,
-                    images=image_tensor,
-                    image_sizes=image_sizes,
-                    do_sample=False,
-                    temperature=0.1,
-                    max_new_tokens=64,
-                    block_length=64,
-                    step_ratio=0.5,  # 16 diffusion steps
-                    tokenizer=self.tokenizer,
-                    prefix_lm=True,
-                    verbose=False,
-                    schedule='shift'
-                )
+                # BASELINE-FIX: 2025-07-28 - Explicitly disable SHIRG for true baseline comparison
+                # ISSUE: Global shirg_enabled=True affects baseline inference, corrupting comparison
+                # SOLUTION: Temporarily disable SHIRG during baseline inference only
+                # LAVIDA IMPACT: Ensures pure LaViDa baseline performance measurement
+                # SHIRG IMPACT: Provides accurate baseline for SHIRG performance comparison
+                
+                # Store original SHIRG state
+                original_shirg_enabled = getattr(self.tower, 'shirg_enabled', False)
+                
+                # Temporarily disable SHIRG for baseline
+                if hasattr(self.tower, 'shirg_enabled'):
+                    self.tower.shirg_enabled = False
+                    print(f"   BASELINE-FIX: Temporarily disabled SHIRG for baseline inference")
+                
+                try:
+                    output_ids = self.model.generate(
+                        input_ids,
+                        images=image_tensor,
+                        image_sizes=image_sizes,
+                        do_sample=False,
+                        temperature=0.1,
+                        max_new_tokens=64,
+                        block_length=64,
+                        step_ratio=0.5,  # 16 diffusion steps
+                        tokenizer=self.tokenizer,
+                        prefix_lm=True,
+                        verbose=False,
+                        schedule='shift',
+                        use_shirg=False  # Explicitly disable SHIRG for baseline
+                    )
+                finally:
+                    # Restore original SHIRG state
+                    if hasattr(self.tower, 'shirg_enabled'):
+                        self.tower.shirg_enabled = original_shirg_enabled
+                        print(f"   BASELINE-FIX: Restored SHIRG state to {original_shirg_enabled}")
                 
                 # Decode output
                 output_text = self.tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0]
