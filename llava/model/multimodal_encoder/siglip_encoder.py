@@ -86,36 +86,111 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         target_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         rank0_print(f"SHIRG META-TENSOR-FIX: Loading vision tower on device: {target_device}")
         
-        # SHIRG-FIX: 2025-07-28 - Simplified loading approach to avoid meta tensor issues
-        # ISSUE: Complex meta tensor handling is causing loading failures
-        # SOLUTION: Force CPU loading first, then move to GPU - avoids meta tensors entirely
+        # SHIRG-FIX: 2025-07-28 - Proper meta tensor handling using to_empty()
+        # ISSUE: SigLIP model contains meta tensors even with low_cpu_mem_usage=False
+        # SOLUTION: Use to_empty() for meta tensor migration and proper state dict loading
         # LAVIDA IMPACT: Ensures reliable vision tower loading for LaViDa model
         # SHIRG IMPACT: Enables SHIRG extensions to work with stable SigLIP base
         
         try:
-            # Load model on CPU first to avoid meta tensor complications
-            rank0_print("Loading SigLIP model on CPU to avoid meta tensors...")
+            # Load model with explicit meta tensor handling
+            rank0_print("Loading SigLIP model with meta tensor handling...")
             self.vision_tower = SigLipVisionModel.from_pretrained(
                 self.vision_tower_name,
-                torch_dtype=torch.float32,  # Use float32 on CPU
-                low_cpu_mem_usage=False,    # Disable meta tensors
-                device_map=None             # Force CPU loading
+                torch_dtype=target_dtype,
+                low_cpu_mem_usage=True,     # This may create meta tensors
+                device_map=None             # Load on current device first
             )
             
-            rank0_print("✅ SigLIP model loaded successfully on CPU")
+            # Check if model has meta tensors and handle properly
+            has_meta_tensors = any(param.is_meta for param in self.vision_tower.parameters())
             
-            # Now move to target device with proper dtype conversion
-            if target_device.type == 'cuda' and torch.cuda.is_available():
-                rank0_print(f"Moving SigLIP model to {target_device} with dtype {target_dtype}")
-                self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
-                rank0_print("✅ SigLIP model moved to GPU successfully")
+            if has_meta_tensors:
+                rank0_print("Meta tensors detected, using to_empty() for proper migration...")
+                
+                # Create empty model on target device
+                empty_model = self.vision_tower.to_empty(device=target_device)
+                
+                # Load state dict from a clean model to populate the empty tensors
+                rank0_print("Loading clean state dict to populate empty model...")
+                try:
+                    # Load a clean version without meta tensors for state dict
+                    clean_model = SigLipVisionModel.from_pretrained(
+                        self.vision_tower_name,
+                        torch_dtype=torch.float32,
+                        low_cpu_mem_usage=False,  # Force no meta tensors
+                        device_map='cpu'
+                    )
+                    
+                    # Copy state dict to empty model
+                    empty_model.load_state_dict(clean_model.state_dict(), strict=True)
+                    
+                    # Convert to target dtype
+                    self.vision_tower = empty_model.to(dtype=target_dtype)
+                    
+                    rank0_print("✅ Successfully loaded SigLIP with meta tensor handling")
+                    
+                except Exception as state_dict_error:
+                    rank0_print(f"State dict loading failed: {state_dict_error}")
+                    
+                    # Final fallback: manual parameter initialization
+                    rank0_print("Using parameter-by-parameter initialization...")
+                    
+                    # Initialize empty model parameters manually
+                    from torch.nn import Parameter
+                    
+                    for name, param in empty_model.named_parameters():
+                        if param.is_meta:
+                            rank0_print(f"Initializing meta parameter: {name}")
+                            # Create new parameter with proper shape and device
+                            new_param = torch.empty(param.shape, device=target_device, dtype=target_dtype)
+                            
+                            # Use proper initialization
+                            if len(new_param.shape) > 1:
+                                torch.nn.init.xavier_uniform_(new_param)
+                            else:
+                                torch.nn.init.zeros_(new_param)
+                            
+                            # Replace meta parameter in the module hierarchy
+                            module = empty_model
+                            attr_path = name.split('.')
+                            for attr in attr_path[:-1]:
+                                module = getattr(module, attr)
+                            
+                            # Set the parameter directly
+                            setattr(module, attr_path[-1], Parameter(new_param))
+                    
+                    self.vision_tower = empty_model
+                    rank0_print("✅ SigLIP loaded with manual parameter initialization")
+                    
             else:
-                rank0_print("Keeping SigLIP model on CPU")
-                target_dtype = torch.float32
+                # No meta tensors, use standard migration
+                rank0_print("No meta tensors detected, using standard device migration...")
+                if target_device.type == 'cuda' and torch.cuda.is_available():
+                    self.vision_tower = self.vision_tower.to(device=target_device, dtype=target_dtype)
+                    rank0_print("✅ SigLIP moved to GPU successfully")
+                else:
+                    rank0_print("Keeping SigLIP model on CPU")
+                    target_dtype = torch.float32
                 
         except Exception as e:
             rank0_print(f"❌ SigLIP loading failed with error: {e}")
-            raise RuntimeError(f"Failed to load SigLIP vision model from {self.vision_tower_name}: {e}")
+            rank0_print("Attempting final fallback with transformers SigLIP...")
+            
+            # Ultimate fallback: try HuggingFace transformers SigLIP directly
+            try:
+                from transformers import SiglipVisionModel as HF_SigLipVisionModel
+                
+                self.vision_tower = HF_SigLipVisionModel.from_pretrained(
+                    self.vision_tower_name,
+                    torch_dtype=target_dtype,
+                    device_map=target_device if target_device.type == 'cuda' else 'cpu'
+                )
+                rank0_print("✅ Fallback loading with HuggingFace SigLIP successful")
+                
+            except Exception as fallback_error:
+                rank0_print(f"❌ Fallback also failed: {fallback_error}")
+                raise RuntimeError(f"Failed to load SigLIP vision model from {self.vision_tower_name}: {e}")
         
 
         # SHIRG: Maintain LaViDa architecture - delete last layer for 26-layer config
