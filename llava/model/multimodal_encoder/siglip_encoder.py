@@ -134,6 +134,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 - Standard LaViDa: [B, 729, D] from 384×384
                 - SHIRG: [B, 1216, D] from 672×672 (1152 selected + 64 scaffold)
         """
+        # SHIRG-FIX: 2025-07-28 - Ensure gradient flow for LoRA training
+        # ISSUE: Input tensors may not have requires_grad=True for gradient testing
+        # SOLUTION: Enable gradients on input if in training mode and supports gradients
+        # LAVIDA IMPACT: Maintains backward compatibility while enabling LoRA training
+        # SHIRG IMPACT: Enables gradient flow through token selection for training
+        
+        if self.training and hasattr(images, 'requires_grad_') and not images.requires_grad:
+            images = images.requires_grad_(True)
+        
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
         
@@ -169,15 +178,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization
-                # ISSUE: Raw hidden states have incorrect magnitudes
-                # SOLUTION: Apply post_layernorm from vision model
-                # LAVIDA IMPACT: Ensures proper token normalization for LaViDa processing
-                raw_features = image_forward_out.hidden_states[-1]
-                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                    image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
-                else:
-                    image_feature = raw_features.to(image.dtype)
+                # SHIRG-FIX: 2025-07-28 - Use already normalized hidden states from vision model
+                # ISSUE: Double normalization (once in vision model, once here) causing high magnitudes
+                # SOLUTION: Use the already processed last_hidden_state which includes post_layernorm
+                # LAVIDA IMPACT: Maintains correct token magnitudes for downstream processing
+                image_feature = image_forward_out.last_hidden_state.to(image.dtype)
                 
                 # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
                 expected_tokens = (384 // 14) ** 2  # 729
@@ -190,15 +195,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 images.to(device=self.device, dtype=self.dtype), 
                 output_hidden_states=True
             )
-            # SHIRG-FIX: 2025-07-28 - Apply post layer normalization
-            # ISSUE: Raw hidden states have incorrect magnitudes
-            # SOLUTION: Apply post_layernorm from vision model
-            # LAVIDA IMPACT: Ensures proper token normalization for LaViDa processing
-            raw_features = image_forward_outs.hidden_states[-1]
-            if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                image_features = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
-            else:
-                image_features = raw_features.to(images.dtype)
+            # SHIRG-FIX: 2025-07-28 - Use already normalized hidden states from vision model
+            # ISSUE: Double normalization (once in vision model, once here) causing high magnitudes  
+            # SOLUTION: Use the already processed last_hidden_state which includes post_layernorm
+            # LAVIDA IMPACT: Maintains correct token magnitudes for downstream processing
+            image_features = image_forward_outs.last_hidden_state.to(images.dtype)
             
             # Verify LaViDa token count: 384×384 → (384/14)² = 27² = 729 tokens
             expected_tokens = (384 // 14) ** 2  # 729

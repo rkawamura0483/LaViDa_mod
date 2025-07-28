@@ -282,16 +282,12 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
-                    # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
-                    # SOLUTION: Apply post_layernorm like the original SigLIP implementation
-                    # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                    # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model  
+                    # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10)
+                    # SOLUTION: Use last_hidden_state which already includes post_layernorm
+                    # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
                     # SHIRG IMPACT: Fixes information density and token selection quality
-                    raw_features = image_forward_out.hidden_states[-1]
-                    if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                        image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
-                    else:
-                        image_feature = raw_features.to(image.dtype)
+                    image_feature = image_forward_out.last_hidden_state.to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -300,16 +296,12 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
-                # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
-                # SOLUTION: Apply post_layernorm like the original SigLIP implementation
-                # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model
+                # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10) 
+                # SOLUTION: Use last_hidden_state which already includes post_layernorm
+                # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
                 # SHIRG IMPACT: Fixes information density and token selection quality
-                raw_features = image_forward_outs.hidden_states[-1]
-                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                    hi_detail_tokens = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
-                else:
-                    hi_detail_tokens = raw_features.to(images.dtype)
+                hi_detail_tokens = image_forward_outs.last_hidden_state.to(images.dtype)
         
         # Validate token dimensions
         if len(hi_detail_tokens.shape) == 3:
@@ -440,16 +432,12 @@ class SigLipShirgExtensions:
                         image.to(device=self.device, dtype=self.dtype).unsqueeze(0), 
                         output_hidden_states=True
                     )
-                    # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
-                    # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
-                    # SOLUTION: Apply post_layernorm like the original SigLIP implementation
-                    # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                    # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model  
+                    # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10)
+                    # SOLUTION: Use last_hidden_state which already includes post_layernorm
+                    # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
                     # SHIRG IMPACT: Fixes information density and token selection quality
-                    raw_features = image_forward_out.hidden_states[-1]
-                    if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                        image_feature = self.vision_tower.vision_model.post_layernorm(raw_features).to(image.dtype)
-                    else:
-                        image_feature = raw_features.to(image.dtype)
+                    image_feature = image_forward_out.last_hidden_state.to(image.dtype)
                     hi_detail_features.append(image_feature)
                 hi_detail_tokens = torch.cat(hi_detail_features, dim=0)
             else:
@@ -457,16 +445,12 @@ class SigLipShirgExtensions:
                     images.to(device=self.device, dtype=self.dtype), 
                     output_hidden_states=True
                 )
-                # SHIRG-FIX: 2025-07-28 - Apply post layer normalization to fix token magnitudes
-                # ISSUE: Raw hidden states have magnitudes 60-80 instead of expected 1-10
-                # SOLUTION: Apply post_layernorm like the original SigLIP implementation
-                # LAVIDA IMPACT: Ensures tokens have proper magnitude for downstream processing
+                # SHIRG-FIX: 2025-07-28 - Use properly normalized features from vision model
+                # ISSUE: Double normalization causing high token magnitudes (60-80 instead of 1-10) 
+                # SOLUTION: Use last_hidden_state which already includes post_layernorm
+                # LAVIDA IMPACT: Maintains proper token magnitudes for downstream processing
                 # SHIRG IMPACT: Fixes information density and token selection quality
-                raw_features = image_forward_outs.hidden_states[-1]
-                if hasattr(self.vision_tower.vision_model, 'post_layernorm'):
-                    hi_detail_tokens = self.vision_tower.vision_model.post_layernorm(raw_features).to(images.dtype)
-                else:
-                    hi_detail_tokens = raw_features.to(images.dtype)
+                hi_detail_tokens = image_forward_outs.last_hidden_state.to(images.dtype)
         
         # Validate expected token count (2304 for 672×672)
         expected_tokens = (672 // 14) ** 2  # 2304
