@@ -58,12 +58,12 @@ def test_shirg_implementation():
                     shirg_output = vision_tower.shirg_token_selection(highres_output, 768)
                     logger.info(f"✅ SHIRG selection: {shirg_output.shape}")
                     
-                    # Test SHIRG forward
-                    if hasattr(vision_tower, 'forward_with_shirg'):
-                        shirg_forward = vision_tower.forward_with_shirg(test_images, 512)
-                        logger.info(f"✅ SHIRG forward: {shirg_forward.shape}")
+                    # Test SHIRG-X forward
+                    if hasattr(vision_tower, 'forward_with_shirg_x'):
+                        shirg_x_forward, coord_embeddings = vision_tower.forward_with_shirg_x(test_images, budget=512)
+                        logger.info(f"✅ SHIRG-X forward: {shirg_x_forward.shape}, coords: {coord_embeddings.shape}")
                     else:
-                        logger.warning("⚠️ forward_with_shirg method not found")
+                        logger.warning("⚠️ forward_with_shirg_x method not found")
                 else:
                     logger.warning("⚠️ shirg_token_selection method not found")
             else:

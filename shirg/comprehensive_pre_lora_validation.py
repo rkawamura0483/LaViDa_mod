@@ -327,21 +327,22 @@ class ComprehensiveValidator:
                     # Test baseline tokens
                     baseline_tokens = self.tower.forward(test_images)
                     
-                    # Test multi-view extraction
-                    highres_tokens = self.tower.get_highres_tokens_for_shirg(test_images)
+                    # Test SHIRG-X dual-scale extraction
+                    shirg_x_tokens, coord_embeddings = self.tower.forward_with_shirg_x(test_images, budget=768)
                     
-                    # Test SHIRG selection
-                    shirg_tokens = self.tower.shirg_token_selection(highres_tokens, 768)
+                    # Extract hi-detail tokens for comparison
+                    hi_detail_tokens, lo_res_scaffold = self.tower.extract_shirg_x_tokens(test_images)
                 
                 # Semantic quality checks
                 self._validate_token_semantics(test_name, {
                     "baseline": baseline_tokens,
-                    "highres": highres_tokens, 
-                    "shirg": shirg_tokens
+                    "shirg_x": shirg_x_tokens, 
+                    "hi_detail": hi_detail_tokens,
+                    "lo_res_scaffold": lo_res_scaffold
                 }, details, metrics, issues)
             
             # Check token diversity
-            diversity_score = self._compute_token_diversity(highres_tokens)
+            diversity_score = self._compute_token_diversity(hi_detail_tokens)
             metrics["token_diversity"] = diversity_score
             
             if diversity_score < 0.1:
@@ -2686,8 +2687,8 @@ class ComprehensiveValidator:
             return False
         
         required_methods = [
-            'forward_with_shirg', 'get_highres_tokens_for_shirg', 
-            'shirg_token_selection', 'compare_baseline_vs_shirg'
+            'forward_with_shirg_x', 'extract_shirg_x_tokens', 
+            'shirg_x_selection'
         ]
         
         return all(hasattr(self.tower, method) for method in required_methods)

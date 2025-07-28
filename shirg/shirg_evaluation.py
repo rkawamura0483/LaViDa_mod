@@ -110,8 +110,8 @@ class SHIRGEvaluator:
         # Test different configurations
         configs = {
             'baseline': lambda: self.vision_tower.forward(image_tensor),
-            'shirg_768': lambda: self.vision_tower.forward_with_shirg(image_tensor, 768),
-            'shirg_512': lambda: self.vision_tower.forward_with_shirg(image_tensor, 512),
+            'shirg_x_768': lambda: self.vision_tower.forward_with_shirg_x(image_tensor, budget=768)[0],
+            'shirg_x_512': lambda: self.vision_tower.forward_with_shirg_x(image_tensor, budget=512)[0],
         }
         
         for config_name, config_func in configs.items():

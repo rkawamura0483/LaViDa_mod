@@ -96,10 +96,9 @@ def validate_siglip_modifications():
         
         # Check for SHIRG methods
         shirg_methods = [
-            'forward_with_shirg',
-            'get_highres_tokens_for_shirg', 
-            'shirg_token_selection',
-            'compare_baseline_vs_shirg'
+            'forward_with_shirg_x',
+            'extract_shirg_x_tokens', 
+            'shirg_x_selection'
         ]
         
         for method in shirg_methods:
@@ -296,17 +295,17 @@ def test_shirg_integration():
             print(f"  ❌ SHIRG shape wrong: {shirg_tokens.shape}")
             return False
         
-        # Test forward_with_shirg method
-        print("  Testing forward_with_shirg method...")
+        # Test forward_with_shirg_x method
+        print("  Testing forward_with_shirg_x method...")
         with torch.no_grad():
-            shirg_features = tower.forward_with_shirg(
-                test_images, target_tokens=512
+            shirg_x_features, coord_embeddings = tower.forward_with_shirg_x(
+                test_images, budget=512
             )
         
-        if shirg_features.shape[1] == 512 + 1:  # +1 for summary token
-            print(f"  ✓ SHIRG forward: {shirg_features.shape}")
+        if shirg_x_features.shape[1] == 512 + 144:  # 512 hi-detail + 144 lo-res scaffold
+            print(f"  ✓ SHIRG-X forward: {shirg_x_features.shape}, coords: {coord_embeddings.shape}")
         else:
-            print(f"  ❌ SHIRG forward wrong: {shirg_features.shape}")
+            print(f"  ❌ SHIRG-X forward wrong: {shirg_x_features.shape}")
             return False
             
         return True
@@ -358,9 +357,9 @@ def test_memory_efficiency():
             test_images = torch.randn(batch_size, 3, 384, 384).cuda()
             
             with torch.no_grad():
-                # Test both baseline and SHIRG
+                # Test both baseline and SHIRG-X
                 baseline = tower.forward(test_images)
-                shirg = tower.forward_with_shirg(test_images, target_tokens=768)
+                shirg_x, coord_embeddings = tower.forward_with_shirg_x(test_images, budget=768)
             
             peak_memory = torch.cuda.memory_allocated() - pre_batch_memory
             print(f"  Batch {batch_size}: {peak_memory / 1e6:.0f}MB")
