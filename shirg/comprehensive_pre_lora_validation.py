@@ -34,6 +34,9 @@ warnings.filterwarnings('ignore')
 sys.path.append('./shirg/')
 sys.path.append('./llava/')
 
+# Import rank0_print from llava utils
+from llava.utils import rank0_print
+
 @dataclass
 class ValidationResult:
     """Structured validation result"""
@@ -826,7 +829,7 @@ class ComprehensiveValidator:
                 
                 with torch.enable_grad():
                     # Test with minimal target tokens to reduce memory usage
-                    shirg_output = self.tower.forward_with_shirg(small_test, 256)  # Very small target
+                    shirg_output = self.tower.forward_with_shirg(small_test)  # Use default SHIRG selection
                     
                     # GRADIENT-FIX: 2025-07-28 - Handle tuple return from forward_with_shirg
                     # ISSUE: forward_with_shirg returns (tokens, coords) tuple, not just tokens
@@ -1048,7 +1051,7 @@ class ComprehensiveValidator:
                 
                 # 2. Direct SHIRG forward with SAME target count for comparison
                 shirg_direct = self.tower.forward_with_shirg(
-                    test_images, target_tokens=768, text_embeddings=test_text_embeddings
+                    test_images, text_embeddings=test_text_embeddings
                 )
                 
                 # 3. Multi-step process with same target count
@@ -2854,7 +2857,7 @@ class ComprehensiveValidator:
             
             test_images = torch.randn(4, 3, 384, 384).cuda()
             with torch.no_grad():
-                _ = self.tower.forward_with_shirg(test_images, 768)
+                _ = self.tower.forward_with_shirg(test_images)
             
             peak_memory = torch.cuda.memory_allocated()
             usage_gb = (peak_memory - initial_memory) / 1e9
@@ -2874,7 +2877,7 @@ class ComprehensiveValidator:
             if torch.cuda.is_available():
                 test_images = test_images.cuda()
             
-            output = self.tower.forward_with_shirg(test_images, 768)
+            output = self.tower.forward_with_shirg(test_images)
             loss = output.mean()
             loss.backward()
             

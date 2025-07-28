@@ -940,7 +940,15 @@ class SigLipShirgExtensions:
             actual_text_embeddings = None
             actual_budget = 1152
             
-        selected_tokens, selected_coords = self.shirg_fixed_selection(tokens, actual_text_embeddings)
+        # Use adaptive selection if budget differs from default
+        if actual_budget != 1152:
+            # Use distance-aware selection with custom budget
+            selected_tokens, selected_coords = self.distance_aware_selection(
+                tokens, actual_text_embeddings, budget=actual_budget
+            )
+        else:
+            # Use optimized fixed selection for default case
+            selected_tokens, selected_coords = self.shirg_fixed_selection(tokens, actual_text_embeddings)
         
         # Add summary token for LaViDa compatibility
         B, K, D = selected_tokens.shape
