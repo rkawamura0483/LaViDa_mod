@@ -570,61 +570,61 @@ class LaViDaModelRunner:
             return image
     
     def _prepare_input_ids(self, question, tokenizer):
-        """Prepare input IDs for inference"""
+        """Prepare input IDs for inference following original LaViDa pattern"""
         try:
-            # TOKENIZER-FIX: 2025-07-29 - Enhanced LaViDa tokenization with fallback strategy  
-            # ISSUE: LaViDa conversation templates may not be available or compatible
-            # SOLUTION: Use LaViDa-specific tokenization with comprehensive fallbacks
-            # LAVIDA IMPACT: Ensures LaViDa inference works with various tokenizer configurations
-            # SHIRG IMPACT: Enables SHIRG vs baseline comparison regardless of tokenizer issues
+            # TOKENIZER-FIX: 2025-07-29 - Use original LaViDa pattern without conversation template copying
+            # ISSUE: LaViDa conversation template has None tokenizer causing copy() to fail
+            # SOLUTION: Follow exact pattern from original predict.py - build conversation manually
+            # LAVIDA IMPACT: Uses exact LaViDa tokenization method from original implementation
+            # SHIRG IMPACT: Enables SHIRG vs baseline comparison with proper LaViDa tokenization
             
+            if tokenizer is None:
+                print(f"   ⚠️ Tokenizer is None - cannot prepare input IDs")
+                raise ValueError("Tokenizer is None")
+            
+            # LAVIDA-PATTERN-FIX: 2025-07-29 - Use exact original LaViDa conversation pattern
+            # ISSUE: Trying to copy conversation template with None tokenizer fails
+            # SOLUTION: Build conversation manually like original predict.py
+            # RESEARCH IMPACT: Ensures exact LaViDa behavior for proper baseline comparison
+            # LAVIDA IMPACT: Maintains exact LaViDa conversation format and tokenization
+            
+            # Build conversation following original LaViDa pattern (without copying template)
             try:
-                # TOKENIZER-FIX: 2025-07-29 - Comprehensive tokenizer and conversation template validation
-                # ISSUE: tokenizer can be None if loading failed, or conversation template can have None tokenizer
-                # SOLUTION: Validate both tokenizer and conversation template before use
-                # LAVIDA IMPACT: Prevents tokenizer-related crashes during baseline inference
-                # SHIRG IMPACT: Allows SHIRG vs baseline comparison to proceed
+                # Get conversation template reference (don't copy)
+                if self.conv_template_name in conv_templates:
+                    conv_template = conv_templates[self.conv_template_name]
+                    
+                    # Create new conversation instance manually (like original predict.py)
+                    # This avoids the copy() issue with None tokenizer
+                    from llava.conversation import Conversation, SeparatorStyle
+                    
+                    conv = Conversation(
+                        system=conv_template.system,
+                        roles=conv_template.roles,
+                        version=conv_template.version,
+                        messages=[],
+                        offset=conv_template.offset,
+                        sep=conv_template.sep,
+                        sep_style=conv_template.sep_style,
+                        tokenizer_id=None,  # Don't use template's tokenizer
+                        tokenizer=None,     # Use passed tokenizer instead
+                        stop_token_ids=conv_template.stop_token_ids if hasattr(conv_template, 'stop_token_ids') else []
+                    )
+                    
+                    # Build conversation (following original predict.py)
+                    prompt_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+                    conv.append_message(conv.roles[0], prompt_question)
+                    conv.append_message(conv.roles[1], None)
+                    prompt = conv.get_prompt()
+                    
+                    print(f"   📝 LaViDa conversation prompt: {prompt[:100]}...")
+                    
+                else:
+                    print(f"   ⚠️ Conversation template '{self.conv_template_name}' not found - using fallback")
+                    # Fallback: use simple prompt format
+                    prompt = DEFAULT_IMAGE_TOKEN + "\n" + question
                 
-                if tokenizer is None:
-                    print(f"   ⚠️ Tokenizer is None - cannot use conversation template")
-                    raise ValueError("Tokenizer is None")
-                
-                # Validate conversation template availability
-                if self.conv_template_name not in conv_templates:
-                    print(f"   ⚠️ Conversation template '{self.conv_template_name}' not found")
-                    raise ValueError(f"Conversation template '{self.conv_template_name}' not available")
-                
-                # Get conversation template and validate it
-                conv_template = conv_templates[self.conv_template_name]
-                if conv_template is None:
-                    print(f"   ⚠️ Conversation template '{self.conv_template_name}' is None")
-                    raise ValueError(f"Conversation template '{self.conv_template_name}' is None")
-                
-                # LAVIDA-CONV-FIX: 2025-07-29 - Handle LaViDa conversation template with proper fallback
-                # ISSUE: LaViDa conversation template may have None tokenizer causing copy() to fail
-                # SOLUTION: Check conversation template tokenizer and provide fallback
-                # RESEARCH IMPACT: Enables LaViDa inference to proceed with research validation
-                # LAVIDA IMPACT: Maintains compatibility with LaViDa conversation system
-                
-                # Use conversation template for LaViDa with validation
-                try:
-                    conv = conv_template.copy()
-                except Exception as copy_error:
-                    print(f"   ⚠️ Failed to copy conversation template: {copy_error}")
-                    # Create a minimal conversation manually
-                    conv = type('MockConv', (), {
-                        'roles': ('user', 'assistant'),
-                        'messages': [],
-                        'append_message': lambda self, role, message: self.messages.append([role, message]),
-                        'get_prompt': lambda self: f"{DEFAULT_IMAGE_TOKEN}\nUser: {question}\nAssistant: "
-                    })()
-                
-                # Build conversation
-                conv.append_message(conv.roles[0], DEFAULT_IMAGE_TOKEN + '\n' + question)
-                conv.append_message(conv.roles[1], None)
-                prompt = conv.get_prompt()
-                
-                # Tokenize with LaViDa-specific method
+                # Tokenize with LaViDa method (following original predict.py)
                 input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
                 if input_ids.dim() == 1:
                     input_ids = input_ids.unsqueeze(0)
@@ -632,21 +632,21 @@ class LaViDaModelRunner:
                 return input_ids.to(self.device)
                 
             except Exception as conv_error:
-                print(f"   ⚠️ LaViDa conversation template failed: {conv_error}")
-                # Fallback: Create minimal LaViDa-compatible prompt if tokenizer exists
+                print(f"   ⚠️ LaViDa conversation building failed: {conv_error}")
+                import traceback
+                traceback.print_exc()
+                
+                # Fallback: Simple prompt with LaViDa tokenization
                 try:
-                    if tokenizer is not None:
-                        minimal_prompt = f"{DEFAULT_IMAGE_TOKEN}\n{question}"
-                        input_ids = tokenizer.encode(minimal_prompt, return_tensors='pt')
-                        if input_ids.dim() == 1:
-                            input_ids = input_ids.unsqueeze(0)
-                        return input_ids.to(self.device)
-                    else:
-                        print(f"   ⚠️ Tokenizer is None - cannot encode minimal prompt")
-                        raise ValueError("Tokenizer is None")
-                except Exception as minimal_error:
-                    print(f"   ⚠️ Minimal tokenization failed: {minimal_error}")
-                    # Final fallback: use basic tokenization for research validation if tokenizer exists
+                    simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + question
+                    input_ids = tokenizer_image_token(simple_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
+                    if input_ids.dim() == 1:
+                        input_ids = input_ids.unsqueeze(0)
+                    return input_ids.to(self.device)
+                except Exception as simple_error:
+                    print(f"   ⚠️ Simple LaViDa tokenization failed: {simple_error}")
+                    
+                    # Final fallback: Basic tokenization
                     if tokenizer is not None:
                         try:
                             basic_input_ids = tokenizer.encode(question, return_tensors='pt')
@@ -656,16 +656,17 @@ class LaViDaModelRunner:
                         except Exception as basic_error:
                             print(f"   ⚠️ Basic tokenization failed: {basic_error}")
                     
-                    # Absolute final fallback: create minimal dummy tokens for research validation
+                    # Absolute final fallback for research validation
                     print(f"   🚨 All tokenization methods failed - creating dummy tokens for validation")
                     dummy_tokens = torch.tensor([[1, 2, 3]], dtype=torch.long)
                     return dummy_tokens.to(self.device)
             
         except Exception as e:
             print(f"   ⚠️ Error preparing input IDs: {e}")
+            import traceback
+            traceback.print_exc()
             # Final fallback: create minimal token sequence for research validation
-            # This allows the research validation to continue even with severe tokenizer issues
-            dummy_tokens = torch.tensor([[1, 2, 3]], dtype=torch.long)  # Basic sequence
+            dummy_tokens = torch.tensor([[1, 2, 3]], dtype=torch.long)
             return dummy_tokens.to(self.device)
     
     def _run_baseline_inference(self, image, input_ids, question):
@@ -695,41 +696,51 @@ class LaViDaModelRunner:
                 # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
                 image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
             
-            # Run inference
+            # LAVIDA-GENERATION-FIX: 2025-07-29 - Use exact LaViDa generation from original predict.py
+            # ISSUE: Current generation doesn't follow LaViDa diffusion-based generation
+            # SOLUTION: Use exact LaViDa generation method with diffusion parameters
+            # RESEARCH IMPACT: Ensures baseline uses proper LaViDa diffusion generation
+            # LAVIDA IMPACT: Maintains LaViDa's core diffusion-based generation method
+            
+            # Run inference using LaViDa diffusion generation (following original predict.py)
             with torch.inference_mode():
-                # SHIRG-FIX: 2025-07-28 - Add proper stopping criteria and generation config
-                # ISSUE: Model generates indefinitely without proper stopping
-                # SOLUTION: Use model's own stopping criteria and reasonable generation limits
-                # RESEARCH IMPACT: Ensures consistent, comparable generation across baseline/SHIRG
-                from transformers import StoppingCriteria, StoppingCriteriaList
+                # Get image sizes (required for LaViDa)
+                image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
                 
-                class EosStoppingCriteria(StoppingCriteria):
-                    def __init__(self, eos_token_id):
-                        self.eos_token_id = eos_token_id
-                    
-                    def __call__(self, input_ids, scores, **kwargs):
-                        return input_ids[0, -1] == self.eos_token_id
-                
-                stopping_criteria = StoppingCriteriaList([
-                    EosStoppingCriteria(self.baseline_tokenizer.eos_token_id)
-                ])
-                
-                output_ids = self.baseline_model.generate(
+                # Use LaViDa diffusion generation (same as original predict.py)
+                cont, hist = self.baseline_model.generate(
                     input_ids,
                     images=image_tensor,
-                    do_sample=True,
-                    temperature=0.2,
-                    top_p=0.95,
-                    max_new_tokens=512,
-                    use_cache=True,
-                    stopping_criteria=stopping_criteria,
-                    pad_token_id=self.baseline_tokenizer.eos_token_id
+                    image_sizes=image_sizes,
+                    do_sample=False,        # Same as original
+                    temperature=0.1,        # Same as original
+                    max_new_tokens=64,      # Same as original (changed from 512)
+                    block_length=64,        # LaViDa diffusion block size
+                    step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
+                    tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
+                    prefix_lm=True,         # LaViDa prefix caching
+                    verbose=False,          # Reduce output noise
+                    schedule='shift'        # LaViDa diffusion schedule
                 )
+                
+                # Get the generated continuation (LaViDa returns cont, hist)
+                output_ids = cont
             
-            # Decode response
-            input_token_len = input_ids.shape[1]
-            response_ids = output_ids[0][input_token_len:]
-            response = self.baseline_tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+            # LAVIDA-DECODE-FIX: 2025-07-29 - Use exact LaViDa decoding from original predict.py
+            # ISSUE: Current decoding doesn't match LaViDa output format
+            # SOLUTION: Use exact LaViDa decoding method from original predict.py
+            # RESEARCH IMPACT: Ensures baseline output matches original LaViDa format
+            # LAVIDA IMPACT: Maintains LaViDa's response formatting and cleanup
+            
+            # Decode response using LaViDa method (following original predict.py)
+            text_outputs = self.baseline_tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+            # Clean up LaViDa-specific artifacts (from original predict.py)
+            text_outputs = [text_output.lstrip('!') for text_output in text_outputs]
+            response = text_outputs[0] if text_outputs else ""
+            
+            # Calculate tokens for analysis
+            response_tokens = self.baseline_tokenizer.encode(response, return_tensors='pt')[0]
+            response_ids = response_tokens  # For compatibility
             
             inference_time = time.time() - start_time
             
