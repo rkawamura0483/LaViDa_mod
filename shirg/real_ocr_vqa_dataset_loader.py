@@ -467,6 +467,16 @@ class OCRVQAResultAnalyzer:
         print(f"\n📊 COMBINING RESULTS")
         print("=" * 30)
         
+        # VISUALIZATION-INTEGRATION-FIX: 2025-07-29 - Create visualizations during result combination
+        # ISSUE: Visualization creation was in unused validate_single_image method, never executed
+        # SOLUTION: Integrate visualization creation into main execution flow
+        # RESEARCH IMPACT: Enables actual token selection visualization for SHIRG validation
+        # LAVIDA IMPACT: Provides visual evidence of token selection differences
+        
+        # Import model runner for visualization metadata extraction
+        from real_ocr_vqa_model_runner import LaViDaModelRunner
+        temp_model_runner = LaViDaModelRunner()
+        
         # Ensure all samples have both baseline and SHIRG results
         for sample_name in ocr_vqa_samples.keys():
             baseline_result = baseline_results.get(sample_name, {
@@ -491,6 +501,13 @@ class OCRVQAResultAnalyzer:
                 sample_data['image'], baseline_result, shirg_result, sample_data['question']
             )
             
+            # Create token selection visualization (NOW ACTUALLY EXECUTED)
+            print(f"🎨 Creating visualization for {sample_name}...")
+            viz_path = self._create_token_selection_visualization(
+                sample_name, sample_data['image'], baseline_result, shirg_result, 
+                sample_data['question'], temp_model_runner
+            )
+            
             all_results[sample_name] = {
                 'sample_data': sample_data,
                 'baseline_result': baseline_result,
@@ -499,7 +516,8 @@ class OCRVQAResultAnalyzer:
                 'comparison': self._compare_outputs(
                     baseline_result.get('response', ''),
                     shirg_result.get('response', '')
-                )
+                ),
+                'visualization_path': viz_path  # Add visualization path to results
             }
             
             print(f"✅ Combined results for {sample_name}")
