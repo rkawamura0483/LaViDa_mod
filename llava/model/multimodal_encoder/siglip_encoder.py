@@ -128,16 +128,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # LAVIDA IMPACT: Ensures reliable SigLIP loading for LaViDa model
             # SHIRG IMPACT: Provides stable base for SHIRG extensions
             
-            from transformers import SiglipVisionModel as HF_SigLipVisionModel
+            # POSITION-FIX: 2025-07-29 - Use our custom SigLipVisionModel with position embedding interpolation
+            # ISSUE: HuggingFace SiglipVisionModel doesn't support position embedding interpolation
+            # ROOT CAUSE: HF model fails with tensor size mismatch (2304 vs 729) in embeddings layer
+            # SOLUTION: Use our custom SigLipVisionModel that handles position interpolation
+            # LAVIDA IMPACT: Enables high-resolution processing without breaking LaViDa compatibility
+            # SHIRG IMPACT: Fixes the core tensor dimension mismatch in forward_with_shirg
             
-            # Load HuggingFace SigLIP without meta tensors
-            # META-TENSOR-FIX: 2025-07-28 - Additional safeguards to prevent meta tensor creation
-            # ISSUE: Some transformers versions still create meta tensors even with device_map=None
-            # SOLUTION: Use explicit CPU device and ensure no low_cpu_mem_usage
-            # LAVIDA IMPACT: Guarantees SigLIP loading works across transformers versions
-            # SHIRG IMPACT: Provides stable foundation for SHIRG extensions
-            
-            self.vision_tower = HF_SigLipVisionModel.from_pretrained(
+            # Load using our custom SigLipVisionModel with position interpolation support
+            self.vision_tower = SigLipVisionModel.from_pretrained(
                 self.vision_tower_name,
                 torch_dtype=target_dtype,
                 low_cpu_mem_usage=False,    # Explicitly disable meta tensors

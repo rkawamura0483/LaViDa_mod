@@ -159,6 +159,26 @@ class SigLipShirgExtensions:
         # LAVIDA IMPACT: Prevents SigLIP embeddings unpacking errors
         # SHIRG IMPACT: Ensures reliable high-resolution token extraction
         
+        # INPUT-FORMAT-FIX: 2025-07-29 - Handle both tensor and list inputs from LaViDa
+        # ISSUE: LaViDa passes both single tensors and lists of tensors depending on context
+        # ROOT CAUSE: extract_dual_scale_tokens was designed only for tensor inputs
+        # SOLUTION: Handle list inputs by processing first item or converting to tensor batch
+        # LAVIDA IMPACT: Maintains compatibility with LaViDa's multi-format image handling
+        # SHIRG IMPACT: Enables SHIRG processing regardless of LaViDa's input format
+        
+        if isinstance(images, list):
+            # Handle list of images from LaViDa
+            if len(images) == 0:
+                raise ValueError("Empty image list provided")
+            
+            # For SHIRG, we typically want to process a single high-resolution image
+            # If multiple images in list, use the first one (or could average/concatenate)
+            if isinstance(images[0], torch.Tensor):
+                images = images[0]  # Use first image tensor
+                rank0_print(f"INPUT-FORMAT-FIX: Using first image from list: {images.shape}")
+            else:
+                raise ValueError(f"List contains non-tensor items: {type(images[0])}")
+        
         if not hasattr(images, 'shape'):
             raise ValueError(f"Input images must be a tensor with shape attribute, got {type(images)}")
         
@@ -174,6 +194,40 @@ class SigLipShirgExtensions:
             # [C, H, W] -> [1, C, H, W]
             images = images.unsqueeze(0)
             rank0_print(f"SHIRG-DEBUG: Added batch dimension to 3D tensor: {images.shape}")
+        elif len(images.shape) == 2:
+            # 2D-TENSOR-FIX: 2025-07-29 - Handle 2D tensors by converting to proper image format
+            # ISSUE: Sometimes validation script passes 2D tensors which can't be processed as images
+            # ROOT CAUSE: Flattened or improperly formatted image data reaching SHIRG processing
+            # SOLUTION: Convert 2D tensor to proper image format or fallback gracefully
+            # LAVIDA IMPACT: Prevents crashes when receiving malformed image data
+            # SHIRG IMPACT: Provides graceful fallback for unsupported tensor formats
+            
+            H, W = images.shape
+            rank0_print(f"2D-TENSOR-FIX: Received 2D tensor with shape {images.shape}")
+            
+            # Check if this could be a valid grayscale image
+            if H == W and H in [224, 256, 384, 512, 672]:
+                # Likely a grayscale image - add channel and batch dimensions  
+                images = images.unsqueeze(0).unsqueeze(0)  # [H, W] -> [1, 1, H, W]
+                # Convert grayscale to RGB by repeating channel
+                images = images.repeat(1, 3, 1, 1)  # [1, 1, H, W] -> [1, 3, H, W]
+                rank0_print(f"2D-TENSOR-FIX: Converted grayscale to RGB format: {images.shape}")
+            else:
+                # Cannot process as image - raise informative error
+                rank0_print(f"2D-TENSOR-ERROR: Cannot process 2D tensor with dimensions {H}×{W} as image")
+                raise ValueError(f"Unsupported number of image dimensions: 2. Expected 3D [C,H,W], 4D [B,C,H,W] or 5D [B,N,C,H,W] tensor, got 2D [{H},{W}] tensor")
+        elif len(images.shape) == 1:
+            # 1D-TENSOR-FIX: 2025-07-29 - Handle 1D tensors which definitely cannot be images
+            # ISSUE: Sometimes completely flattened tensors reach SHIRG processing
+            # SOLUTION: Provide clear error message for debugging
+            rank0_print(f"1D-TENSOR-ERROR: Received completely flattened tensor: {images.shape}")
+            raise ValueError(f"Unsupported number of image dimensions: 1. Cannot process 1D tensor as image. Check image preprocessing pipeline.")
+        elif len(images.shape) > 5:
+            # HIGH-DIM-TENSOR-FIX: 2025-07-29 - Handle tensors with too many dimensions
+            # ISSUE: Sometimes validation creates tensors with excessive dimensions
+            # SOLUTION: Provide clear error message and suggest tensor reshaping
+            rank0_print(f"HIGH-DIM-TENSOR-ERROR: Received {len(images.shape)}D tensor: {images.shape}")
+            raise ValueError(f"Unsupported number of image dimensions: {len(images.shape)}. Maximum supported is 5D [B,N,C,H,W]. Check tensor preprocessing.")
         elif len(images.shape) != 4:
             raise ValueError(f"Expected 3D, 4D or 5D input tensor, got {len(images.shape)}D: {images.shape}")
         
