@@ -906,24 +906,41 @@ class LaViDaModelRunner:
             # RESEARCH IMPACT: Enables genuine high-resolution token extraction (48×48 = 2304 tokens)
             # LAVIDA IMPACT: Maintains LaViDa image processing pipeline compatibility
             
-            # Prepare image using SHIRG-specific processing (should handle 672x672)
+            # SHIRG-PROCESSING-FIX: 2025-07-29 - Direct high-resolution image processing for SHIRG
+            # ISSUE: SHIRG needs direct 672×672 processing, not LaViDa's multi-view anyres processing
+            # SOLUTION: Process image directly with SHIRG image processor configured for 672×672
+            # RESEARCH IMPACT: Enables native high-resolution token extraction as per SHIRG methodology
+            # LAVIDA IMPACT: Bypasses LaViDa's anyres processing for SHIRG-specific high-res handling
+            
             if TORCHVISION_AVAILABLE:
-                # Use SHIRG image processor (returns list like baseline)
-                image_tensor = process_images([image], self.shirg_image_processor, self.shirg_model.config)
-                # SHIRG expects same list format as baseline LaViDa
-                image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
+                # Process image directly with SHIRG's 672×672 processor
+                # CRITICAL: Use preprocess directly to avoid anyres multi-view processing
+                processed_dict = self.shirg_image_processor.preprocess([image], return_tensors="pt")
+                image_tensor = processed_dict["pixel_values"]  # Should be [1, 3, 672, 672]
+                
+                # Convert to proper format for LaViDa
+                if isinstance(image_tensor, torch.Tensor):
+                    image_tensor = image_tensor.to(dtype=torch.bfloat16, device=self.device)
+                else:
+                    raise ValueError(f"Unexpected image tensor type: {type(image_tensor)}")
+                
+                print(f"SHIRG-PROCESSING: Image tensor shape after preprocessing: {image_tensor.shape}")
             else:
                 # Fallback: manual processing for SHIRG requirements
                 # Resize to 672×672 for SHIRG high-resolution processing
                 shirg_resized_image = self._resize_for_shirg(image, target_size=672)
                 base_tensor = self._pil_to_tensor(shirg_resized_image)
-                image_tensor = [base_tensor.to(self.device, dtype=torch.bfloat16)]
+                image_tensor = base_tensor.to(self.device, dtype=torch.bfloat16)
             
             # Get image sizes for SHIRG (required parameter)
             image_sizes = [image.size]  # Original size, processor handles resizing
             
             # Extract token selection metadata before inference
-            selection_metadata = self._extract_shirg_selection_metadata(image, question)
+            try:
+                selection_metadata = self._extract_shirg_selection_metadata(image, question)
+            except Exception as metadata_error:
+                print(f"   ⚠️ SHIRG metadata extraction failed: {metadata_error}")
+                selection_metadata = {'error': str(metadata_error)}
             
             # SHIRG-GENERATION-FIX: 2025-07-29 - Use same LaViDa generation as baseline
             # ISSUE: SHIRG must use identical generation method as baseline for fair comparison
@@ -940,6 +957,10 @@ class LaViDaModelRunner:
                         use_shirg = self.shirg_tower.config.enable_shirg
                 
                 print(f"   🔍 SHIRG mode: {use_shirg}")
+                print(f"   🔍 Image tensor shape: {image_tensor.shape if hasattr(image_tensor, 'shape') else 'No shape'}")
+                print(f"   🔍 Image tensor type: {type(image_tensor)}")
+                print(f"   🔍 Image tensor device: {image_tensor.device if hasattr(image_tensor, 'device') else 'No device'}")
+                print(f"   🔍 Image tensor dtype: {image_tensor.dtype if hasattr(image_tensor, 'dtype') else 'No dtype'}")
                 
                 # SHIRG-RETURN-FIX: 2025-07-29 - Handle LaViDa generate return format properly for SHIRG
                 # ISSUE: SHIRG model also uses LaViDa generate() which has same return format dependency
@@ -947,10 +968,32 @@ class LaViDaModelRunner:
                 # RESEARCH IMPACT: Enables proper SHIRG inference for comparison with baseline
                 # SHIRG IMPACT: Maintains exact LaViDa generation behavior while using SHIRG tokens
                 
+                # TENSOR-FORMAT-FIX: 2025-07-29 - Ensure image tensor is in correct format
+                # ISSUE: LaViDa expects tensor, not list of tensors for single image
+                # SOLUTION: Extract single tensor if in list format
+                # RESEARCH IMPACT: Enables SHIRG inference to work properly
+                # LAVIDA IMPACT: Maintains compatibility with LaViDa's generate function
+                
+                if isinstance(image_tensor, list):
+                    # LaViDa expects list for multi-view anyres processing
+                    images_for_generate = image_tensor
+                elif len(image_tensor.shape) == 4 and image_tensor.shape[0] == 1:
+                    # Single image tensor [1, C, H, W] - wrap in list for LaViDa
+                    images_for_generate = [image_tensor.squeeze(0)]  # Remove batch dim and wrap
+                else:
+                    # Use as-is
+                    images_for_generate = image_tensor
+                
+                print(f"   🔍 Images for generate type: {type(images_for_generate)}")
+                if isinstance(images_for_generate, list):
+                    print(f"   🔍 Images for generate list length: {len(images_for_generate)}")
+                    if len(images_for_generate) > 0 and hasattr(images_for_generate[0], 'shape'):
+                        print(f"   🔍 First image shape: {images_for_generate[0].shape}")
+                
                 # Use identical LaViDa generation parameters as baseline
                 result = self.shirg_model.generate(
                     input_ids,
-                    images=image_tensor,
+                    images=images_for_generate,
                     image_sizes=image_sizes,
                     do_sample=False,
                     temperature=0.1,
@@ -1024,14 +1067,46 @@ class LaViDaModelRunner:
         except Exception as e:
             inference_time = time.time() - start_time
             print(f"   ❌ SHIRG inference error: {e}")
+            
+            # DEBUGGING-FIX: 2025-07-29 - Enhanced error logging for channel dimension format error
+            # ISSUE: Generic error messages make it hard to diagnose the channel dimension format issue
+            # SOLUTION: Add comprehensive error logging with context and traceback
+            # RESEARCH IMPACT: Enables faster debugging of SHIRG integration issues
+            # LAVIDA IMPACT: Helps identify LaViDa-SHIRG compatibility problems
+            
+            import traceback
+            error_details = {
+                'error_type': type(e).__name__,
+                'error_message': str(e),
+                'traceback': traceback.format_exc(),
+                'phase': 'shirg_inference'
+            }
+            
+            print(f"   📋 Error details:")
+            print(f"      Error type: {error_details['error_type']}")
+            print(f"      Error message: {error_details['error_message']}")
+            print(f"   📋 Full traceback:")
+            print(error_details['traceback'])
+            
+            # Log context information
+            print(f"   📋 Context at error:")
+            print(f"      Image tensor type: {type(image_tensor) if 'image_tensor' in locals() else 'Not created'}")
+            if 'image_tensor' in locals() and hasattr(image_tensor, 'shape'):
+                print(f"      Image tensor shape: {image_tensor.shape}")
+            if 'images_for_generate' in locals():
+                print(f"      Images for generate type: {type(images_for_generate)}")
+                if isinstance(images_for_generate, list):
+                    print(f"      Images list length: {len(images_for_generate)}")
+            
             return {
-                'response': f"Error during SHIRG inference: {str(e)}",
+                'response': f"Error during SHIRG inference: {str(e)[:200]}...",
                 'tokens_used': 0,
                 'inference_time': inference_time,
                 'vision_info': {},
                 'token_selection': {},
                 'model_type': 'shirg',
-                'error': str(e)
+                'error': str(e),
+                'error_details': error_details
             }
     
     def _extract_shirg_selection_metadata(self, image, question):
@@ -1040,32 +1115,34 @@ class LaViDaModelRunner:
             if self.shirg_tower is None:
                 return {'error': 'SHIRG tower not available'}
             
-            # Prepare image tensor
+            # SHIRG-METADATA-FIX: 2025-07-29 - Direct processing for metadata extraction
+            # ISSUE: Same as above - need direct 672×672 processing for SHIRG
+            # SOLUTION: Use direct preprocessing to bypass anyres multi-view
+            # RESEARCH IMPACT: Ensures consistent SHIRG processing for metadata extraction
+            # LAVIDA IMPACT: Maintains compatibility while using SHIRG-specific processing
+            
             if TORCHVISION_AVAILABLE:
-                image_tensor = process_images([image], self.shirg_image_processor, self.shirg_model.config)
-                if isinstance(image_tensor, list):
-                    image_tensor = image_tensor[0]
-                # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
-                # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
-                # SOLUTION: Use BFloat16 consistently for LaViDa models
-                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
-                # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
-                image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
+                # Direct preprocessing for SHIRG
+                processed_dict = self.shirg_image_processor.preprocess([image], return_tensors="pt")
+                image_tensor = processed_dict["pixel_values"].to(self.device, dtype=torch.bfloat16)
             else:
-                image_tensor = self._pil_to_tensor(image)
-                # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
-                # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
-                # SOLUTION: Use BFloat16 consistently for LaViDa models
-                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
-                # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
-                image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
+                image_tensor = self._pil_to_tensor(image).to(self.device, dtype=torch.bfloat16)
             
             with torch.no_grad():
                 # Check if SHIRG tower has selection metadata extraction
-                if hasattr(self.shirg_tower, 'extract_shirg_tokens'):
+                if hasattr(self.shirg_tower, 'extract_dual_scale_tokens'):
                     # SHIRG-enabled tower
                     try:
-                        features, scaffold = self.shirg_tower.extract_shirg_tokens(image_tensor)
+                        print(f"   📋 SHIRG metadata: Calling extract_dual_scale_tokens")
+                        print(f"      Image tensor shape: {image_tensor.shape}")
+                        print(f"      Image tensor dtype: {image_tensor.dtype}")
+                        
+                        # METHOD-FIX: 2025-07-29 - Use correct method name for SHIRG token extraction
+                        # ISSUE: Method was incorrectly named as extract_shirg_tokens
+                        # SOLUTION: Use extract_dual_scale_tokens which is the actual method in siglip_shirg.py
+                        # RESEARCH IMPACT: Enables proper SHIRG dual-scale token extraction
+                        # LAVIDA IMPACT: Fixes method call to existing SHIRG implementation
+                        features, scaffold = self.shirg_tower.extract_dual_scale_tokens(image_tensor)
                         
                         selection_info = {
                             'method': 'SHIRG',
@@ -1083,6 +1160,9 @@ class LaViDaModelRunner:
                         return selection_info
                         
                     except Exception as e:
+                        print(f"   ❌ SHIRG extraction error: {e}")
+                        import traceback
+                        print(f"   📋 Traceback: {traceback.format_exc()}")
                         return {'error': f'SHIRG extraction failed: {str(e)}'}
                 
                 else:
