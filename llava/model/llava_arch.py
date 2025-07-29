@@ -378,9 +378,27 @@ class LlavaMetaForCausalLM(ABC):
             encoded_image_features = self.encode_images(concat_images)
             # image_features,all_faster_video_features = self.encode_multimodals(concat_images, video_idx_in_batch, split_sizes)
 
+            # SHIRG-SPLIT-FIX: 2025-07-29 - Handle SHIRG's concatenated token output correctly
+            # ISSUE: SHIRG returns concatenated tokens as single tensor, not separate views
+            # SOLUTION: Check if SHIRG is enabled and handle split differently
+            # RESEARCH IMPACT: Enables SHIRG to work with LaViDa's multi-view processing pipeline
+            # LAVIDA IMPACT: Maintains LaViDa's architecture while supporting SHIRG token selection
+            
+            # Check if SHIRG is enabled
+            vision_tower = self.get_vision_tower()
+            is_shirg_enabled = (hasattr(vision_tower, 'shirg_enabled') and vision_tower.shirg_enabled and 
+                               hasattr(self.config, 'enable_shirg') and self.config.enable_shirg)
+            
             # This is a list, each element is [num_images, patch * patch, dim]
             # rank_print(f"Concat images : {concat_images.shape}")
-            encoded_image_features = torch.split(encoded_image_features, split_sizes)
+            if is_shirg_enabled and encoded_image_features.shape[0] == 1:
+                # SHIRG returns single tensor with all selected tokens concatenated
+                # Don't split - treat as single "super-view" containing all selected tokens
+                print(f"SHIRG-SPLIT-FIX: SHIRG mode detected, treating as single view with {encoded_image_features.shape[1]} tokens")
+                encoded_image_features = [encoded_image_features]
+            else:
+                # Standard LaViDa processing - split back into separate views
+                encoded_image_features = torch.split(encoded_image_features, split_sizes)
             image_features = []
             for idx, image_feat in enumerate(encoded_image_features):
                 # DEBUG: Log the pooling condition evaluation

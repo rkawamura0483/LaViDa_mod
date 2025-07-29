@@ -347,10 +347,31 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 if isinstance(img, torch.Tensor) and not img.requires_grad and input_requires_grad:
                     images[i] = img.requires_grad_(True)
         
+        # SHIRG-CONCAT-FIX: 2025-07-29 - Handle concatenated multi-view images from encode_images
+        # ISSUE: LaViDa concatenates 5 views before calling vision tower, SHIRG needs to process them together
+        # SOLUTION: Detect concatenated views and handle appropriately based on SHIRG mode
+        # RESEARCH IMPACT: Enables SHIRG to process LaViDa's anyres 5-view format correctly
+        # LAVIDA IMPACT: Maintains compatibility with LaViDa's image concatenation pipeline
+        
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
         
-        if should_use_shirg:
+        # Check if we have concatenated views from LaViDa's prepare_inputs_labels_for_multimodal
+        is_concatenated_views = False
+        if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] == 5:
+            # This is likely 5 concatenated views from LaViDa
+            is_concatenated_views = True
+            rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated 5-view tensor: {images.shape}")
+        
+        if should_use_shirg and is_concatenated_views:
+            # SHIRG processes all 5 views together and returns single tensor
+            rank0_print("SHIRG-CONCAT-FIX: Processing 5 views with SHIRG")
+            # Convert to list format for SHIRG
+            view_list = [images[i] for i in range(5)]
+            shirg_tokens = self.forward_with_shirg(view_list, text_embeddings)
+            # Return with batch dimension to match LaViDa's expectations
+            return shirg_tokens
+        elif should_use_shirg:
             # SHIRG: High-resolution processing with token selection
             return self.forward_with_shirg(images, text_embeddings)
         else:
