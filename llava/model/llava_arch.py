@@ -701,6 +701,12 @@ class LlavaMetaForCausalLM(ABC):
             cur_new_labels = []
             cur_input_ids = []
 
+            # SHIRG-GENERATION-DEBUG: 2025-07-29 - Debug empty output issue
+            # ISSUE: SHIRG generates empty outputs despite processing tokens correctly
+            # SOLUTION: Add detailed debugging to understand how image embeddings are inserted
+            # RESEARCH IMPACT: Helps diagnose why SHIRG tokens aren't generating text
+            # LAVIDA IMPACT: Ensures proper embedding insertion for both baseline and SHIRG
+            
             for i in range(num_images + 1):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
@@ -708,13 +714,16 @@ class LlavaMetaForCausalLM(ABC):
                 if i < num_images:
                     try:
                         cur_image_features = image_features[cur_image_idx]
+                        print(f"SHIRG-GENERATION-DEBUG: Inserting image {cur_image_idx} features: {cur_image_features.shape}")
                     except IndexError:
+                        print(f"WARNING: Image index {cur_image_idx} out of bounds, using previous")
                         breakpoint()
                         cur_image_features = image_features[cur_image_idx - 1]
                     cur_image_idx += 1
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     cur_input_ids.append(torch.full((cur_image_features.shape[0],), IMAGE_TOKEN_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
+                    print(f"   Image features inserted: {cur_image_features.shape[0]} tokens")
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
 
             # import pdb; pdb.set_trace()
@@ -729,6 +738,13 @@ class LlavaMetaForCausalLM(ABC):
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
         # rank_print("Finishing Inserting")
+        
+        # SHIRG-LENGTH-DEBUG: Debug sequence length issues
+        print(f"SHIRG-LENGTH-DEBUG: tokenizer_model_max_length = {tokenizer_model_max_length}")
+        for idx, (embed, modality) in enumerate(zip(new_input_embeds, modalities)):
+            print(f"   Sequence {idx}: length={embed.shape[0]}, modality={modality}")
+            if tokenizer_model_max_length and embed.shape[0] > tokenizer_model_max_length:
+                print(f"   WARNING: Sequence {idx} will be truncated from {embed.shape[0]} to {tokenizer_model_max_length}")
 
         new_input_embeds = [x[:tokenizer_model_max_length] for x, modality in zip(new_input_embeds, modalities)]
         new_labels = [x[:tokenizer_model_max_length] for x, modality in zip(new_labels, modalities)]
@@ -806,6 +822,19 @@ class LlavaMetaForCausalLM(ABC):
             position_ids[:, split_position:] += right_add
         # import pdb; pdb.set_trace()
         # rank0_print("Finish preparing")
+        
+        # SHIRG-GENERATION-DEBUG: Final embeddings check
+        if new_input_embeds is not None:
+            print(f"SHIRG-GENERATION-DEBUG: Final embeddings shape: {new_input_embeds.shape}")
+            print(f"   Total sequence length: {new_input_embeds.shape[1]}")
+            print(f"   Batch size: {new_input_embeds.shape[0]}")
+            # Check if embeddings contain reasonable values
+            if torch.isnan(new_input_embeds).any():
+                print("   WARNING: NaN values in embeddings!")
+            if torch.isinf(new_input_embeds).any():
+                print("   WARNING: Inf values in embeddings!")
+            print(f"   Embedding stats - min: {new_input_embeds.min():.4f}, max: {new_input_embeds.max():.4f}, mean: {new_input_embeds.mean():.4f}")
+        
         if return_inputs:
             return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels,new_input_ids_padded
         else:
