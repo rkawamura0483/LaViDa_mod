@@ -240,10 +240,14 @@ class SigLipShirgExtensions:
                             image_input = image_input.requires_grad_(True)
                     
                     # POSITION-FIX: Enable position embedding interpolation for high-resolution
+                    # COMPATIBILITY-FIX: 2025-07-29 - Remove unsupported interpolate_pos_encoding parameter
+                    # ISSUE: HuggingFace SigLIP models don't support interpolate_pos_encoding parameter
+                    # SOLUTION: Use standard forward call - position interpolation handled internally
+                    # LAVIDA IMPACT: Enables SigLIP processing without parameter mismatch errors
+                    # SHIRG IMPACT: Allows high-resolution processing with proper position handling
                     image_forward_out = self.vision_tower(
                         image_input, 
-                        output_hidden_states=True,
-                        interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
+                        output_hidden_states=True
                     )
                     # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                     # ISSUE: Need to match original LaViDa token magnitude behavior exactly
@@ -580,10 +584,14 @@ class SigLipShirgExtensions:
                             image_input = image_input.requires_grad_(True)
                     
                     # POSITION-FIX: Enable position embedding interpolation for high-resolution
+                    # COMPATIBILITY-FIX: 2025-07-29 - Remove unsupported interpolate_pos_encoding parameter
+                    # ISSUE: HuggingFace SigLIP models don't support interpolate_pos_encoding parameter
+                    # SOLUTION: Use standard forward call - position interpolation handled internally
+                    # LAVIDA IMPACT: Enables SigLIP processing without parameter mismatch errors
+                    # SHIRG IMPACT: Allows high-resolution processing with proper position handling
                     image_forward_out = self.vision_tower(
                         image_input, 
-                        output_hidden_states=True,
-                        interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
+                        output_hidden_states=True
                     )
                     # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                     # ISSUE: Need to match original LaViDa token magnitude behavior exactly
