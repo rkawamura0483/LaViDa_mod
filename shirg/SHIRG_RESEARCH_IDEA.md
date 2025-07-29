@@ -2,7 +2,7 @@
 
 ## Abstract
 
-**SHIRG (Static Hierarchical Relevance Gate)** is a training-minimal token selection method designed specifically for diffusion-based Vision-Language Models (VLMs) that require static prefix KV-cache management. While LaViDa achieves ~1.9× speedup over autoregressive VLMs through bidirectional diffusion and prefix caching, its 384×384 image resolution (729 tokens) limits performance on fine-grained spatial reasoning tasks. SHIRG bridges this gap by enabling high-resolution processing (672×672, 2,304 tokens) while maintaining cache compatibility through static token selection with minimal LoRA adaptation (1.4% parameters). Our method targets **"static, diffusion-compatible pruning that halves the cost of high-res inference while keeping half the gain"** - achieving ~55% of the full high-resolution quality improvement at 1.8× memory cost instead of 3×.
+**SHIRG (Static Hierarchical Relevance Gate)** is a training-minimal token selection method designed specifically for diffusion-based Vision-Language Models (VLMs) that require static prefix KV-cache management. While LaViDa achieves ~1.9× speedup over autoregressive VLMs through bidirectional diffusion and prefix caching, its 384×384 image resolution (729 tokens per view) limits performance on fine-grained spatial reasoning tasks. SHIRG bridges this gap by implementing global token selection across LaViDa's existing 5-view structure (3,645 total tokens) while maintaining the same 980-token output as baseline, preserving cache compatibility through static selection with minimal LoRA adaptation (0.9% parameters). Our method targets **"maximizing quality without sacrificing LaViDa's 1.9× speed-up"** - achieving significant quality improvements while maintaining cache integrity and speed advantages.
 
 ---
 
@@ -16,22 +16,22 @@
 
 ### 1.2 Resolution Limitation Impact
 
-LaViDa's current 384×384 processing yields 729 visual tokens (27×27 patches @ 14×14 pixels each), insufficient for:
+LaViDa's current 5-view processing yields 5×729 = 3,645 visual tokens before pooling to 980 tokens (5×196), but aggressive pooling loses fine-grained information for:
 - **High-resolution spatial reasoning**: Charts, dense diagrams, satellite crops  
 - **Fine-grained visual details**: Thin chart features, small legends, dense data points
 - **Document analysis**: Fine-grained table structures, small annotations
 
 **Note**: We frame this as general high-resolution spatial reasoning rather than OCR, since SigLIP patches are still too large for 6pt glyphs.
 
-**Performance Gap**: Full 672² inference adds +6 CIDEr on ChartQA but costs ~3× memory and +100% latency.
+**Performance Gap**: The 5-view structure provides rich information (3,645 tokens) but current pooling discards ~73% of tokens, losing fine details.
 
 ### 1.3 High-Resolution Scaling Challenge
 
-Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× increase** that creates:
-- **Memory pressure**: 20GB VRAM vs. 7.6GB baseline
-- **Projection mismatch**: LaViDa's mm_projector expects 729-token sequences
+LaViDa's existing 5-view structure already provides 3,645 tokens but current pooling (729→196 per view) discards valuable information. The challenge is:
+- **Information loss**: Current pooling retains only 27% of available tokens
+- **Cache compatibility**: Any token selection must maintain static sequences
 - **Latency budget**: Token selection must complete in <30ms to preserve speed benefits
-- **Cache inflation**: Larger prefix increases per-step memory bandwidth
+- **Global coordination**: Need to eliminate redundant information across overlapping views
 
 ---
 
@@ -80,141 +80,117 @@ Processing 672×672 images produces 2,304 tokens (48×48 patches) - **3.2× incr
 4. **Distance-Aware**: Spatial relationships guide token importance beyond similarity
 5. **Speed-Quality Trade-off**: Two variants balancing LaViDa's speed advantage with fine-detail preservation
 
-### 3.2 Two-Variant Approach
+### 3.2 Optimal SHIRG Pipeline Integration
 
-Given the fundamental trade-off between LaViDa's speed advantage and high-resolution detail preservation, SHIRG offers two methodological variants:
-
-#### **Variant A: Speed-Preserving SHIRG** 
-*Target: Maintain LaViDa's ~1.9× speed while improving detail quality*
-
-**Input**: 768×768 → 5 views × 384² → 5 × 729 = 3,645 tokens  
-**Output**: 5 × 294 = 1,470 selected tokens (50% more than baseline 980)
+**Integration Point**: SHIRG operates **between SigLIP and the PoolerProjector, before any KV-cache is materialized**.
 
 ```
-1. Multi-View Processing:
-   - Use LaViDa's existing 5-view structure (4×384² + 1×384²)
-   - Process each view through standard SigLIP → 729 tokens per view
-   - Total: 3,645 tokens (same as LaViDa baseline before pooling)
-
-2. Per-View SHIRG Selection:
-   - Replace LaViDa's aggressive 2×2 pooling (729→196 per view, 73% reduction)
-   - Apply smart SHIRG selection: 729→294 per view (60% retention vs 27%)
-   - Preserve 2.2× more fine details per view than baseline pooling
-
-3. Gentle Pooling Integration:
-   - Apply 1.5×1.5 pooling instead of 2×2: 294→130 tokens per view
-   - Final output: 5 × 130 = 650 tokens (vs baseline 980)
-   - Speed preserved: ~33% fewer tokens than baseline = faster inference
-
-4. Distance-Aware Selection Scoring:
-   - s_i = 0.7×TextSim_i - 0.2×||p_i-neighbors|| - 0.1×||p_i-center||
-   - Spatial relationships guide importance beyond text similarity
-   - Prevents clustering, maintains spatial coverage
+╭──────────── LaViDa any-res splitter ────────────╮
+│ 5×384² crops  ─┐                               │
+│                ▼                               │
+│      SigLIP encoder (5×)  –––  5 × [729, D]    │  ⟵  ✔ keep exactly as in baseline
+│                │                               │
+│     ⭑ SHIRG GLOBAL SELECTOR ⭑                 │  ⟵  NEW (runs *once*)
+│                ▼                               │
+│  (Lo-res scaffold 64) + (K hi-res tokens)      │
+│                ▼                               │
+│      Pooler/Projector (LoRA-adapted)           │
+│                ▼                               │
+│            980 tokens                         │  ⟵  Same shape as baseline → LM
+╰─────────────────────────────────────────────╯
 ```
 
-#### **Variant B: Detail-Maximizing SHIRG**
-*Target: Maximize fine-detail preservation at moderate speed cost*
+**Why This Integration Point?**
+- **Cache integrity**: Everything upstream (SigLIP) identical to baseline, so positional-embedding distribution unchanged
+- **No extra SigLIP passes**: Reuse regular 5-crop strategy, avoiding distribution shift
+- **One global pass**: Selection done *once* across concatenated 5 × 729 = 3,645 tokens, eliminating redundant edges in overlapping crops
 
-**Input**: 768×768 → 5 views × 384² → 5 × 729 = 3,645 tokens  
-**Output**: 5 × 437 = 2,185 selected tokens (2.2× more than baseline)
+### 3.3 Step-by-Step SHIRG Algorithm
 
+| # | Stage | What Happens | Complexity |
+|---|-------|--------------|------------|
+| **1** | **Per-view SigLIP** | Each 384² crop → 27 × 27 patch grid (729 tokens) with local (x, y) coords | Same as baseline (GPU-efficient, fused FlashAttn) |
+| **2** | **Global coordinate lift** | Map each token's (x, y, view-id) to **single 48 × 48 canvas**<br>`global_x = local_x + offset_x(view_id)`<br>`global_y = local_y + offset_y(view_id)` | Adds 3,645 int32 writes – negligible |
+| **3** | **Token deduplication** | If two tokens share same global (x, y) keep one with higher text-cosine; store view-bitmask for gradient back-projection | Removes ~8% duplicates in photos, 15-20% in documents |
+| **4** | **Distance-aware scoring** | For each token *i*:<br>`score_i = 0.65·sim_i - 0.25·ΔNeighbour - 0.10·ΔCropBoundary`<br>where `ΔNeighbour = mean L2 distance to 8-nbh`<br>`ΔCropBoundary = |view_id - 2|/2` | Single fused CUDA kernel: O(N·D) + sparse neighbour lookup ~4ms |
+| **5** | **Lo-res scaffold injection** | Average-pool 48 × 48 canvas to 8 × 8 → 64 tokens; always keep them | <1ms |
+| **6** | **Top-K selection** | Choose K = (980 - 64) = 916 high-res tokens so (64 + K) = 980 – identical token count to baseline | Simple radix-select; 0.2ms |
+| **7** | **Static concatenation** | `[scaffold_64 \| selected_916]` → 980 tokens with **original positional embeddings** | No cache breakage |
+| **8** | **PoolerProjector (LoRA-rank-64)** | Freeze original weights; add LoRA on first FC layer **only** (~70M params ≃ 0.9%) | 5-hour train on 8×A100 |
+| **9** | **Diffusion LM** | Unchanged; KV-cache created *after* step 7 and reused over steps | Full 1.9× LaViDa speed benefit retained |
+
+### 3.4 Detailed Component Design
+
+#### 3.4.1 Global Coordinate Lifting Architecture
+
+**Multi-View Token Processing**:
+- LaViDa's existing 5-view structure: 5 × 384² crops → 5 × 729 = 3,645 tokens
+- Each token has local (x, y) coordinates within its 27×27 view
+- Global mapping to single 48×48 canvas eliminates view boundaries
+
+**Global Coordinate Mapping**:
+```python
+# Inter-view offsets for 48×48 global grid
+offsets = {0:(0,0), 1:(21,0), 2:(0,21), 3:(21,21), 4:(10,10)}
+
+# Map local to global coordinates
+global_x = local_x + offset_x(view_id)
+global_y = local_y + offset_y(view_id)
 ```
-1. Multi-View Processing:
-   - Same 5-view structure as Variant A
-   - Process each view through standard SigLIP → 729 tokens per view
-
-2. No-Pooling Token Selection:
-   - Completely replace pooling with smart selection
-   - SHIRG selection: 729→437 per view (40% pruning vs 73% pooling)
-   - Final: 5 × 437 = 2,185 tokens (2.2× baseline, but full detail preservation)
-
-3. Direct High-Resolution Projection:
-   - No spatial pooling - selected tokens go directly to adapted mm_projector
-   - Preserves fine-grained spatial information for language model
-   - Speed trade-off: ~1.4× slower than baseline, but 2.2× more visual detail
-
-4. Enhanced Distance-Aware Scoring:
-   - Same scoring as Variant A but with higher selection budget
-   - More aggressive spatial diversity enforcement
-   - Instance-adaptive selection based on image complexity
-```
-
-### 3.3 Variant Comparison & Selection Strategy
-
-| Aspect | LaViDa Baseline | Variant A (Speed) | Variant B (Detail) |
-|--------|----------------|-------------------|-------------------|
-| **Final Tokens** | 980 | 650 | 2,185 |
-| **Speed vs Baseline** | 1.0× | 1.2× (faster) | 1.4× (slower) |
-| **Fine Detail Preservation** | 27% (pooling) | 60% (gentle pooling) | 100% (no pooling) |
-| **Memory Cost** | 1.0× | 0.8× | 2.2× |
-| **Training Complexity** | N/A | Low (pooler adapt) | Medium (projector adapt) |
-| **Cache Compatibility** | ✅ | ✅ | ✅ |
-| **Risk Level** | N/A | Low (minimal change) | Medium (2× tokens) |
-
-**Recommended Progression**: Start with **Variant A** to validate the multi-view SHIRG approach while preserving speed, then explore **Variant B** for applications requiring maximum fine-detail reasoning.
-
-### 3.3 Detailed Component Design
-
-#### 3.3.1 Dual-Scale Token Architecture
-
-**Hi-Detail Tokens (2,304)**:
-- Standard SigLIP processing of 672×672 image
-- 48×48 patch grid at 14×14 pixel resolution
-- Full spatial resolution for fine-grained features
-- Subject to selection and pruning
 
 **Lo-Res Scaffold (64)**:
-- 8×8 average pooling over 48×48 feature map
+- 8×8 average pooling over 48×48 global canvas
 - Always retained (no selection pressure)
 - Provides global context and spatial anchors
 - Ensures coverage of entire image region
 
 **Spatial Preservation**:
-- Selected tokens maintain their original positional embeddings from SigLIP
-- No additional coordinate processing required
-- Spatial relationships preserved through existing position encoding
+- Selected tokens maintain original SigLIP positional embeddings
+- Positional embeddings interpolated from 27² → 48² for compatibility
+- No cache breakage due to consistent embedding structure
 
-#### 3.3.2 Distance-Aware Importance Scoring
+#### 3.4.2 Distance-Aware Importance Scoring
 
 **Multi-Component Score**:
 ```
-s_i = 0.7 × Similarity_i - 0.2 × Distance_neighbors - 0.1 × Distance_center
+score_i = 0.65 × sim_i - 0.25 × ΔNeighbour - 0.10 × ΔCropBoundary
 
 Where:
-- Similarity_i: cosine similarity between token_i and text query
-- Distance_neighbors: L2 distance to adjacent tokens (prevents clustering)
-- Distance_center: L2 distance to image center (central bias)
+- sim_i: cosine similarity between token_i and text query
+- ΔNeighbour: mean L2 distance to 8-connected neighbors
+- ΔCropBoundary: |view_id - 2|/2 (gives center crop mild boost)
 ```
 
 **Spatial Distance Computation**:
-- Neighbor distance: averaged over 8-connected adjacency
-- Center distance: Euclidean from patch center to image center
-- Normalized by image dimensions for scale invariance
+- Token deduplication: If two tokens share same global (x,y), keep higher text-cosine
+- Neighbor distance: averaged over 8-connected adjacency in global 48×48 grid
+- Crop boundary penalty: Encourages selection from center view
+- Single fused CUDA kernel: O(N·D) + sparse neighbor lookup (~4ms on A100)
 
-#### 3.3.3 Training-Minimal LoRA Adaptation
+#### 3.4.3 Training-Minimal LoRA Adaptation
 
-**LoRA Target Modules** (Rank-128):
+**LoRA Target Modules** (Rank-64):
 ```yaml
 projector_lora:
-  targets: ["mm_projector.fc1", "mm_projector.fc2"]
-  rank: 128
-  alpha: 256
+  targets: ["mm_projector.fc1"]  # First FC layer only
+  rank: 64
+  alpha: 128
   
 siglip_lora:
-  targets: ["blocks.0.attn.qkv", "blocks.1.attn.qkv", "blocks.2.attn.qkv", "blocks.3.attn.qkv", "blocks.4.attn.qkv", "blocks.5.attn.qkv", "blocks.6.attn.qkv", "blocks.7.attn.qkv"]
-  rank: 128
-  alpha: 256
+  targets: ["blocks.0.attn.q", "blocks.0.attn.k", "blocks.1.attn.q", "blocks.1.attn.k", "blocks.2.attn.q", "blocks.2.attn.k", "blocks.3.attn.q", "blocks.3.attn.k"]  # Query/Key only, blocks 0-3
+  rank: 64 
+  alpha: 128
 
-Total trainable: ~220M parameters (2.6% of 8B model)
+Total trainable: ~70M parameters (0.9% of 8B model)
 ```
 
 **Training Configuration**:
-- SigLIP pre-adaptation: 20k steps at 512²-768² before LoRA
-- Learning rate: 7e-5 (LoRA), 2e-5 (base weights)
-- Batch size: 16 per GPU × 8 GPUs
-- Epochs: 4 with cosine decay
-- Mixed resolution training: 512², 672², 768² randomly sampled
-- Training time: ~9 hours on 8×A100 (1.2h pre-adapt + 6h LoRA + 1.8h extended)
+- Freeze SigLIP except blocks 0-3 query/key matrices
+- Learning rate: 2e-5 (LoRA only)
+- Batch size: 16 per GPU × 8 GPUs, mixed bf16
+- Training time: 5 hours on 8×A100
+- Mixed-resolution curriculum: Alternate 512² and 672² crops
+- Leave value matrices frozen to stay cache-safe
 
 ---
 
@@ -222,57 +198,66 @@ Total trainable: ~220M parameters (2.6% of 8B model)
 
 ### 4.1 Integration with LaViDa Pipeline
 
-**Modified SigLIP Encoder** (`llava/model/multimodal_encoder/siglip_encoder.py`):
+**Modified SigLIP Processing** (`llava/model/multimodal_encoder/siglip_encoder.py`):
 ```python
-def extract_shirg_tokens(self, pixel_values):
-    # Process full 672x672 image
-    features = self.vision_model(pixel_values)  # [B, 2304, D]
+def extract_multiview_tokens(self, pixel_values):
+    # LaViDa's existing 5-view processing
+    view_features = []
+    for i, view in enumerate(pixel_values):  # 5 views × 384²
+        features = self.vision_model(view)  # [B, 729, D]
+        # Add view_id and local coordinates
+        features = self.add_view_metadata(features, view_id=i)
+        view_features.append(features)
     
-    # Generate lo-res scaffold (8x8 avg pool)
-    scaffold = F.avg_pool2d(features.view(B, 48, 48, D), 
-                           kernel_size=6, stride=6)  # [B, 64, D]
-    
-    return features, scaffold
+    # Concatenate all views: 5 × 729 = 3,645 tokens  
+    all_tokens = torch.cat(view_features, dim=1)  # [B, 3645, D]
+    return all_tokens
 ```
 
-**SHIRG Selector** (`shirg/shirg_selector.py`):
+**SHIRG Global Selector** (`shirg/shirg_selector.py`):
 ```python
-def select_tokens(self, features, text_features, K=1152):
-    # Distance-aware importance scoring
-    similarity_scores = self.compute_similarity(features, text_features)
-    neighbor_distances = self.compute_neighbor_distances(features)
-    center_distances = self.compute_center_distances(features)
+def select_tokens_global(self, tokens, text_features, K=916):
+    # Step 1: Global coordinate lifting
+    global_coords = self.lift_to_global_coords(tokens)  # 48×48 canvas
     
-    importance_scores = (0.7 * similarity_scores - 
-                        0.2 * neighbor_distances - 
-                        0.1 * center_distances)
+    # Step 2: Token deduplication (handle overlaps)
+    deduped_tokens = self.deduplicate_overlaps(tokens, global_coords)
     
-    # Neighbor-aware merging
-    merged_features = self.merge_neighbors(
-        features, importance_scores, epsilon=0.05)
+    # Step 3: Distance-aware scoring
+    similarity_scores = self.compute_similarity(deduped_tokens, text_features)
+    neighbor_distances = self.compute_neighbor_distances(deduped_tokens)
+    crop_boundary_penalty = self.compute_crop_boundary_penalty(deduped_tokens)
     
-    # Top-K selection
+    importance_scores = (0.65 * similarity_scores - 
+                        0.25 * neighbor_distances - 
+                        0.10 * crop_boundary_penalty)
+    
+    # Step 4: Lo-res scaffold (always keep 64 tokens)
+    scaffold = F.avg_pool2d(global_coords.view(B, 48, 48, D), 
+                           kernel_size=6, stride=6)  # [B, 64, D]
+    
+    # Step 5: Top-K selection for remaining 916 tokens
     selected_indices = torch.topk(importance_scores, K).indices
-    selected_features = merged_features[selected_indices]
+    selected_tokens = deduped_tokens[selected_indices]
     
-    return selected_features
+    # Step 6: Static concatenation [scaffold_64 | selected_916] = 980
+    final_tokens = torch.cat([scaffold, selected_tokens], dim=1)
+    
+    return final_tokens  # [B, 980, D] - same as baseline!
 ```
 
 **Integration Layer** (`shirg/lavida_shirg_integration.py`):
 ```python
 def forward_with_shirg(self, images, text_features):
-    # Extract dual-scale tokens
-    hi_detail, scaffold = self.vision_tower.extract_shirg_tokens(images)
+    # Extract 5-view tokens (same as LaViDa baseline)
+    multiview_tokens = self.vision_tower.extract_multiview_tokens(images)
     
-    # Select high-importance tokens
-    selected_tokens = self.shirg_selector.select_tokens(
-        hi_detail, text_features, K=1152)
+    # Global SHIRG selection: 3,645 → 980 tokens
+    selected_tokens = self.shirg_selector.select_tokens_global(
+        multiview_tokens, text_features, K=916)
     
-    # Combine with scaffold
-    visual_tokens = torch.cat([scaffold, selected_tokens], dim=1)  # [B, 1216, D]
-    
-    # Project through LoRA-adapted mm_projector
-    projected = self.mm_projector(visual_tokens)
+    # Project through LoRA-adapted mm_projector (same shape as baseline!)
+    projected = self.mm_projector(selected_tokens)  # [B, 980, D]
     
     return projected
 ```
@@ -285,9 +270,10 @@ def forward_with_shirg(self, images, text_features):
 - Plug-and-play integration with existing cache infrastructure
 
 **Memory Management**:
-- Visual prefix: 1,216 tokens × 16-bit → ~4.1GB (vs 6.5GB full precision)
-- Total inference memory: ~11GB (vs 20GB full high-res)
-- Cache bandwidth: optimized through streaming and compression
+- Visual prefix: 980 tokens × 16-bit → same as baseline (~3.2GB)
+- Total inference memory: ~7.8GB (vs 7.5GB baseline)
+- Cache bandwidth: identical to baseline - no cache inflation
+- Latency overhead: SHIRG selection adds 6-7ms, but overall stays within ±2ms of baseline
 
 ---
 
@@ -301,15 +287,14 @@ def forward_with_shirg(self, images, text_features):
 | **B1** | LaViDa full high-res | 3,645 | pos-embed resize | ✅ | Upper bound (slow) |
 | **S1** | SAINT pruning | 1,200 | none | ✅ | Training-free baseline |
 | **S2** | TopV pruning | 1,200 | none | ✅ | Cache-optimized baseline |
-| **P1** | SHIRG Variant A (Speed) | 650 | 4h, 1.4% params | ✅ | **Speed-preserving** |
-| **P2** | SHIRG Variant B (Detail) | 2,185 | 6h, 2.2% params | ✅ | **Detail-maximizing** |
+| **P1** | SHIRG (this plan) | 980 | 5h, 0.9% params | ✅ | **Cache-compatible optimal** |
 
 **Implementation Notes per Baseline**:
-- **Multi-view processing**: All methods (B1/S1/S2/P1/P2) use LaViDa's 5-view structure for consistency
+- **Multi-view processing**: All methods use LaViDa's existing 5-view structure for consistency
 - **SAINT**: Drop-in PyTorch script (<200 LoC), token similarity graph, no parameters
 - **TopV**: Optimization solver, one pre-fill pass, honors FlashAttention buffer alignment  
-- **P1 (Speed)**: Gentle 1.5×1.5 pooler + LoRA adaptation, rank-64, lr 2e-5
-- **P2 (Detail)**: No pooling + projector adaptation, rank-128, lr 2e-5
+- **P1 (SHIRG)**: Global coordinate lifting + LoRA adaptation, rank-64, lr 2e-5
+- **Key advantage**: P1 maintains exact same token count (980) as baseline, preserving cache efficiency
 
 ### 5.2 Datasets & Metrics
 
@@ -332,13 +317,13 @@ def forward_with_shirg(self, images, text_features):
 | **B1 (Full Hi-Res)** | 3,645 | +6.0 | +3.0 | 22 GB | 75 ms |
 | **S1 (SAINT)** | 1,200 | +2.5 | +1.5 | 13 GB | 65 ms |
 | **S2 (TopV)** | 1,200 | +3.0 | +2.0 | 12 GB | 62 ms |
-| **P1 (Speed SHIRG)** | 650 | +2.8 | +1.8 | 6.5 GB | 31 ms |
-| **P2 (Detail SHIRG)** | 2,185 | +4.2 | +2.5 | 16 GB | 52 ms |
+| **P1 (SHIRG-980t)** | 980 | **+2.5 ± 0.2** | **+1.7 ± 0.3** | **7.8 GB** | **38-39 ms** |
 
 **Key Performance Insights**:
-- **P1 (Speed)**: Faster than baseline while improving quality - preserves LaViDa's speed advantage
-- **P2 (Detail)**: 70% of full hi-res quality gains at 73% of memory cost
-- **Both variants**: Maintain cache compatibility and outperform training-free methods
+- **P1 (SHIRG)**: Maximizes quality without sacrificing LaViDa's 1.9× speed-up advantage
+- **Cache-compatible**: Same token count (980) as baseline - no cache breakage
+- **Memory efficient**: Only 4% VRAM increase vs 2.9× for full high-res
+- **Training minimal**: 0.9% parameters vs >40h for full fine-tuning approaches
 
 ### 5.4 Ablation Studies
 
@@ -351,10 +336,11 @@ def forward_with_shirg(self, images, text_features):
 ### 5.5 Quality Preservation Targets
 
 **Quantitative Metrics**:
-- **High-res quality retention**: ~55% of full B1 gains (vs 35-45% for existing methods)
-- **Memory efficiency**: ≤1.8× baseline (vs ≥2.0× for naive high-res)
-- **Latency overhead**: ~1.6× baseline (vs ≥1.8× for full high-res)
-- **Training cost**: <8 GPU-hours vs >40h for full fine-tuning approaches
+- **High-res quality retention**: Achieves significant gains while maintaining LaViDa's speed advantage
+- **Memory efficiency**: Only 1.04× baseline (vs 2.9× for full high-res)
+- **Latency overhead**: <1.1× baseline (vs 2.0× for full high-res)  
+- **Training cost**: 5 GPU-hours vs >40h for full fine-tuning approaches
+- **Cache compatibility**: Zero cache breakage - same 980 token count as baseline
 
 ---
 
@@ -389,13 +375,37 @@ def forward_with_shirg(self, images, text_features):
 - Create results tables and ablation analysis
 - Document findings and prepare presentation materials
 
-**Total Timeline**: ≈2 GPU-days training + 4 hours human time
+**Total Timeline**: ≈5 hours GPU training + 4 hours human time
+
+### Practical Implementation Tips & Heuristics
+
+1. **Inter-view offsets for global coordinate mapping**:
+   ```python
+   # Corner/corner/centre crop layout for any-res splitter
+   offsets = {0:(0,0), 1:(21,0), 2:(0,21), 3:(21,21), 4:(10,10)}
+   ```
+   These numbers assume a 48×48 global grid; adjust if LaViDa's any-res splitter uses different overlap.
+
+2. **Scaffold bandwidth optimization**: If 64 scaffold tokens feel heavy, downsample to 6 × 6 = 36 – but keep ≥1 token per 8×8 region so the LM never sees a totally blank area.
+
+3. **LoRA scheduling**: Freeze SigLIP except blocks 0–3 *query/key* matrices (helps convergence); leave value matrices frozen to stay cache-safe.
+
+4. **Mixed-resolution curriculum**: Alternate 512² and 672² crops during LoRA to prevent SigLIP from overfitting to the 48×48 grid sparsity pattern.
+
+5. **Latency audit**: With fused kernels the end-to-end SHIRG block adds 6–7 ms; overall inference stays within baseline ±2 ms once the 64-token scaffold process completes.
+
+### Implementation Checklist Before Freeze
+
+1. **Unit-test global-grid mapping** to ensure no two tokens share (x, y) accidentally after dedup.
+2. **Shape & dtype asserts** right after step 7; run a single diffusion step and compare logits to baseline for sanity check.
+3. **Gradient flow check**: verify LoRA receives gradients *only* from projector; any unintended SigLIP grad means cache might become dynamic.
+4. **Ablate scaffold size** (64 → 36 → 16) to confirm the 8×8 choice is indeed Pareto-optimal.
 
 ### Expected Conservative Outcomes
-- **Performance**: +3.3 CIDEr ChartQA, +3.0 EM DocVQA (target ~55% of full high-res gains)
-- **Efficiency**: 13GB VRAM (1.7× baseline), 63ms latency (1.7× baseline)
-- **Training**: Successful LoRA convergence within 8 hours
-- **Comparison**: Outperform SAINT/TopV while maintaining cache compatibility
+- **Performance**: +2.5 CIDEr ChartQA, +1.7 EM DocVQA (meaningful quality gains)
+- **Efficiency**: 7.8GB VRAM (1.04× baseline), 38-39ms latency (1.05× baseline)
+- **Training**: Successful LoRA convergence within 5 hours
+- **Comparison**: Maintain LaViDa's full 1.9× speed advantage while improving quality
 
 ---
 
@@ -410,10 +420,10 @@ def forward_with_shirg(self, images, text_features):
 
 ### 7.2 Engineering Innovations
 
-1. **Cache-Compatible Architecture**: Maintains LaViDa's 1.9× speedup while enabling high-resolution processing
-2. **Memory-Efficient Implementation**: PrefixKV integration reduces high-res memory penalty by 55%
-3. **Coordinate Embedding Integration**: Preserves spatial relationships in pruned token sequences
-4. **Instance-Adaptive Budgeting**: Token selection varies based on image complexity without cache invalidation
+1. **Cache-Compatible Architecture**: Maintains LaViDa's 1.9× speedup while enabling smarter token selection
+2. **Global Coordinate Lifting**: Maps 5-view tokens to single 48×48 canvas, eliminating redundant overlaps
+3. **Distance-Aware Selection**: Spatial relationships guide token importance beyond text similarity
+4. **Static Token Budgeting**: Exactly 980 tokens preserved - identical shape to baseline for perfect cache compatibility
 
 ### 7.3 Research Impact
 
@@ -516,7 +526,7 @@ def forward_with_shirg(self, images, text_features):
 
 ## 10. Conclusion & Research Impact
 
-SHIRG represents a paradigm shift toward **"static, diffusion-compatible pruning that halves the cost of high-res inference while keeping half the gain"**. By targeting ~55% quality retention at 1.8× memory cost (vs 3× for naive scaling), SHIRG demonstrates that cache-compatible diffusion models can achieve meaningful high-resolution spatial reasoning through minimal training intervention.
+SHIRG represents a paradigm shift toward **"maximizing quality without sacrificing LaViDa's 1.9× speed-up"**. By maintaining the exact same token count (980) as baseline while implementing global coordinate lifting and distance-aware selection, SHIRG demonstrates that cache-compatible diffusion models can achieve meaningful high-resolution spatial reasoning through minimal training intervention.
 
 ### 10.1 Key Technical Innovation
 
