@@ -30,7 +30,13 @@ class PoolerProjector(nn.Module):
         original_shape = x.shape
         
         # Handle multi-view input: [5, 729, 1152] or single-view: [1, 729, 1152]
-        if len(x.shape) == 3 and x.shape[1] == 729:  # LaViDa format: [views, tokens_per_view, features]
+        # Also handle SHIRG input: [1, 1216, 1152] (should not be pooled)
+        if len(x.shape) == 3 and x.shape[1] == 1216:  # SHIRG format: [1, 1216, 1152] - bypass pooling
+            # SHIRG tokens should not be pooled - they're already processed
+            print(f"POOLER-DEBUG: SHIRG tokens detected {original_shape}, bypassing pooling")
+            x = self.proj(x)
+            return x
+        elif len(x.shape) == 3 and x.shape[1] == 729:  # LaViDa format: [views, tokens_per_view, features]
             num_views = x.shape[0]
             tokens_per_view = x.shape[1]  # Should be 729 (27×27)
             feature_dim = x.shape[2]

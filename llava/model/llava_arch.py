@@ -237,14 +237,37 @@ class LlavaMetaForCausalLM(ABC):
                 pre_views, pre_tokens_per_view, pre_features = pre_projector_shape
                 post_views, post_tokens_per_view, post_features = post_projector_shape
                 
-                if pre_views == post_views and pre_tokens_per_view == 729 and post_tokens_per_view == 196:
-                    print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling worked!")
+                # SHIRG-DEBUG-FIX: 2025-07-29 - Handle both baseline and SHIRG token counts
+                # ISSUE: SHIRG produces 1,216 tokens while baseline produces pooled tokens
+                # SOLUTION: Check for both scenarios and provide appropriate feedback
+                # LAVIDA IMPACT: Eliminates incorrect pooling warnings for SHIRG models
+                # SHIRG IMPACT: Provides proper feedback for SHIRG token selection results
+                
+                if pre_tokens_per_view == 1216:
+                    # SHIRG case: Should maintain 1,216 tokens (no pooling)
+                    if post_tokens_per_view == 1216:
+                        print(f"✅ SHIRG-CORRECT: Token selection maintained count!")
+                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view (SHIRG)")
+                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
+                    else:
+                        print(f"⚠️ SHIRG-ISSUE: Unexpected SHIRG token processing")
+                        print(f"   Expected: {pre_views} views, 1216→1216 tokens per view (SHIRG)")
+                        print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                elif pre_tokens_per_view == 729:
+                    # Baseline LaViDa case: Should pool 729→196 tokens
+                    if post_tokens_per_view == 196:
+                        print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling worked!")
+                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
+                    else:
+                        print(f"⚠️ POOLER-ISSUE: Unexpected multi-view pooling result")
+                        print(f"   Expected: {pre_views} views, 729→196 tokens per view")
+                        print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                else:
+                    # Other token counts
+                    print(f"MM_PROJECTOR-DEBUG: Processing {pre_tokens_per_view} tokens per view")
                     print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
                     print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
-                else:
-                    print(f"⚠️ POOLER-ISSUE: Unexpected multi-view pooling result")
-                    print(f"   Expected: {pre_views} views, 729→196 tokens per view")
-                    print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
             else:
                 print(f"MM_PROJECTOR-DEBUG: Shape change: {pre_projector_shape} → {post_projector_shape}")
         
