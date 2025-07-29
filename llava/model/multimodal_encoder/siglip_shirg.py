@@ -146,28 +146,24 @@ class SigLipShirgExtensions:
             
             # SHIRG-5VIEW-FIX: 2025-07-29 - Return 5 separate views as LaViDa expects
             # ISSUE: LaViDa expects 5 separate views to process through prepare_inputs_labels_for_multimodal
-            # SOLUTION: Return list of 5 views or stack properly to maintain view separation
+            # SOLUTION: Stack views along batch dimension to match baseline LaViDa format
             # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
             # LAVIDA IMPACT: Allows LaViDa to process SHIRG views through standard pipeline
             
-            # CRITICAL: LaViDa's encode_images expects vision tower to return features that can be split
-            # For multi-view, it expects either:
-            # 1. List of tensors (one per view)
-            # 2. Concatenated tensor that it will split using split_sizes
+            # CRITICAL: LaViDa expects multiple views stacked along batch dimension
+            # Baseline: 5 views × 729 tokens each → stacked as [5, 729, D]
+            # SHIRG: 5 views with different tokens → stack as [5, varying_tokens, D]
             
-            # Since LaViDa concatenates views before passing to vision tower, we need to
-            # return a concatenated tensor that matches LaViDa's expected format
+            # Stack views along batch dimension like baseline LaViDa
+            # This creates a tensor where each "batch" is a different view
+            stacked_views = torch.cat(processed_views, dim=0)  # [5, varying_tokens, D]
             
-            # Stack views along token dimension to create single tensor
-            # This matches how LaViDa processes multi-view images
-            concatenated_output = torch.cat(processed_views, dim=1)  # [1, total_tokens, D]
+            rank0_print(f"SHIRG-Fovea: Returning 5 stacked views with shape {stacked_views.shape}")
+            rank0_print(f"   View 0 (global): {processed_views[0].shape}")
+            rank0_print(f"   Views 1-4 (peripheral): {processed_views[1].shape} each")
+            rank0_print("   LaViDa will process these 5 views separately")
             
-            rank0_print(f"SHIRG-Fovea: Returning concatenated views with shape {concatenated_output.shape}")
-            rank0_print(f"   Total tokens: {concatenated_output.shape[1]} (196 + 4×328 = 1508)")
-            rank0_print(f"   View token counts: {[view.shape[1] for view in processed_views]}")
-            rank0_print("   This will be split by LaViDa into 5 views")
-            
-            return concatenated_output
+            return stacked_views
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")

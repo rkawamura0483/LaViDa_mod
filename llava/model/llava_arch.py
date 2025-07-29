@@ -416,29 +416,28 @@ class LlavaMetaForCausalLM(ABC):
             total_tokens = encoded_image_features.shape[1] if len(encoded_image_features.shape) > 1 else 0
             
             if is_shirg_enabled:
-                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns concatenated tokens as single view
-                # ISSUE: SHIRG concatenates all tokens from 5 views into single tensor [1, 1508, D]
-                # SOLUTION: Detect SHIRG output by token count and handle as single concatenated view
-                # RESEARCH IMPACT: Maintains SHIRG's per-view selection while working with LaViDa
-                # LAVIDA IMPACT: Allows LaViDa to process SHIRG tokens without splitting errors
+                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns 5 views with different token counts
+                # ISSUE: SHIRG has different token counts per view (196, 328, 328, 328, 328)
+                # SOLUTION: Detect SHIRG's 5-view output and split manually by token counts
+                # RESEARCH IMPACT: Maintains SHIRG's per-view selection methodology
+                # LAVIDA IMPACT: Allows LaViDa to process SHIRG's 5 views correctly
                 
-                # SHIRG returns concatenated tokens: 196 + 4×328 = 1508
-                expected_shirg_tokens = 196 + 4 * 328  # 1508
+                # SHIRG returns 5 views with these token counts
+                shirg_token_counts = [196, 328, 328, 328, 328]  # Total: 1508
                 
-                if actual_images == 1 and total_tokens == expected_shirg_tokens:
-                    # SHIRG returned concatenated tokens as expected
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned single view with {total_tokens} tokens")
-                    print(f"   Keeping as single view for processing")
-                    # Keep as single view - don't split
-                    encoded_image_features = [encoded_image_features]
+                if actual_images == 5:
+                    # SHIRG returned 5 views as expected
+                    print(f"SHIRG-SPLIT-FIX: SHIRG returned 5 views, keeping as separate views")
+                    print(f"   SHIRG token counts: {shirg_token_counts}")
+                    # Views are already separate, just convert to list
+                    encoded_image_features = [encoded_image_features[i:i+1] for i in range(5)]
                 elif actual_images == total_expected_images:
                     # SHIRG might be disabled or in fallback mode
                     print(f"SHIRG-SPLIT-FIX: SHIRG in fallback mode, using normal split")
                     encoded_image_features = torch.split(encoded_image_features, split_sizes)
                 else:
                     # Unexpected format - try to handle gracefully
-                    print(f"WARNING: SHIRG output format unexpected - {actual_images} images, {total_tokens} tokens")
-                    print(f"   Expected either 1 image with {expected_shirg_tokens} tokens or {total_expected_images} images")
+                    print(f"WARNING: SHIRG output format unexpected - {actual_images} images")
                     print(f"   Encoded shape: {encoded_image_features.shape}")
                     # Try to handle as list
                     if actual_images == 1:
@@ -496,9 +495,21 @@ class LlavaMetaForCausalLM(ABC):
                     print(f"POOLING-DEBUG idx={idx}: model_has_shirg={model_has_shirg}, input_shape={image_feat.shape}")
                     
                     if model_has_shirg:
-                        # SHIRG tokens bypass get_2dPool - they're already processed per SHIRG methodology
-                        # SHIRG Research: 672×672 → 2,304 tokens → 1,216 selected → direct to LM
-                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - no pooling, output_shape={image_feat.shape}")
+                        # SHIRG-POOLING-LOGIC: Handle SHIRG's different views appropriately
+                        # View 0: Already pooled to 196 tokens - skip pooling
+                        # Views 1-4: Selected tokens (328 each) - skip pooling to preserve selection
+                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - checking view type")
+                        
+                        # Check token count to determine view type
+                        num_tokens = image_feat.shape[1] if len(image_feat.shape) > 1 else 0
+                        if num_tokens == 196:
+                            print(f"   View {idx}: Global view (196 tokens) - already pooled, skipping")
+                        elif num_tokens == 328:
+                            print(f"   View {idx}: Peripheral view (328 tokens) - selected tokens, skipping pooling")
+                        else:
+                            print(f"   View {idx}: Unexpected token count {num_tokens}")
+                        
+                        # SHIRG tokens bypass pooling - they're already processed
                         image_features.append(image_feat)
                     else:
                         # Standard LaViDa tokens need get_2dPool processing (384×384 → 729 → pooled)
@@ -519,7 +530,14 @@ class LlavaMetaForCausalLM(ABC):
             if DEBUG_PRINT_IMAGE_RES:
                 print(f"DEBUG_PRINT_IMAGE_RES: {image_aspect_ratio,mm_patch_merge_type,mm_newline_position}")
             if mm_patch_merge_type == "flat":
+                # SHIRG-FLATTEN-DEBUG: Debug flattening issue
+                print(f"SHIRG-FLATTEN-DEBUG: Before flattening:")
+                for idx, feat in enumerate(image_features):
+                    print(f"   Feature {idx}: shape = {feat.shape}")
                 image_features = [x.flatten(0, 1) for x in image_features]
+                print(f"SHIRG-FLATTEN-DEBUG: After flattening:")
+                for idx, feat in enumerate(image_features):
+                    print(f"   Feature {idx}: shape = {feat.shape}")
                 # print(len(image_features))
             elif mm_patch_merge_type.startswith("spatial"):
                 new_image_features = []
@@ -720,6 +738,13 @@ class LlavaMetaForCausalLM(ABC):
                         breakpoint()
                         cur_image_features = image_features[cur_image_idx - 1]
                     cur_image_idx += 1
+                    
+                    # SHIRG-TOKEN-FIX: Ensure image features have batch dimension
+                    if len(cur_image_features.shape) == 2:
+                        # Add batch dimension if missing (happens after flatten)
+                        print(f"   Adding batch dimension to image features")
+                        cur_image_features = cur_image_features
+                    
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     cur_input_ids.append(torch.full((cur_image_features.shape[0],), IMAGE_TOKEN_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
