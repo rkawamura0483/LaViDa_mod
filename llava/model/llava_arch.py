@@ -215,8 +215,39 @@ class LlavaMetaForCausalLM(ABC):
     def encode_images(self, images):
         # breakpoint()
         image_features = self.get_model().get_vision_tower()(images)
+        
+        # LAVIDA-PAPER-FIX: Debug pooler projector operation
+        # Vision tower output: [5, 729, 1152] for multi-view, [1, 729, 1152] for single-view
+        # Pooler should reduce: [5, 729, 1152] → [5, 196, hidden_size] → [1, 980, hidden_size]
+        if hasattr(image_features, 'shape'):
+            print(f"MM_PROJECTOR-DEBUG: Vision tower output: {image_features.shape}")
+            pre_projector_shape = image_features.shape
+        
         # mage_features = self.get_model().vision_resampler(image_features, images=images)
         image_features = self.get_model().mm_projector(image_features)
+        
+        # LAVIDA-PAPER-FIX: Verify pooler projector worked correctly
+        if hasattr(image_features, 'shape'):
+            print(f"MM_PROJECTOR-DEBUG: After projector: {image_features.shape}")
+            post_projector_shape = image_features.shape
+            
+            # Check if pooling occurred correctly
+            if len(pre_projector_shape) == 3 and len(post_projector_shape) == 3:
+                # Multi-view case: [5, 729, 1152] → [5, 196, hidden_size]
+                pre_views, pre_tokens_per_view, pre_features = pre_projector_shape
+                post_views, post_tokens_per_view, post_features = post_projector_shape
+                
+                if pre_views == post_views and pre_tokens_per_view == 729 and post_tokens_per_view == 196:
+                    print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling worked!")
+                    print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                    print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
+                else:
+                    print(f"⚠️ POOLER-ISSUE: Unexpected multi-view pooling result")
+                    print(f"   Expected: {pre_views} views, 729→196 tokens per view")
+                    print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+            else:
+                print(f"MM_PROJECTOR-DEBUG: Shape change: {pre_projector_shape} → {post_projector_shape}")
+        
         return image_features
     
     def encode_multimodals(self, videos_or_images, video_idx_in_batch, split_sizes=None):

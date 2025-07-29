@@ -1004,32 +1004,54 @@ class LaViDaModelRunner:
                         print(f"BASELINE-DEBUG: Vision features type: {type(vision_features)}")
                         if hasattr(vision_features, 'shape'):
                             print(f"BASELINE-DEBUG: Image features shape: {vision_features.shape}")
-                            # LAVIDA-PAPER-FIX: Update token expectations for multi-view + pooling
-                            # Paper: 5 views × 196 tokens (after 2x2 pooling) = 980 tokens total
-                            expected_tokens_per_view = 196  # 14x14 after 2x2 pooling from 27x27
-                            expected_total_tokens = 980  # 5 views × 196 tokens per view
-                            actual_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
-                            print(f"BASELINE-DEBUG: Expected {expected_total_tokens} tokens (5×{expected_tokens_per_view} after pooling), got {actual_tokens} tokens")
+                            
+                            # LAVIDA-PAPER-FIX: Vision tower outputs raw tokens, pooler reduces them
+                            # Vision tower: 5 views × 729 tokens each = 3,645 total tokens (before pooling)
+                            # Pooler projector: 5 views × 196 tokens each = 980 total tokens (after pooling)
+                            
+                            if len(vision_features.shape) == 3:  # Multi-view format [views, tokens_per_view, features]
+                                num_views = vision_features.shape[0]
+                                tokens_per_view = vision_features.shape[1] 
+                                expected_tokens_per_view = 729  # 27x27 from SigLIP (before pooling)
+                                total_tokens_before_pooling = num_views * tokens_per_view
+                                expected_total_before_pooling = num_views * expected_tokens_per_view
+                                
+                                print(f"BASELINE-DEBUG: Multi-view processing - {num_views} views × {tokens_per_view} tokens = {total_tokens_before_pooling} total")
+                                print(f"BASELINE-DEBUG: Expected: {num_views} views × {expected_tokens_per_view} tokens = {expected_total_before_pooling} total (before pooling)")
+                                
+                                if total_tokens_before_pooling == expected_total_before_pooling:
+                                    print(f"✅ BASELINE-CORRECT: Vision tower multi-view output is correct")
+                                    print(f"   Next: Pooler projector should reduce to {num_views} × 196 = {num_views * 196} tokens")
+                                else:
+                                    print(f"⚠️ BASELINE-ISSUE: Token count mismatch in multi-view processing")
+                            else:  # Single view format [batch, tokens, features]
+                                actual_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
+                                expected_single_view_tokens = 729
+                                print(f"BASELINE-DEBUG: Single view processing - {actual_tokens} tokens")
+                                print(f"BASELINE-DEBUG: Expected: {expected_single_view_tokens} tokens (before pooling)")
+                                
+                                if actual_tokens == expected_single_view_tokens:
+                                    print(f"✅ BASELINE-CORRECT: Vision tower single view output is correct")
+                                    print(f"   Next: Pooler projector should reduce to 196 tokens")
+                                else:
+                                    print(f"⚠️ BASELINE-ISSUE: Single view token count mismatch")
+                            
+                            # Calculate actual tokens and expected for vision_info
+                            if len(vision_features.shape) == 3:  # Multi-view
+                                actual_total_tokens = vision_features.shape[0] * vision_features.shape[1]
+                                expected_after_pooling = vision_features.shape[0] * 196  # After pooler
+                            else:  # Single view
+                                actual_total_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
+                                expected_after_pooling = 196  # After pooler
                             
                             vision_info = {
                                 'feature_shape': list(vision_features.shape),
-                                'num_tokens': actual_tokens,
+                                'num_tokens_before_pooling': actual_total_tokens,
                                 'feature_dim': vision_features.shape[-1] if len(vision_features.shape) > 1 else 1,
-                                'expected_tokens': expected_total_tokens,  # LAVIDA-PAPER-FIX: Use new total expected
-                                'expected_tokens_per_view': expected_tokens_per_view,
-                                'tokens_match_expected': actual_tokens == expected_total_tokens
+                                'expected_tokens_after_pooling': expected_after_pooling,
+                                'processing_stage': 'vision_tower_output'
                             }
                             
-                            # LAVIDA-PAPER-FIX: Debug multi-view + pooling structure for research validation
-                            if actual_tokens == expected_total_tokens:
-                                print(f"✅ BASELINE-CORRECT: LaViDa multi-view + pooling working properly: {actual_tokens} tokens")
-                                print(f"   5 views × {expected_tokens_per_view} tokens per view (14×14 after 2×2 pooling)")
-                            elif actual_tokens == 729:
-                                grid_size = int(math.sqrt(actual_tokens))  # Should be 27
-                                print(f"⚠️ BASELINE-ISSUE: Single view without pooling: {actual_tokens} → {grid_size}×{grid_size} grid")
-                                print(f"   Missing multi-view processing or 2×2 pooling step")
-                            else:
-                                print(f"⚠️ BASELINE-ISSUE: Unexpected token count: {actual_tokens} (expected {expected_total_tokens})")
                         else:
                             print(f"BASELINE-DEBUG: Vision features has no shape attribute")
                             vision_info = {'error': 'Vision features missing shape attribute'}
