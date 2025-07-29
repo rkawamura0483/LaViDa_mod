@@ -2,7 +2,7 @@
 
 ## Abstract
 
-**SHIRG (Static Hierarchical Relevance Gate)** is a training-minimal token selection method designed specifically for diffusion-based Vision-Language Models (VLMs) that require static prefix KV-cache management. While LaViDa achieves ~1.9× speedup over autoregressive VLMs through bidirectional diffusion and prefix caching, its 384×384 image resolution (729 tokens per view) limits performance on fine-grained spatial reasoning tasks. SHIRG bridges this gap by implementing global token selection across LaViDa's existing 5-view structure (3,645 total tokens) while maintaining the same 980-token output as baseline, preserving cache compatibility through static selection with minimal LoRA adaptation (0.9% parameters). Our method targets **"maximizing quality without sacrificing LaViDa's 1.9× speed-up"** - achieving significant quality improvements while maintaining cache integrity and speed advantages.
+We keep a single 384² global view (≈196 pooled tokens) to give scene context, and add four 512² peripheral views pruned to 40–50% Top-K (≈1,400–1,600 extra tokens). **SHIRG-Fovea** achieves **≤1.20× baseline latency** with ≈1,600–1,800 tokens through biologically-inspired foveated processing that respects the empirical accuracy cliff at >50% static pruning found in prior work ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)). Our method preserves LaViDa's cache compatibility through per-view static selection with minimal LoRA adaptation.
 
 ---
 
@@ -16,22 +16,21 @@
 
 ### 1.2 Resolution Limitation Impact
 
-LaViDa's current 5-view processing yields 5×729 = 3,645 visual tokens before pooling to 980 tokens (5×196), but aggressive pooling loses fine-grained information for:
+**Global context is already well modelled at 384²**, so the real loss is in peripheral detail. LaViDa's current processing loses fine-grained information for:
 - **High-resolution spatial reasoning**: Charts, dense diagrams, satellite crops  
 - **Fine-grained visual details**: Thin chart features, small legends, dense data points
 - **Document analysis**: Fine-grained table structures, small annotations
+- **Single-scale global Top-K over-selects centre tokens and starves corners** —observed in AdaptPrune ablations ([arXiv](https://arxiv.org/abs/2503.08019))
 
 **Note**: We frame this as general high-resolution spatial reasoning rather than OCR, since SigLIP patches are still too large for 6pt glyphs.
 
-**Performance Gap**: The 5-view structure provides rich information (3,645 tokens) but current pooling discards ~73% of tokens, losing fine details.
-
 ### 1.3 High-Resolution Scaling Challenge
 
-LaViDa's existing 5-view structure already provides 3,645 tokens but current pooling (729→196 per view) discards valuable information. The challenge is:
+The challenge is scaling to higher resolution while maintaining cache compatibility:
 - **Information loss**: Current pooling retains only 27% of available tokens
 - **Cache compatibility**: Any token selection must maintain static sequences
 - **Latency budget**: Token selection must complete in <30ms to preserve speed benefits
-- **Global coordination**: Need to eliminate redundant information across overlapping views
+- **Per-view fairness**: Need per-view fairness so each 512 crop keeps at least 40% of its own evidence
 
 ---
 
@@ -74,30 +73,24 @@ LaViDa's existing 5-view structure already provides 3,645 tokens but current poo
 
 ### 3.1 Core Design Principles
 
-1. **Static Selection**: All token choices made at step 0, preserving cache compatibility
-2. **Multi-View Architecture**: Maintains LaViDa's 5-view structure to preserve trained spatial relationships
-3. **Training-Minimal**: LoRA adaptation on critical components only (1.4-2.2% parameters)
-4. **Distance-Aware**: Spatial relationships guide token importance beyond similarity
-5. **Speed-Quality Trade-off**: Two variants balancing LaViDa's speed advantage with fine-detail preservation
+1. **Two-scale foveation**: Global 384² context + 4×512² peripheral views
+2. **Per-view static Top-K** rather than stitched global ranking
+3. **≤50% prune ratio** per prior empirical upper bound ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf))
+4. **Cache & LoRA constraints**: Same cache compatibility and training requirements
 
 ### 3.2 Optimal SHIRG Pipeline Integration
 
 **Integration Point**: SHIRG operates **between SigLIP and the PoolerProjector, before any KV-cache is materialized**.
 
 ```
-╭──────────── LaViDa any-res splitter ────────────╮
-│ 5×384² crops  ─┐                               │
-│                ▼                               │
-│      SigLIP encoder (5×)  –––  5 × [729, D]    │  ⟵  ✔ keep exactly as in baseline
-│                │                               │
-│     ⭑ SHIRG GLOBAL SELECTOR ⭑                 │  ⟵  NEW (runs *once*)
-│                ▼                               │
-│  (Lo-res scaffold 64) + (K hi-res tokens)      │
-│                ▼                               │
-│      Pooler/Projector (LoRA-adapted)           │
-│                ▼                               │
-│            980 tokens                         │  ⟵  Same shape as baseline → LM
-╰─────────────────────────────────────────────╯
+╭── any-res splitter ──╮
+│ Global 384² crop │──SigLIP──▶ [196,D] (no drop)
+│ 4 × 512² crops   │──SigLIP──▶ [4 × 1024,D]
+│                   │          ↓ per-view Top-K (keep≈40-50%)
+│                   │          [4 × 409,D]
+│ Concatenate ─────────────────▶ [196+1636 ≈1832,D]
+│ mm_projector (LoRA) ─────────▶ cache 1 832 tokens
+╰──────────────────────────────╯
 ```
 
 **Why This Integration Point?**
@@ -105,49 +98,43 @@ LaViDa's existing 5-view structure already provides 3,645 tokens but current poo
 - **No extra SigLIP passes**: Reuse regular 5-crop strategy, avoiding distribution shift
 - **One global pass**: Selection done *once* across concatenated 5 × 729 = 3,645 tokens, eliminating redundant edges in overlapping crops
 
-### 3.3 Step-by-Step SHIRG Algorithm
+### 3.3 Token Selection Algorithm
 
-| # | Stage | What Happens | Complexity |
-|---|-------|--------------|------------|
-| **1** | **Per-view SigLIP** | Each 384² crop → 27 × 27 patch grid (729 tokens) with local (x, y) coords | Same as baseline (GPU-efficient, fused FlashAttn) |
-| **2** | **Global coordinate lift** | Map each token's (x, y, view-id) to **single 48 × 48 canvas**<br>`global_x = local_x + offset_x(view_id)`<br>`global_y = local_y + offset_y(view_id)` | Adds 3,645 int32 writes – negligible |
-| **3** | **Token deduplication** | If two tokens share same global (x, y) keep one with higher text-cosine; store view-bitmask for gradient back-projection | Removes ~8% duplicates in photos, 15-20% in documents |
-| **4** | **Distance-aware scoring** | For each token *i*:<br>`score_i = 0.65·sim_i - 0.25·ΔNeighbour - 0.10·ΔCropBoundary`<br>where `ΔNeighbour = mean L2 distance to 8-nbh`<br>`ΔCropBoundary = |view_id - 2|/2` | Single fused CUDA kernel: O(N·D) + sparse neighbour lookup ~4ms |
-| **5** | **Lo-res scaffold injection** | Average-pool 48 × 48 canvas to 8 × 8 → 64 tokens; always keep them | <1ms |
-| **6** | **Top-K selection** | Choose K = (980 - 64) = 916 high-res tokens so (64 + K) = 980 – identical token count to baseline | Simple radix-select; 0.2ms |
-| **7** | **Static concatenation** | `[scaffold_64 \| selected_916]` → 980 tokens with **original positional embeddings** | No cache breakage |
-| **8** | **PoolerProjector (LoRA-rank-64)** | Freeze original weights; add LoRA on first FC layer **only** (~70M params ≃ 0.9%) | 5-hour train on 8×A100 |
-| **9** | **Diffusion LM** | Unchanged; KV-cache created *after* step 7 and reused over steps | Full 1.9× LaViDa speed benefit retained |
+| # | Stage                           | Operation                                                                                               |
+| - | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 1 | **SigLIP encoding**             | 1 global → 196 tok (2 × 2 pool); 4 hi-res 512² → 4×1024 tokens                                          |
+| 2 | **Per-view ranking**            | Compute composite score `0.7 · attn + 0.3 · sim` **inside each view** (no cross-view bias)              |
+| 3 | **Static Top-K keep-rate**      | `K = ⌈keep_ratio·1024⌉`, with *keep\_ratio* = 0.4–0.5 (configurable)                                    |
+| 4 | **Light dedup across overlaps** | if two kept tokens' (x,y) differ < 1 patch *and* cosine > 0.95 keep the higher score (AdaptPrune trick) |
+| 5 | **Concat**                      | `[global196 ∥ view1_K … view4_K]`                                                                       |
+| 6 | **Project & cache**             | Same LoRA projector; LM sees fixed ≈1 800 tokens                                                        |
+
+*Justification*:
+
+* Per-view Top-K avoids the "dominant crop" failure mode reported by AdaptPrune ([arXiv](https://arxiv.org/abs/2503.08019)).
+* 40–50% static pruning is the regime that preserves accuracy across ViT backbones ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)).
+* Foveated ViTs show that a low-res global map plus hi-res fovea keeps 94% of performance while cutting tokens 4–5× ([arXiv](https://arxiv.org/pdf/2507.15833)).
 
 ### 3.4 Detailed Component Design
 
-#### 3.4.1 Global Coordinate Lifting Architecture
+### 3.4 LoRA Training
 
-**Multi-View Token Processing**:
-- LaViDa's existing 5-view structure: 5 × 384² crops → 5 × 729 = 3,645 tokens
-- Each token has local (x, y) coordinates within its 27×27 view
-- Global mapping to single 48×48 canvas eliminates view boundaries
+LoRA training remains unchanged from the original design, but **remove the 64-token scaffold** section; the 196 global tokens now fulfil that role.
 
-**Global Coordinate Mapping**:
-```python
-# Inter-view offsets for 48×48 global grid
-offsets = {0:(0,0), 1:(21,0), 2:(0,21), 3:(21,21), 4:(10,10)}
+**LoRA Target Modules** (Rank-64):
+```yaml
+projector_lora:
+  targets: ["mm_projector.fc1"]  # First FC layer only
+  rank: 64
+  alpha: 128
+  
+siglip_lora:
+  targets: ["blocks.0.attn.q", "blocks.0.attn.k", "blocks.1.attn.q", "blocks.1.attn.k", "blocks.2.attn.q", "blocks.2.attn.k", "blocks.3.attn.q", "blocks.3.attn.k"]  # Query/Key only, blocks 0-3
+  rank: 64 
+  alpha: 128
 
-# Map local to global coordinates
-global_x = local_x + offset_x(view_id)
-global_y = local_y + offset_y(view_id)
+Total trainable: ~70M parameters (0.9% of 8B model)
 ```
-
-**Lo-Res Scaffold (64)**:
-- 8×8 average pooling over 48×48 global canvas
-- Always retained (no selection pressure)
-- Provides global context and spatial anchors
-- Ensures coverage of entire image region
-
-**Spatial Preservation**:
-- Selected tokens maintain original SigLIP positional embeddings
-- Positional embeddings interpolated from 27² → 48² for compatibility
-- No cache breakage due to consistent embedding structure
 
 #### 3.4.2 Distance-Aware Importance Scoring
 
@@ -198,66 +185,65 @@ Total trainable: ~70M parameters (0.9% of 8B model)
 
 ### 4.1 Integration with LaViDa Pipeline
 
-**Modified SigLIP Processing** (`llava/model/multimodal_encoder/siglip_encoder.py`):
+**extract_multiview_tokens**: generate `global_view` (centre, 384²) **with stride-2 pooling** to 196 tokens.
+
 ```python
 def extract_multiview_tokens(self, pixel_values):
-    # LaViDa's existing 5-view processing
-    view_features = []
-    for i, view in enumerate(pixel_values):  # 5 views × 384²
-        features = self.vision_model(view)  # [B, 729, D]
-        # Add view_id and local coordinates
-        features = self.add_view_metadata(features, view_id=i)
-        view_features.append(features)
+    # Global view: 384² → 196 tokens (2x2 pooled)
+    global_features = self.vision_model(pixel_values[0])  # [B, 729, D]
+    global_pooled = F.avg_pool2d(global_features.view(B, 27, 27, D), 2, 2)  # [B, 196, D]
     
-    # Concatenate all views: 5 × 729 = 3,645 tokens  
-    all_tokens = torch.cat(view_features, dim=1)  # [B, 3645, D]
-    return all_tokens
+    # 4 peripheral views: 512² → 4x1024 tokens
+    peripheral_features = []
+    for i in range(1, 5):  # 4 peripheral views
+        features = self.vision_model(pixel_values[i])  # [B, 1024, D] from 512²
+        peripheral_features.append(features)
+    
+    return global_pooled, peripheral_features
 ```
 
-**SHIRG Global Selector** (`shirg/shirg_selector.py`):
+Create **`topk_per_view()`** helper:
+
 ```python
-def select_tokens_global(self, tokens, text_features, K=916):
-    # Step 1: Global coordinate lifting
-    global_coords = self.lift_to_global_coords(tokens)  # 48×48 canvas
-    
-    # Step 2: Token deduplication (handle overlaps)
-    deduped_tokens = self.deduplicate_overlaps(tokens, global_coords)
-    
-    # Step 3: Distance-aware scoring
-    similarity_scores = self.compute_similarity(deduped_tokens, text_features)
-    neighbor_distances = self.compute_neighbor_distances(deduped_tokens)
-    crop_boundary_penalty = self.compute_crop_boundary_penalty(deduped_tokens)
-    
-    importance_scores = (0.65 * similarity_scores - 
-                        0.25 * neighbor_distances - 
-                        0.10 * crop_boundary_penalty)
-    
-    # Step 4: Lo-res scaffold (always keep 64 tokens)
-    scaffold = F.avg_pool2d(global_coords.view(B, 48, 48, D), 
-                           kernel_size=6, stride=6)  # [B, 64, D]
-    
-    # Step 5: Top-K selection for remaining 916 tokens
-    selected_indices = torch.topk(importance_scores, K).indices
-    selected_tokens = deduped_tokens[selected_indices]
-    
-    # Step 6: Static concatenation [scaffold_64 | selected_916] = 980
-    final_tokens = torch.cat([scaffold, selected_tokens], dim=1)
-    
-    return final_tokens  # [B, 980, D] - same as baseline!
+def topk_per_view(tokens, k):
+    score = 0.7*attn2cls(tokens)+0.3*text_cosine(tokens)
+    idx = torch.topk(score, k, dim=1).indices
+    return tokens.gather(1, idx[..., None].expand(-1,-1,tokens.size(-1)))
 ```
+
+(attn2cls available from SigLIP last layer.)
+
+After selection, concatenate:
+
+```python
+selected = torch.cat([global196, v1_k, v2_k, v3_k, v4_k], dim=1)
+```
+
+Assert `selected.shape[1] ≈ 1600–1800`.
+
+Delete **lift_to_global_coords()** and **scaffold** code paths.
 
 **Integration Layer** (`shirg/lavida_shirg_integration.py`):
 ```python
 def forward_with_shirg(self, images, text_features):
-    # Extract 5-view tokens (same as LaViDa baseline)
-    multiview_tokens = self.vision_tower.extract_multiview_tokens(images)
+    # Extract global + 4 peripheral views
+    global_tokens, peripheral_tokens = self.vision_tower.extract_multiview_tokens(images)
     
-    # Global SHIRG selection: 3,645 → 980 tokens
-    selected_tokens = self.shirg_selector.select_tokens_global(
-        multiview_tokens, text_features, K=916)
+    # Per-view Top-K selection (keep ~40-50% per view)
+    keep_ratio = 0.45  # configurable
+    K = int(keep_ratio * 1024)  # ~409 tokens per view
     
-    # Project through LoRA-adapted mm_projector (same shape as baseline!)
-    projected = self.mm_projector(selected_tokens)  # [B, 980, D]
+    selected_peripheral = []
+    for view_tokens in peripheral_tokens:
+        selected = self.topk_per_view(view_tokens, K)
+        selected_peripheral.append(selected)
+    
+    # Concatenate: [global196 || view1_K ... view4_K]
+    final_tokens = torch.cat([global_tokens] + selected_peripheral, dim=1)
+    # Shape: [B, 196 + 4*409, D] = [B, ~1832, D]
+    
+    # Project through LoRA-adapted mm_projector
+    projected = self.mm_projector(final_tokens)
     
     return projected
 ```
@@ -311,13 +297,11 @@ def forward_with_shirg(self, images, text_features):
 
 ### 5.3 Expected Realistic Performance Numbers
 
-| Model | Final Tokens | ChartQA ΔCIDEr | DocVQA ΔEM | Peak VRAM | 30-step Latency |
-|-------|--------------|----------------|-------------|-----------|-----------------|
-| **B0 (Baseline)** | 980 | 0 | 0 | 7.5 GB | 37 ms |
-| **B1 (Full Hi-Res)** | 3,645 | +6.0 | +3.0 | 22 GB | 75 ms |
-| **S1 (SAINT)** | 1,200 | +2.5 | +1.5 | 13 GB | 65 ms |
-| **S2 (TopV)** | 1,200 | +3.0 | +2.0 | 12 GB | 62 ms |
-| **P1 (SHIRG-980t)** | 980 | **+2.5 ± 0.2** | **+1.7 ± 0.3** | **7.8 GB** | **38-39 ms** |
+| Model           | Tokens     | Latency (30 steps) | ChartQA Δ  | DocVQA Δ     |
+| --------------- | ---------- | ------------------ | ---------- | ------------ |
+| Baseline‑384    | 980        | 37 ms              | 0          | 0            |
+| Full 512×5      | 5 +×       | 75 ms              | +6         | +3           |
+| **SHIRG‑Fovea** | **≈1 800** | **≤45 ms (1.2 ×)** | **+3 – 4** | **+2 – 2.5** |
 
 **Key Performance Insights**:
 - **P1 (SHIRG)**: Maximizes quality without sacrificing LaViDa's 1.9× speed-up advantage
@@ -478,7 +462,7 @@ def forward_with_shirg(self, images, text_features):
 1. **Motivation** – LaViDa speed advantage vs low-resolution limitation
 2. **Upper-bound wins/costs** – Full 672² numbers showing the trade-off
 3. **Pruning landscape** – SAINT, TopV, PrefixKV positioning, why diffusion matters
-4. **SHIRG innovation** – Dual-scale graphic, static gate design, LoRA footprint
+4. **"Foveated SHIRG: 384 + 4 × 512 with 50% Keep"** – Two-scale diagram showing foveated approach
 5. **Results table** – Show progression B0→B1→SAINT→TopV→SHIRG
 6. **Efficiency comparison** – VRAM & latency bar charts
 7. **Ablations** – No scaffold, no coord, fixed-K variations
