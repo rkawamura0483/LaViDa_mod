@@ -146,7 +146,12 @@ class SigLipShirgExtensions:
             
             # CRITICAL: Concatenate views to match LaViDa's expected format
             # LaViDa's encode_images expects concatenated views that it will later split
-            concatenated_output = torch.cat(processed_views, dim=0)
+            # SHIRG-CONCAT-DIM-FIX: 2025-07-29 - Concatenate along token dimension, not batch
+            # ISSUE: torch.cat on dim=0 fails when views have different token counts
+            # SOLUTION: Concatenate along dim=1 to combine tokens from all views
+            # RESEARCH IMPACT: Maintains proper SHIRG token structure (196 + 4×328 = 1508)
+            # LAVIDA IMPACT: Creates single tensor with all tokens for LaViDa processing
+            concatenated_output = torch.cat(processed_views, dim=1)  # [B, 1508, D]
             
             rank0_print(f"SHIRG-Fovea: Returning concatenated views with shape {concatenated_output.shape}")
             rank0_print(f"   This will be split by LaViDa into {len(processed_views)} views")
