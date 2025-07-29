@@ -89,8 +89,24 @@ class SigLipShirgExtensions:
             rank0_print(f"   Peripheral: {len(peripheral_features)} views × {peripheral_features[0].shape}")
             
             # Step 2: Per-view Top-K selection on peripheral views
-            keep_ratio = 0.45  # 45% keep rate as per research (40-50% range)
-            K = int(keep_ratio * 729)  # ~328 tokens per view (adapted for 384² patches)
+            # SHIRG-CONFIG-FIX: 2025-07-29 - Make token count configurable for debugging
+            # ISSUE: Need to test if token count is causing generation issues
+            # SOLUTION: Add configuration to switch between research target and LaViDa-compatible counts
+            # RESEARCH IMPACT: Allows testing both configurations to identify root cause
+            # LAVIDA IMPACT: Enables debugging while maintaining research objectives
+            
+            # Check for debug mode
+            use_baseline_token_count = getattr(self, 'use_baseline_token_count', False)
+            
+            if use_baseline_token_count:
+                # Match LaViDa baseline exactly: 980 tokens (196 global + 4×196 peripheral)
+                K = 196
+                rank0_print("   🔧 DEBUG MODE: Using baseline token count (980 total)")
+            else:
+                # Research target: ~1600-1800 tokens per SHIRG methodology
+                keep_ratio = 0.45  # 45% keep rate as per research (40-50% range)
+                K = int(keep_ratio * 729)  # ~328 tokens per view
+                rank0_print(f"   🎯 RESEARCH MODE: Using SHIRG target (~{196 + 4*K} total tokens)")
             
             selected_peripheral = []
             for i, view_tokens in enumerate(peripheral_features):

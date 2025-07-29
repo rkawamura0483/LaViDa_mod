@@ -147,21 +147,42 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
     # if step_ratio:
     #     steps = int(max_new_tokens*step_ratio)
     gen_length = max_new_tokens
+    # SHIRG-GENERATION-DEBUG: 2025-07-29 - Debug token flow in generation
+    # ISSUE: SHIRG tokens produce empty outputs in generation
+    # SOLUTION: Add comprehensive debugging to understand generation behavior
+    # RESEARCH IMPACT: Identifies why SHIRG tokens fail in generation
+    # LAVIDA IMPACT: Helps fix generation for variable token counts
+    
+    if inputs_embeds is not None:
+        print(f"SHIRG-GEN-DEBUG: Input embeddings shape: {inputs_embeds.shape}")
+        print(f"   Embedding stats: mean={inputs_embeds.mean().item():.4f}, "
+              f"std={inputs_embeds.std().item():.4f}, "
+              f"min={inputs_embeds.min().item():.4f}, max={inputs_embeds.max().item():.4f}")
+        
+        # Check for anomalies
+        nan_count = torch.isnan(inputs_embeds).sum().item()
+        inf_count = torch.isinf(inputs_embeds).sum().item()
+        print(f"   Anomalies: NaN={nan_count}, Inf={inf_count}")
+    
     assert position_ids is None
     if prompt is None:
         assert inputs_embeds is not None
         bsz, seq_len = inputs_embeds.shape[:2]
         prompt = torch.full((bsz, seq_len), 0, dtype=torch.long).to(model.device)
+        print(f"SHIRG-GEN-DEBUG: Created prompt placeholder with shape {prompt.shape}")
     past_key_values = None
     if prefix_lm:
+        print(f"SHIRG-GEN-DEBUG: Prefix LM mode - caching {inputs_embeds.shape[1]} prefix tokens")
         past_key_values = model(None,input_embeddings=inputs_embeds,use_cache=True).attn_key_values
         # breakpoint()
         x = torch.full((bsz, gen_length), mask_id, dtype=torch.long).to(model.device)
         prompt = torch.full((bsz, 0), 0, dtype=torch.long).to(model.device)
         # x[:, :prompt.shape[1]] = prompt.clone()
+        print(f"SHIRG-GEN-DEBUG: Initialized generation tensor x with shape {x.shape} (all mask tokens)")
     else:
         x = torch.full((1, prompt.shape[1] + gen_length), mask_id, dtype=torch.long).to(model.device)
         x[:, :prompt.shape[1]] = prompt.clone()
+        print(f"SHIRG-GEN-DEBUG: Non-prefix mode - x shape: {x.shape}")
 
     prompt_index = (x != mask_id)
     # assert prompt.shape[0] == 1
@@ -219,13 +240,36 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
                 #print(tokenizer.batch_decode(x)[0].replace('<|endoftext|>',''))
                 # print((x==mask_id).sum())
                 # breakpoint()
+                
+                # SHIRG-CRITICAL-DEBUG: 2025-07-29 - Debug generation with SHIRG tokens
+                # ISSUE: SHIRG produces empty outputs while baseline works
+                # SOLUTION: Add detailed logging of generation process
+                # RESEARCH IMPACT: Identifies why SHIRG fails in generation
+                # LAVIDA IMPACT: Fixes generation for variable token counts
+                
+                if i == 0 and num_block == 0:  # First iteration
+                    print(f"SHIRG-GEN-CRITICAL: First generation step")
+                    print(f"   x shape: {x.shape}, mask count: {(x == mask_id).sum().item()}")
+                    if inputs_embeds is not None:
+                        print(f"   Input embeds shape: {inputs_embeds.shape}")
+                        print(f"   Prefix LM: {prefix_lm}")
+                    
                 if prefix_lm:
                     # breakpoint()
                     logits = model(None,input_embeddings=inputs_embeds_curr,past_key_values=past_key_values).logits
+                    
+                    if i == 0 and num_block == 0:
+                        print(f"   Prefix mode - logits shape: {logits.shape}")
+                        print(f"   Past KV available: {past_key_values is not None}")
+                        if past_key_values is not None and len(past_key_values) > 0:
+                            print(f"   Past KV shape: {past_key_values[0][0].shape if past_key_values[0] else 'None'}")
                 else:
                     if inputs_embeds is not None:
                         inputs_embeds_curr[:,:inputs_embeds.shape[1]] = inputs_embeds
                     logits = model(None,input_embeddings=inputs_embeds_curr).logits
+                    
+                    if i == 0 and num_block == 0:
+                        print(f"   Non-prefix mode - logits shape: {logits.shape}")
             # logits = logits.cpu()
             logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
             x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
@@ -265,8 +309,36 @@ def generate(model, prompt=None, steps=None, max_new_tokens=128, block_length=12
                     breakpoint()
                 transfer_index[j, select_index] = True
             x[transfer_index] = x0[transfer_index]
+            
+            # SHIRG-TOKEN-DEBUG: 2025-07-29 - Debug generated tokens
+            # ISSUE: Need to see what tokens are being generated
+            # SOLUTION: Log token generation progress
+            # RESEARCH IMPACT: Identifies if SHIRG affects token generation
+            # LAVIDA IMPACT: Shows generation behavior differences
+            
+            if i == 0 and num_block == 0:  # First iteration
+                print(f"   Generated tokens (first step): {x0[0, :20].tolist()}")
+                print(f"   Transfer count: {transfer_index.sum().item()}")
+                unique_tokens = torch.unique(x0[transfer_index])
+                print(f"   Unique generated tokens: {unique_tokens[:10].tolist() if len(unique_tokens) <= 10 else f'{len(unique_tokens)} unique'}")
+                
             if verbose:
                 history.append(x.clone().cpu())
+    
+    # SHIRG-FINAL-DEBUG: 2025-07-29 - Debug final output
+    # ISSUE: SHIRG produces all pad tokens
+    # SOLUTION: Log final generation result
+    # RESEARCH IMPACT: Shows final token distribution
+    # LAVIDA IMPACT: Identifies generation failure pattern
+    
+    print(f"SHIRG-GEN-FINAL: Generation complete")
+    print(f"   Final x shape: {x.shape}")
+    print(f"   Remaining masks: {(x == mask_id).sum().item()}")
+    unique_final = torch.unique(x)
+    print(f"   Unique tokens in output: {unique_final[:20].tolist() if len(unique_final) <= 20 else f'{len(unique_final)} unique'}")
+    if len(unique_final) < 5:
+        print(f"   WARNING: Only {len(unique_final)} unique tokens in output!")
+    
     # breakpoint()
     # print(f"NFE: {NFE} Num Blocks: {num_blocks}")
     if verbose:

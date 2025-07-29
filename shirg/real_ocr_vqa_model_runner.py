@@ -476,6 +476,17 @@ class LaViDaModelRunner:
         os.environ["NOT_ALWASY_DO_2DPOOL"] = "1"  # This sets ALWASY_DO_2DPOOL=False
         print("🔧 SHIRG-CRITICAL: Disabled LaViDa pooling (preserve 3,645 tokens) via NOT_ALWASY_DO_2DPOOL=1")
         
+        # SHIRG-DEBUG-MODE: 2025-07-29 - Test with baseline token count
+        # ISSUE: Need to verify if token count is causing empty outputs
+        # SOLUTION: Add flag to test with 980 tokens matching baseline
+        # RESEARCH IMPACT: Helps identify root cause of generation issue
+        # LAVIDA IMPACT: Verifies if token count is the problem
+        
+        # Set this to True to test with 980 tokens (matching baseline)
+        self.use_baseline_token_count = False  # Change to True for debugging
+        if self.use_baseline_token_count:
+            print("🔧 SHIRG-DEBUG: Using baseline token count (980 tokens) for testing")
+        
         try:
             # First, ensure SHIRG encoder is available
             try:
@@ -581,6 +592,11 @@ class LaViDaModelRunner:
                 self.shirg_tower = self.shirg_model.get_vision_tower()
                 if self.shirg_tower is not None:
                     self.shirg_tower = self.shirg_tower.to(self.device)
+                    
+                    # Pass debug flag to vision tower
+                    if hasattr(self, 'use_baseline_token_count'):
+                        self.shirg_tower.use_baseline_token_count = self.use_baseline_token_count
+                        print(f"   🔧 Set vision tower use_baseline_token_count = {self.use_baseline_token_count}")
                     
                     # SHIRG-CONFIG-FIX: 2025-07-29 - Comprehensive SHIRG configuration
                     # ISSUE: SHIRG configuration may not be properly applied to vision tower

@@ -782,6 +782,27 @@ class LlavaMetaForCausalLM(ABC):
                     print(f"   Inserted token stats: mean={cur_image_features.mean().item():.4f}, "
                           f"std={cur_image_features.std().item():.4f}, "
                           f"min={cur_image_features.min().item():.4f}, max={cur_image_features.max().item():.4f}")
+                    
+                    # SHIRG-CRITICAL-DEBUG: 2025-07-29 - Check if SHIRG tokens differ from baseline
+                    # ISSUE: SHIRG produces empty outputs while baseline works
+                    # SOLUTION: Log detailed token differences between baseline and SHIRG
+                    # RESEARCH IMPACT: Identifies why SHIRG tokens don't generate text
+                    # LAVIDA IMPACT: Ensures both baseline and SHIRG work correctly
+                    if cur_image_features.shape[0] > 1000:
+                        print(f"   🔍 SHIRG MODE DETECTED: {cur_image_features.shape[0]} tokens (expected ~1508)")
+                        # Check for any anomalies in SHIRG tokens
+                        nan_count = torch.isnan(cur_image_features).sum().item()
+                        inf_count = torch.isinf(cur_image_features).sum().item()
+                        zero_count = (cur_image_features == 0).all(dim=-1).sum().item()
+                        print(f"   Token health: NaN={nan_count}, Inf={inf_count}, All-zero={zero_count}")
+                        
+                        # Check token magnitude distribution
+                        token_norms = torch.norm(cur_image_features, dim=-1)
+                        print(f"   Token norms: mean={token_norms.mean().item():.4f}, "
+                              f"std={token_norms.std().item():.4f}, "
+                              f"min={token_norms.min().item():.4f}, max={token_norms.max().item():.4f}")
+                    else:
+                        print(f"   BASELINE MODE: {cur_image_features.shape[0]} tokens")
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
 
             # import pdb; pdb.set_trace()
