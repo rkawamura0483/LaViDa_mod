@@ -121,7 +121,9 @@ class LaViDaModelRunner:
                 "mm_projector_type": 'pooler',  # LAVIDA-PAPER-FIX: Use pooler for 2x2 average pooling as per paper
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
-                "mm_pooler_ratio": 2  # LAVIDA-PAPER-FIX: 2x2 pooling to reduce 729→196 tokens per view
+                "mm_pooler_ratio": 2,  # LAVIDA-PAPER-FIX: 2x2 pooling to reduce 729→196 tokens per view
+                "image_aspect_ratio": "anyres",  # CRITICAL: Enable multi-view processing
+                "image_grid_pinpoints": [(768, 768)]  # Required for anyres processing
             }
             
             print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
