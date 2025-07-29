@@ -424,23 +424,14 @@ class LlavaMetaForCausalLM(ABC):
             total_tokens = encoded_image_features.shape[1] if len(encoded_image_features.shape) > 1 else 0
             
             if is_shirg_enabled:
-                # SHIRG-MULTIVIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns 5 views with varying tokens
-                # ISSUE: SHIRG returns [5, varying_tokens, D] where tokens are [196, 328, 328, 328, 328]
-                # SOLUTION: Split SHIRG's multi-view output directly without using split_sizes
-                # RESEARCH IMPACT: Maintains SHIRG's per-view token selection
-                # LAVIDA IMPACT: Processes SHIRG's varying token counts through pipeline
+                # SHIRG-SINGLE-VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns concatenated tokens as single view
+                # ISSUE: SHIRG concatenates all tokens (1508 total) into single tensor
+                # SOLUTION: Handle SHIRG's single concatenated output as one view
+                # RESEARCH IMPACT: Maintains SHIRG's ~1508 token output per methodology
+                # LAVIDA IMPACT: Processes SHIRG output as single view through pipeline
                 
-                if actual_images == 5:
-                    # SHIRG returned 5 views as expected - split them
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned 5 views with varying token counts")
-                    print(f"   Encoded shape: {encoded_image_features.shape}")
-                    # Split into individual views
-                    encoded_image_features = [encoded_image_features[i:i+1] for i in range(5)]
-                    print(f"   Split into {len(encoded_image_features)} views")
-                    for i, feat in enumerate(encoded_image_features):
-                        print(f"   View {i}: {feat.shape}")
-                elif actual_images == 1 and total_tokens > 1000:
-                    # SHIRG returned concatenated tokens as single view (fallback)
+                if actual_images == 1 and total_tokens > 1000:
+                    # SHIRG returned concatenated tokens as single view
                     print(f"SHIRG-SPLIT-FIX: SHIRG returned concatenated tokens as single view")
                     print(f"   Total SHIRG tokens: {total_tokens} (expected ~1508)")
                     # Keep as single view - don't split

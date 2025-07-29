@@ -431,42 +431,18 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             
             # Split concatenated tokens back into views
             if shirg_tokens.shape[0] == 1 and shirg_tokens.shape[1] == sum(shirg_token_splits):
-                # SHIRG-MULTIVIEW-FIX: 2025-07-29 - Return SHIRG tokens split into 5 views
-                # ISSUE: LaViDa generation expects multi-view format, not concatenated
-                # SOLUTION: Split SHIRG's concatenated tokens back into 5 views
-                # RESEARCH IMPACT: Maintains SHIRG's token selection (196 + 4×328)
-                # LAVIDA IMPACT: Compatible with LaViDa's multi-view generation pipeline
+                # SHIRG-SINGLE-VIEW-FIX: 2025-07-29 - Return SHIRG as single view to avoid split issues
+                # ISSUE: LaViDa can't handle varying token counts per view in generation
+                # SOLUTION: Keep SHIRG tokens concatenated as single view
+                # RESEARCH IMPACT: Maintains SHIRG's 1508 token selection
+                # LAVIDA IMPACT: LaViDa processes as single large view instead of 5 views
                 
-                rank0_print(f"SHIRG-5VIEW-OUTPUT: Splitting SHIRG concatenated {shirg_tokens.shape} into 5 views")
+                rank0_print(f"SHIRG-5VIEW-OUTPUT: SHIRG returns concatenated {shirg_tokens.shape}")
                 rank0_print(f"   Total tokens: {shirg_tokens.shape[1]} (196 global + 4×328 peripheral)")
                 
-                # Split concatenated tokens back into the original 5 views
-                # This matches the format LaViDa expects from baseline processing
-                B, total_tokens, D = shirg_tokens.shape
-                
-                # Split tokens according to SHIRG's selection pattern
-                global_tokens = shirg_tokens[:, :196, :]  # Global view: 196 tokens
-                peripheral_start = 196
-                
-                view_list = [global_tokens]  # Start with global view
-                
-                # Add 4 peripheral views (328 tokens each)
-                for i in range(4):
-                    start_idx = peripheral_start + i * 328
-                    end_idx = start_idx + 328
-                    peripheral_view = shirg_tokens[:, start_idx:end_idx, :]
-                    view_list.append(peripheral_view)
-                
-                # Stack views along batch dimension to match baseline format
-                # Result: [5, varying_tokens, D] where tokens are [196, 328, 328, 328, 328]
-                multi_view_output = torch.cat(view_list, dim=0)
-                
-                rank0_print(f"SHIRG-5VIEW-OUTPUT: Split into multi-view format: {multi_view_output.shape}")
-                rank0_print(f"   View 0 (global): {view_list[0].shape[1]} tokens")
-                for i in range(1, 5):
-                    rank0_print(f"   View {i} (peripheral): {view_list[i].shape[1]} tokens")
-                
-                return multi_view_output
+                # Return SHIRG tokens as single view
+                # LaViDa will process this as one large image feature
+                return shirg_tokens
             else:
                 # Fallback if SHIRG output unexpected
                 rank0_print(f"SHIRG-5VIEW-OUTPUT: Unexpected SHIRG shape {shirg_tokens.shape}, returning as-is")
