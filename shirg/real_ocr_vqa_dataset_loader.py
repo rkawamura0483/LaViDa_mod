@@ -744,10 +744,32 @@ class OCRVQAResultAnalyzer:
             # Get actual SHIRG selection metadata from vision tower
             actual_selection_data = model_runner._extract_shirg_selection_metadata(image, question)
             
+            # VISUALIZATION-FALLBACK-FIX: 2025-07-29 - Handle fallback metadata properly for visualization
+            # ISSUE: Visualization fails when SHIRG extraction has errors but could still provide fallback data
+            # SOLUTION: Check for visualization_ready flag and use fallback data when available
+            # RESEARCH IMPACT: Enables token visualization even when SHIRG extraction has issues
+            # LAVIDA IMPACT: Maintains research validation visualization capability
+            
             if actual_selection_data is None:
                 print(f"⚠️ Could not extract real SHIRG selection data for {sample_name}")
                 # Fall back to a simple visualization
                 return self._create_simple_visualization(sample_name, image, baseline_result, shirg_result, question, viz_dir)
+            
+            # Check if data has error but is still visualization-ready
+            has_error = 'error' in actual_selection_data
+            is_visualization_ready = actual_selection_data.get('visualization_ready', False)
+            
+            if has_error and not is_visualization_ready:
+                print(f"⚠️ SHIRG selection data has error and not visualization-ready for {sample_name}")
+                print(f"   Error: {actual_selection_data.get('error', 'Unknown error')}")
+                # Fall back to a simple visualization
+                return self._create_simple_visualization(sample_name, image, baseline_result, shirg_result, question, viz_dir)
+            
+            if has_error and is_visualization_ready:
+                print(f"⚠️ Using fallback SHIRG data for visualization of {sample_name}")
+                print(f"   Error: {actual_selection_data.get('error', 'Unknown error')}")
+                print(f"   Method: {actual_selection_data.get('method', 'Unknown')}")
+                # Continue with visualization using fallback data
             
             # Create high-resolution visualization using actual selection data
             display_size = 672
@@ -843,10 +865,22 @@ class OCRVQAResultAnalyzer:
                 font_normal = ImageFont.load_default()
                 font_small = ImageFont.load_default()
             
-            # Title and question
-            draw.text((10, 10), f"SHIRG Token Selection: {sample_name}", fill='black', font=font_title)
+            # Title and question with fallback indicator
+            title_text = f"SHIRG Token Selection: {sample_name}"
+            if has_error:
+                title_text += " (FALLBACK DATA)"
+                title_color = 'red'
+            else:
+                title_color = 'black'
+                
+            draw.text((10, 10), title_text, fill=title_color, font=font_title)
             draw.text((10, 35), f"Q: {question[:70]}{'...' if len(question) > 70 else ''}", fill='black', font=font_normal)
             draw.text((10, 55), f"Total tokens: {total_patches}, Selected: {len(selected_indices)} ({len(selected_indices)/total_patches:.1%})", fill='black', font=font_normal)
+            
+            # Add fallback warning if using fallback data
+            if has_error:
+                method = actual_selection_data.get('method', 'Unknown')
+                draw.text((10, 75), f"⚠️ Using {method} - Original extraction failed", fill='orange', font=font_small)
             
             # Legend
             legend_x = display_size + 20
@@ -881,17 +915,52 @@ class OCRVQAResultAnalyzer:
             draw.text((legend_x, legend_y + 215), f"Base: {baseline_ans}{'...' if len(baseline_result.get('response', '')) > 25 else ''}", fill='blue', font=font_small)
             draw.text((legend_x, legend_y + 230), f"SHIRG: {shirg_ans}{'...' if len(shirg_result.get('response', '')) > 25 else ''}", fill='green', font=font_small)
             
-            # Grid info
+            # Grid info with fallback indication
             draw.text((10, display_size + 120), f"Grid: {grid_size}×{grid_size} patches ({patch_size}×{patch_size} pixels each)", fill='gray', font=font_small)
-            draw.text((10, display_size + 140), f"Selection strategy: Distance-aware importance scoring + Lo-res scaffold", fill='gray', font=font_small)
+            if has_error:
+                strategy_text = f"Selection strategy: Mock selection (original extraction failed)"
+                strategy_color = 'orange'
+            else:
+                strategy_text = f"Selection strategy: Distance-aware importance scoring + Lo-res scaffold"
+                strategy_color = 'gray'
+            draw.text((10, display_size + 140), strategy_text, fill=strategy_color, font=font_small)
+            
+            # VISUALIZATION-DEBUG-FIX: 2025-07-29 - Add debug information for visualization creation
+            # ISSUE: Need to track whether visualizations are being created successfully
+            # SOLUTION: Add comprehensive logging and error handling for visualization creation
+            # RESEARCH IMPACT: Enables debugging of visualization pipeline issues
+            # LAVIDA IMPACT: Ensures research validation visualizations are properly generated
+            
+            print(f"   🎨 Creating token selection visualization for {sample_name}")
+            print(f"      - Display size: {display_size}×{display_size}")
+            print(f"      - Total patches: {total_patches}")
+            print(f"      - Selected patches: {len(selected_indices)}")
+            print(f"      - Using fallback data: {has_error}")
+            if has_error:
+                print(f"      - Fallback method: {actual_selection_data.get('method', 'Unknown')}")
             
             # Save visualization
             viz_filename = f"token_selection_{sample_name}.png"
             viz_path = os.path.join(viz_dir, viz_filename)
-            canvas.save(viz_path)
             
-            print(f"   💾 Token selection visualization saved: {viz_path}")
-            return viz_path
+            try:
+                canvas.save(viz_path)
+                print(f"   💾 Token selection visualization saved: {viz_path}")
+                
+                # Verify file was actually created
+                if os.path.exists(viz_path):
+                    file_size = os.path.getsize(viz_path)
+                    print(f"   ✅ Visualization file confirmed: {file_size} bytes")
+                else:
+                    print(f"   ❌ Visualization file not found after save attempt")
+                    
+                return viz_path
+                
+            except Exception as save_error:
+                print(f"   ❌ Failed to save visualization: {save_error}")
+                import traceback
+                traceback.print_exc()
+                return None
             
         except Exception as e:
             print(f"   ⚠️ Token visualization failed: {e}")
