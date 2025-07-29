@@ -27,6 +27,9 @@ class PoolerProjector(nn.Module):
         # LAVIDA IMPACT: Enables proper baseline pooling per LaViDa paper specification
         # RESEARCH IMPACT: Provides correct baseline token count (5 × 196 = 980 tokens)
         
+        print(f"POOLER-PROJECTOR: forward() called with input shape: {x.shape}")
+        print(f"POOLER-PROJECTOR: self.hw = {self.hw}, self.ratio = {self.ratio}")
+        
         original_shape = x.shape
         
         # Handle multi-view input: [5, 729, 1152] or single-view: [1, 729, 1152]

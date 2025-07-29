@@ -223,8 +223,22 @@ class LlavaMetaForCausalLM(ABC):
             print(f"MM_PROJECTOR-DEBUG: Vision tower output: {image_features.shape}")
             pre_projector_shape = image_features.shape
         
+        # POOLER-DEBUG-FIX: 2025-07-29 - Add debug info about projector type
+        # ISSUE: Need to verify which projector type is actually being used
+        # SOLUTION: Print projector type and configuration before calling it
+        # LAVIDA IMPACT: Helps diagnose why pooling is not being applied correctly
+        # RESEARCH IMPACT: Ensures baseline LaViDa works correctly for SHIRG comparison
+        mm_projector = self.get_model().mm_projector
+        print(f"MM_PROJECTOR-DEBUG: Projector type: {type(mm_projector).__name__}")
+        if hasattr(mm_projector, 'config'):
+            print(f"MM_PROJECTOR-DEBUG: Projector config: {mm_projector.config}")
+        if hasattr(self.get_model().config, 'mm_projector_type'):
+            print(f"MM_PROJECTOR-DEBUG: Config mm_projector_type: {self.get_model().config.mm_projector_type}")
+        if hasattr(self.get_model().config, 'mm_pooler_ratio'):
+            print(f"MM_PROJECTOR-DEBUG: Config mm_pooler_ratio: {self.get_model().config.mm_pooler_ratio}")
+        
         # mage_features = self.get_model().vision_resampler(image_features, images=images)
-        image_features = self.get_model().mm_projector(image_features)
+        image_features = mm_projector(image_features)
         
         # LAVIDA-PAPER-FIX: Verify pooler projector worked correctly
         if hasattr(image_features, 'shape'):
