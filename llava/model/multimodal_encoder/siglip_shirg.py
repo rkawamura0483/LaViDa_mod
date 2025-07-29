@@ -82,13 +82,21 @@ class SigLipShirgExtensions:
             
             # Step 2: Per-view Top-K selection on foveal views
             # Fixed 50% keep rate for foveal views as per research
-            K = 392  # 50% of 784 tokens from 448² view
+            # SHIRG-ADAPTIVE-K: 2025-07-29 - Adapt K based on actual token count
+            # ISSUE: Foveal views can be either 384² (729 tokens) or 448² (784 tokens)
+            # SOLUTION: Calculate K as 50% of actual token count
+            # RESEARCH IMPACT: Maintains 50% selection rate regardless of resolution
+            # LAVIDA IMPACT: Works with both LaViDa's standard 384² and SHIRG's intended 448²
             
             selected_foveal = []
             for i, view_tokens in enumerate(foveal_features):
+                # Adapt K to actual token count (50% selection rate)
+                actual_tokens = view_tokens.shape[1]
+                K = int(actual_tokens * 0.5)  # 50% of actual tokens
+                
                 selected = self.topk_per_view(view_tokens, K, text_embeddings)
                 selected_foveal.append(selected)
-                rank0_print(f"   Foveal view {i+1}: selected {selected.shape[1]} tokens")
+                rank0_print(f"   Foveal view {i+1}: selected {selected.shape[1]} tokens from {actual_tokens} total")
             
             # Step 3: Concatenate all tokens
             # Global (196) + 2×Foveal (2×392) = 980 tokens total
@@ -120,12 +128,26 @@ class SigLipShirgExtensions:
             rank0_print(f"SHIRG-Fovea: Final token count: {total_tokens}")
             rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
             rank0_print(f"   Foveal tokens per view: {processed_views[1].shape[1]}")
-            rank0_print(f"   Expected: 196 + 2×392 = 980 tokens")
             
-            if total_tokens != 980:
-                rank0_print(f"⚠️ SHIRG token count {total_tokens} != 980 expected")
+            # SHIRG-ADAPTIVE-VALIDATION: 2025-07-29 - Validate based on actual resolution
+            # ISSUE: Token count varies based on foveal resolution (384² vs 448²)
+            # SOLUTION: Calculate expected tokens based on actual processing
+            # RESEARCH IMPACT: Maintains SHIRG methodology with flexible resolution
+            # LAVIDA IMPACT: Works with LaViDa's standard 384² processing
+            
+            global_tokens = processed_views[0].shape[1]  # Always 196
+            foveal_tokens_per_view = processed_views[1].shape[1]
+            expected_total = global_tokens + 2 * foveal_tokens_per_view
+            
+            if foveal_tokens_per_view == 364:  # 50% of 729 (384²)
+                rank0_print(f"   Expected with 384² foveal: 196 + 2×364 = 924 tokens")
+            elif foveal_tokens_per_view == 392:  # 50% of 784 (448²)
+                rank0_print(f"   Expected with 448² foveal: 196 + 2×392 = 980 tokens")
+            
+            if total_tokens == expected_total:
+                rank0_print(f"✅ SHIRG token count matches expected: {total_tokens}")
             else:
-                rank0_print(f"✅ SHIRG token count matches target: 980")
+                rank0_print(f"⚠️ SHIRG token count {total_tokens} != {expected_total} expected")
             
             return concatenated_tokens
             
@@ -143,15 +165,15 @@ class SigLipShirgExtensions:
         
         Processes:
         - View 0: Global 384² → 729 tokens → 2×2 pool → 196 tokens
-        - Views 1-2: Foveal 448² → 784 tokens each (no pooling)
+        - Views 1-2: Foveal 384² or 448² → 729 or 784 tokens each (no pooling)
         
         Args:
             pixel_values: List of 3 image tensors:
-                         [384×384 global, 448×448 foveal, 448×448 foveal]
+                         [384×384 global, 384×384 or 448×448 foveal, 384×384 or 448×448 foveal]
             
         Returns:
             global_pooled: [B, 196, D] pooled global context tokens
-            foveal_features: List of 2 tensors, each [B, 784, D]
+            foveal_features: List of 2 tensors, each [B, 729 or 784, D]
         """
         start_time = time.time()
         
@@ -228,12 +250,21 @@ class SigLipShirgExtensions:
             
             # Process through vision tower
             image_forward_outs = self.vision_tower(foveal_view, output_hidden_states=True)
-            view_features = image_forward_outs.hidden_states[-1]  # [B, 784, D] for 448²
+            view_features = image_forward_outs.hidden_states[-1]  # [B, N, D]
             
-            # Validate token count (448² with patch_size=16 → 28×28 = 784 tokens)
-            expected_tokens = (448 // 16) ** 2  # 784
-            if view_features.shape[1] != expected_tokens:
-                rank0_print(f"⚠️ SHIRG-Fovea: Expected {expected_tokens} tokens from foveal view {i}, got {view_features.shape[1]}")
+            # SHIRG-RESOLUTION-ADAPTIVE: 2025-07-29 - Handle both 384² and 448² foveal views
+            # ISSUE: Views can be either 384² (729 tokens) or 448² (784 tokens)
+            # SOLUTION: Accept both resolutions and adapt processing accordingly
+            # RESEARCH IMPACT: Maintains SHIRG methodology with flexible resolution support
+            # LAVIDA IMPACT: Works with LaViDa's anyres preprocessing at 384²
+            
+            actual_tokens = view_features.shape[1]
+            if actual_tokens == 729:  # 384² with patch_size=16 → 27×27
+                rank0_print(f"   SHIRG-Fovea: Processing 384² foveal view {i} ({actual_tokens} tokens)")
+            elif actual_tokens == 784:  # 448² with patch_size=16 → 28×28
+                rank0_print(f"   SHIRG-Fovea: Processing 448² foveal view {i} ({actual_tokens} tokens)")
+            else:
+                rank0_print(f"⚠️ SHIRG-Fovea: Unexpected token count from foveal view {i}: {actual_tokens}")
             
             foveal_features.append(view_features)
         

@@ -1106,6 +1106,16 @@ class LaViDaModelRunner:
                 if validated_image is None:
                     raise ValueError(f"Invalid image format for sample {sample_id}")
                 
+                # SHIRG-CONFIG-DEBUG: 2025-07-29 - Debug config attributes before process_images
+                # ISSUE: process_shirg_3view_image not being called despite flags being set
+                # SOLUTION: Log config attributes to verify they're being passed correctly
+                # RESEARCH IMPACT: Identifies why SHIRG 3-view preprocessing isn't triggered
+                # LAVIDA IMPACT: Ensures proper routing to SHIRG preprocessing
+                print(f"   🔍 SHIRG config before process_images:")
+                print(f"      - enable_shirg: {getattr(self.shirg_model.config, 'enable_shirg', 'NOT SET')}")
+                print(f"      - shirg_3view_mode: {getattr(self.shirg_model.config, 'shirg_3view_mode', 'NOT SET')}")
+                print(f"      - image_aspect_ratio: {getattr(self.shirg_model.config, 'image_aspect_ratio', 'NOT SET')}")
+                
                 image_tensor = process_images([validated_image], self.shirg_image_processor, self.shirg_model.config)
                 if isinstance(image_tensor, list):
                     image_tensor = image_tensor[0]
