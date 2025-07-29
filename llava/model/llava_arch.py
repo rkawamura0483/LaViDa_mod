@@ -195,8 +195,24 @@ class LlavaMetaForCausalLM(ABC):
         return self.get_model().get_vision_tower()
 
     def get_2dPool(self, image_feature, stride=2):
-        height = width = self.get_vision_tower().num_patches_per_side
+        # SHIRG-POOLING-BYPASS: 2025-07-29 - Skip pooling for SHIRG tokens
+        # ISSUE: SHIRG outputs variable token counts that can't be reshaped to grid
+        # SOLUTION: Detect SHIRG token counts and bypass pooling
+        # RESEARCH IMPACT: Preserves SHIRG's selected tokens without modification
+        # LAVIDA IMPACT: Allows SHIRG tokens to pass through unchanged
+        
         num_frames, num_tokens, num_dim = image_feature.shape
+        
+        # Check if this is SHIRG output (not standard grid size)
+        height = width = self.get_vision_tower().num_patches_per_side
+        expected_tokens = height * width  # 729 for 27×27
+        
+        if num_tokens != expected_tokens:
+            # This is likely SHIRG output - return as-is without pooling
+            print(f"SHIRG-POOLING-BYPASS: Detected non-grid tokens ({num_tokens} != {expected_tokens}), skipping pooling")
+            return image_feature
+        
+        # Standard LaViDa pooling for grid-based tokens
         image_feature = image_feature.view(num_frames, height, width, -1)
         image_feature = image_feature.permute(0, 3, 1, 2).contiguous()
         # image_feature = nn.functional.max_pool2d(image_feature, self.config.mm_spatial_pool_stride)

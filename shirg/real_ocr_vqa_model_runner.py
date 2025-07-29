@@ -567,6 +567,15 @@ class LaViDaModelRunner:
             self.shirg_model.tie_weights()
             self.shirg_model = self.shirg_model.to(torch.bfloat16)
             
+            # SHIRG-MODEL-CONFIG-FIX: 2025-07-29 - Set SHIRG flag on model config
+            # ISSUE: Model config missing enable_shirg flag causes pooling bypass to fail
+            # SOLUTION: Set enable_shirg on model config to ensure proper SHIRG detection
+            # RESEARCH IMPACT: Enables SHIRG mode detection throughout the pipeline
+            # LAVIDA IMPACT: Allows proper routing of SHIRG tokens without pooling
+            if hasattr(self.shirg_model, 'config'):
+                self.shirg_model.config.enable_shirg = True
+                print(f"   🔍 SHIRG enabled on model config")
+            
             # Get vision tower and enable SHIRG
             if hasattr(self.shirg_model, 'get_vision_tower'):
                 self.shirg_tower = self.shirg_model.get_vision_tower()
