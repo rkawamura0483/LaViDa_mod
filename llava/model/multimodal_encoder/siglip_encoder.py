@@ -367,9 +367,26 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         Standard LaViDa processing (384×384 → 729 tokens)
         
         Maintains original LaViDa behavior for backward compatibility.
+        Handles LaViDa's 5-view multi-view format: [B, 5, C, H, W]
         """
-        # Ensure images are 384×384 for LaViDa baseline processing
-        if hasattr(images, 'shape') and len(images.shape) == 4:
+        # TENSOR-FIX: 2025-07-29 - Handle LaViDa's anyres patches correctly  
+        # ISSUE: LaViDa anyres creates [num_patches, C, H, W] tensor but vision tower expects list or single tensor
+        # SOLUTION: Convert anyres patch tensor to list format that original LaViDa expects
+        # LAVIDA IMPACT: Enables LaViDa's anyres multi-patch processing to work correctly
+        # SHIRG IMPACT: Preserves LaViDa patch format for SHIRG token selection
+        
+        # Handle anyres patch tensors from LaViDa [num_patches, C, H, W]
+        if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] > 1:
+            # This is likely an anyres patch tensor - convert to list format
+            num_patches, C, H, W = images.shape
+            rank0_print(f"ANYRES-FIX: Processing LaViDa anyres patches: {images.shape}")
+            # Convert to list of individual patches like original LaViDa expects
+            patch_list = [images[i] for i in range(num_patches)]
+            rank0_print(f"ANYRES-FIX: Converted to {len(patch_list)} individual patches")
+            # Process as list (original LaViDa behavior)
+            return self._process_patch_list(patch_list)
+        # Handle standard single image tensors [B, C, H, W] where B=1
+        elif hasattr(images, 'shape') and len(images.shape) == 4:
             B, C, H, W = images.shape
             if H != 384 or W != 384:
                 images = F.interpolate(images, size=(384, 384), mode='bilinear', align_corners=False)
@@ -494,15 +511,16 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 image_features = image_features.to(dtype=images.dtype)
             # If dtypes match, keep original tensor to preserve gradients
             
-            # TENSOR-FIX: 2025-07-28 - Validate baseline token count with better error handling
-            # ISSUE: Baseline inference may receive unexpected image sizes causing tensor shape errors
-            # SOLUTION: Check actual token count and provide detailed debugging information
-            # LAVIDA IMPACT: Prevents crashes in baseline inference with proper error reporting
-            # SHIRG IMPACT: Ensures both baseline and SHIRG can handle various input sizes
+            
+            # TENSOR-FIX: 2025-07-29 - Validate baseline token count for standard single image
+            # ISSUE: Single image should produce exactly 729 tokens from 384×384 resolution
+            # SOLUTION: Validate and fix token count for single image baseline processing
+            # LAVIDA IMPACT: Prevents crashes in baseline inference with proper token validation
+            # SHIRG IMPACT: Ensures baseline provides correct reference for SHIRG comparison
+            
             expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
             actual_tokens = image_features.shape[-2] if len(image_features.shape) >= 2 else 0
-            
-            rank0_print(f"BASELINE-DEBUG: Image features shape: {image_features.shape}")
+            rank0_print(f"BASELINE-DEBUG: Single image features shape: {image_features.shape}")
             rank0_print(f"BASELINE-DEBUG: Expected {expected_tokens} tokens, got {actual_tokens} tokens")
             
             if actual_tokens != expected_tokens:
@@ -514,7 +532,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 rank0_print(f"   Expected: 384×384 → {expected_tokens} tokens")
                 rank0_print(f"   Actual: {actual_resolution}×{actual_resolution} → {actual_tokens} tokens")
                 
-                # For baseline, we should always get 729 tokens for proper LaViDa processing
+                # For baseline, we should always get expected tokens for proper LaViDa processing
                 if actual_tokens > expected_tokens:
                     # Too many tokens - truncate to expected count
                     rank0_print(f"   Truncating {actual_tokens} tokens to {expected_tokens} for baseline compatibility")
@@ -536,6 +554,80 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 image_features = image_features.to(torch.bfloat16)
 
         return image_features
+
+    def _process_patch_list(self, patch_list):
+        """
+        ANYRES-FIX: 2025-07-29 - Process LaViDa anyres patches as list like original implementation
+        ISSUE: LaViDa anyres creates patches but expects list processing, not batch processing
+        SOLUTION: Process each patch individually and concatenate results like original LaViDa
+        LAVIDA IMPACT: Maintains exact LaViDa anyres behavior for multi-patch images
+        SHIRG IMPACT: Preserves patch-based processing for SHIRG token selection
+        """
+        image_features = []
+        
+        for i, patch in enumerate(patch_list):
+            # Ensure patch is 4D [1, C, H, W]
+            if len(patch.shape) == 3:
+                patch = patch.unsqueeze(0)
+            
+            # Ensure 384×384 for baseline LaViDa processing
+            if patch.shape[-2:] != (384, 384):
+                patch = F.interpolate(patch, size=(384, 384), mode='bilinear', align_corners=False)
+                
+            # GRADIENT-FIX: Apply gradient preservation logic
+            original_requires_grad = patch.requires_grad
+            
+            # Device/dtype conversion with gradient preservation
+            if patch.device != self.device:
+                patch = patch.to(device=self.device)
+                if original_requires_grad and not patch.requires_grad:
+                    patch = patch.requires_grad_(True)
+            
+            if patch.dtype != self.dtype and self.dtype in (torch.float16, torch.bfloat16):
+                patch = patch.to(dtype=self.dtype)
+                if original_requires_grad and not patch.requires_grad:
+                    patch = patch.requires_grad_(True)
+            
+            # Process through vision tower
+            patch_forward_out = self.vision_tower(
+                patch, 
+                output_hidden_states=True
+            )
+            patch_feature = patch_forward_out.hidden_states[-1]
+            
+            # Validate patch token count (should be 729 per patch)
+            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+            actual_tokens = patch_feature.shape[-2] if len(patch_feature.shape) >= 2 else 0
+            
+            rank0_print(f"ANYRES-DEBUG: Patch {i+1}/{len(patch_list)} - shape: {patch_feature.shape}, tokens: {actual_tokens}")
+            
+            if actual_tokens != expected_tokens:
+                rank0_print(f"⚠️ Patch {i+1} token mismatch: expected {expected_tokens}, got {actual_tokens}")
+                # Truncate or pad as needed
+                if actual_tokens > expected_tokens:
+                    patch_feature = patch_feature[:, :expected_tokens, :]
+                elif actual_tokens < expected_tokens and actual_tokens > 0:
+                    B, N, D = patch_feature.shape
+                    padding_size = expected_tokens - actual_tokens
+                    padding = torch.zeros(B, padding_size, D, device=patch_feature.device, dtype=patch_feature.dtype)
+                    patch_feature = torch.cat([patch_feature, padding], dim=1)
+            
+            # Ensure consistent dtype
+            if torch.cuda.is_available() and patch_feature.dtype != torch.bfloat16:
+                patch_feature = patch_feature.to(torch.bfloat16)
+                
+            image_features.append(patch_feature)
+        
+        # Concatenate all patches along token dimension like original LaViDa
+        # Result: [1, total_tokens, features] where total_tokens = num_patches * 729
+        concatenated_features = torch.cat(image_features, dim=1)
+        
+        total_tokens = concatenated_features.shape[1]
+        expected_total = len(patch_list) * (384 // 14) ** 2
+        rank0_print(f"ANYRES-DEBUG: Final concatenated features: {concatenated_features.shape}")
+        rank0_print(f"ANYRES-DEBUG: Total tokens: {total_tokens}, expected: {expected_total}")
+        
+        return concatenated_features
 
     def to(self, *args, **kwargs):
         """
