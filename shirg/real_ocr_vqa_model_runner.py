@@ -103,11 +103,11 @@ class LaViDaModelRunner:
             
             print("   🔄 Step 1: Loading pretrained model components...")
             
-            # LAVIDA-CONFIG-FIX: 2025-07-29 - Use proper LaViDa vision configuration
-            # ISSUE: LaViDa requires specific vision_kwargs for proper SigLIP integration
-            # SOLUTION: Use exact vision_kwargs from original LaViDa predict.py
-            # RESEARCH IMPACT: Ensures baseline LaViDa works exactly as in original implementation
-            # SHIRG IMPACT: Provides proper baseline for SHIRG comparison
+            # LAVIDA-CONFIG-FIX: 2025-07-29 - Use proper LaViDa vision configuration with CRITICAL anyres setting
+            # ISSUE: LaViDa requires image_aspect_ratio="anyres" for multi-view processing (768→4×384+384)
+            # SOLUTION: Add missing anyres configuration and image_grid_pinpoints for proper LaViDa behavior
+            # RESEARCH IMPACT: Enables proper LaViDa baseline with multi-view token processing (5 views total)
+            # SHIRG IMPACT: Provides correct baseline reference for SHIRG comparison
             
             vision_kwargs = {
                 "mm_vision_tower": "google/siglip-so400m-patch14-384",
@@ -181,6 +181,31 @@ class LaViDaModelRunner:
             # Move to device and set eval mode
             self.baseline_model = self.baseline_model.to(self.device)
             self.baseline_model.eval()
+            
+            # LAVIDA-MULTIVIEW-CONFIG-FIX: 2025-07-29 - Set CRITICAL LaViDa multi-view configuration
+            # ISSUE: Baseline missing image_aspect_ratio="anyres" causing wrong image processing
+            # SOLUTION: Set proper LaViDa configuration for multi-view processing (768→4×384+384 views)
+            # RESEARCH IMPACT: Enables correct LaViDa baseline behavior with multi-view token processing
+            # SHIRG IMPACT: Provides proper baseline reference showing LaViDa's full capabilities
+            
+            # Set image aspect ratio to "anyres" for LaViDa multi-view processing
+            self.baseline_model.config.image_aspect_ratio = "anyres"
+            
+            # Set image grid pinpoints for 768x768 multi-view processing (as used in training)
+            if not hasattr(self.baseline_model.config, 'image_grid_pinpoints'):
+                self.baseline_model.config.image_grid_pinpoints = [(768, 768)]
+            else:
+                self.baseline_model.config.image_grid_pinpoints = [(768, 768)]
+            
+            # Set mm_patch_merge_type for proper anyres processing
+            if not hasattr(self.baseline_model.config, 'mm_patch_merge_type'):
+                self.baseline_model.config.mm_patch_merge_type = "spatial_unpad"
+            else:
+                self.baseline_model.config.mm_patch_merge_type = "spatial_unpad"
+            
+            print(f"   🔧 BASELINE: Set image_aspect_ratio = 'anyres' for multi-view processing")
+            print(f"   🔧 BASELINE: Set image_grid_pinpoints = [(768, 768)] for proper LaViDa behavior")
+            print(f"   🔧 BASELINE: Set mm_patch_merge_type = 'spatial_unpad' for anyres processing")
             
             # LaViDa-specific setup
             self.baseline_model.tie_weights()
