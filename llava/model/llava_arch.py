@@ -383,6 +383,11 @@ class LlavaMetaForCausalLM(ABC):
             encoded_image_features = torch.split(encoded_image_features, split_sizes)
             image_features = []
             for idx, image_feat in enumerate(encoded_image_features):
+                # DEBUG: Log the pooling condition evaluation
+                in_video_batch = idx in video_idx_in_batch
+                print(f"POOLING-CONDITION idx={idx}: in_video_batch={in_video_batch}, ALWASY_DO_2DPOOL={ALWASY_DO_2DPOOL}")
+                print(f"POOLING-CONDITION idx={idx}: video_idx_in_batch={video_idx_in_batch}")
+                
                 if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
                     # POOLING-FIX: 2025-07-29 - Improved pooling logic for baseline vs SHIRG models
                     # ISSUE: SHIRG bypass logic was too broad, affecting baseline models incorrectly
@@ -392,19 +397,32 @@ class LlavaMetaForCausalLM(ABC):
                     
                     vision_tower = self.get_vision_tower()
                     # Only bypass pooling if model is explicitly configured for SHIRG
-                    model_has_shirg = (hasattr(vision_tower, 'shirg_enabled') and 
-                                     vision_tower.shirg_enabled and 
-                                     hasattr(self.config, 'enable_shirg') and 
-                                     self.config.enable_shirg)
+                    
+                    # DEBUG: Add detailed SHIRG detection logging
+                    has_shirg_attr = hasattr(vision_tower, 'shirg_enabled')
+                    shirg_enabled = getattr(vision_tower, 'shirg_enabled', False) if has_shirg_attr else False
+                    has_config_shirg = hasattr(self.config, 'enable_shirg')
+                    config_shirg_enabled = getattr(self.config, 'enable_shirg', False) if has_config_shirg else False
+                    
+                    model_has_shirg = (has_shirg_attr and shirg_enabled and has_config_shirg and config_shirg_enabled)
+                    
+                    # DEBUG: Print pooling decision details
+                    print(f"POOLING-DEBUG idx={idx}: has_shirg_attr={has_shirg_attr}, shirg_enabled={shirg_enabled}")
+                    print(f"POOLING-DEBUG idx={idx}: has_config_shirg={has_config_shirg}, config_shirg_enabled={config_shirg_enabled}")
+                    print(f"POOLING-DEBUG idx={idx}: model_has_shirg={model_has_shirg}, input_shape={image_feat.shape}")
                     
                     if model_has_shirg:
                         # SHIRG tokens bypass get_2dPool - they're already processed per SHIRG methodology
                         # SHIRG Research: 672×672 → 2,304 tokens → 1,216 selected → direct to LM
+                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - no pooling, output_shape={image_feat.shape}")
                         image_features.append(image_feat)
                     else:
                         # Standard LaViDa tokens need get_2dPool processing (384×384 → 729 → pooled)
-                        image_features.append(self.get_2dPool(image_feat))
+                        pooled_feat = self.get_2dPool(image_feat)
+                        print(f"POOLING-DEBUG idx={idx}: LaViDa path - pooling applied, input_shape={image_feat.shape}, output_shape={pooled_feat.shape}")
+                        image_features.append(pooled_feat)
                 else:
+                    print(f"POOLING-CONDITION idx={idx}: No pooling condition met - using original tokens, shape={image_feat.shape}")
                     image_features.append(image_feat)
             # image_features = self.encode_multimodals(concat_images, video_idx_in_batch, split_sizes)
             # rank_print(f"Encoded image feats : {[x.shape for x in image_features]}")
