@@ -502,24 +502,26 @@ class LaViDaModelRunner:
                 print(f"   ❌ SHIRG encoder not available: {e}")
                 return False
             
-            # SHIRG-CONFIG-FIX: 2025-07-29 - Use SHIRG-specific vision configuration
-            # ISSUE: SHIRG requires high-resolution vision tower configuration
-            # SOLUTION: Configure vision_kwargs for SHIRG 672x672 processing
-            # RESEARCH IMPACT: Enables SHIRG high-resolution token extraction
-            # LAVIDA IMPACT: Maintains LaViDa compatibility while adding SHIRG capabilities
+            # SHIRG-FOVEA-CONFIG-FIX: 2025-07-29 - Use SHIRG-Fovea 5-view configuration
+            # ISSUE: SHIRG-Fovea uses 5-view anyres like LaViDa but with different resolutions
+            # SOLUTION: Configure for 1×384² global + 4×512² peripheral views per research methodology
+            # RESEARCH IMPACT: Enables SHIRG-Fovea two-scale foveation with per-view Top-K selection
+            # LAVIDA IMPACT: Maintains LaViDa's anyres structure while using SHIRG-specific resolutions
             
-            # SHIRG vision configuration for 672x672 processing
+            # SHIRG-Fovea vision configuration for 5-view processing
             shirg_vision_kwargs = {
                 "mm_vision_tower": "google/siglip-so400m-patch14-384",  # Base model
                 "mm_resampler_type": None,
-                "mm_projector_type": 'mlp2x_gelu',  # SHIRG keeps mlp2x_gelu for high-res processing
+                "mm_projector_type": 'mlp2x_gelu',  # Keep mlp2x_gelu projector
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
                 "enable_shirg": True,  # Enable SHIRG processing
-                "image_aspect_ratio": None  # CRITICAL: Disable multi-view for SHIRG single-view processing
+                "image_aspect_ratio": "anyres",  # CRITICAL: Enable anyres for 5-view processing
+                "image_grid_pinpoints": [(384, 384), (512, 512)],  # Support both resolutions
+                "mm_patch_merge_type": "spatial_unpad"  # Standard anyres processing
             }
             
-            print("SHIRG-CONFIG: Using 672×672 image processor for SHIRG high-resolution processing")
+            print("SHIRG-FOVEA-CONFIG: Using anyres 5-view processing (1×384² + 4×512²)")
             
             # Load SHIRG model components
             print(f"   📂 Model path: {self.pretrained_path}")
@@ -540,19 +542,28 @@ class LaViDaModelRunner:
             # Get max token length from model config
             self.max_length = getattr(self.shirg_model.config, 'max_position_embeddings', 2048)
             
-            # SHIRG-MODEL-CONFIG-FIX: 2025-07-29 - Set image_aspect_ratio to None for SHIRG
-            # ISSUE: SHIRG needs single-view processing, not LaViDa's multi-view "anyres" mode
-            # SOLUTION: Override image_aspect_ratio to None to disable multi-view processing
-            # RESEARCH IMPACT: Enables SHIRG to receive single 672×672 images instead of multi-view
-            # LAVIDA IMPACT: Maintains LaViDa functionality while enabling SHIRG high-resolution processing
+            # SHIRG-FOVEA-CONFIG-VALIDATION: 2025-07-29 - Validate anyres configuration
+            # ISSUE: SHIRG-Fovea requires anyres 5-view processing per research methodology  
+            # SOLUTION: Ensure anyres is enabled with correct grid pinpoints for 384² and 512²
+            # RESEARCH IMPACT: Enables SHIRG-Fovea two-scale foveation (global + peripheral)
+            # LAVIDA IMPACT: Maintains same anyres structure, just with different resolutions
             if hasattr(self.shirg_model.config, 'image_aspect_ratio'):
-                original_aspect_ratio = getattr(self.shirg_model.config, 'image_aspect_ratio', None)
-                self.shirg_model.config.image_aspect_ratio = None
-                print(f"   🔧 SHIRG: Disabled multi-view processing (was: {original_aspect_ratio}, now: None)")
-            else:
-                # Add the attribute if it doesn't exist
-                setattr(self.shirg_model.config, 'image_aspect_ratio', None)
-                print(f"   🔧 SHIRG: Set image_aspect_ratio = None for single-view processing")
+                aspect_ratio = getattr(self.shirg_model.config, 'image_aspect_ratio', None)
+                if aspect_ratio != 'anyres':
+                    print(f"   ⚠️ SHIRG: Fixing image_aspect_ratio from '{aspect_ratio}' to 'anyres'")
+                    self.shirg_model.config.image_aspect_ratio = 'anyres'
+                else:
+                    print(f"   ✅ SHIRG: Correct anyres configuration confirmed")
+            
+            # Ensure grid pinpoints support both 384² and 512²
+            if not hasattr(self.shirg_model.config, 'image_grid_pinpoints'):
+                self.shirg_model.config.image_grid_pinpoints = [(384, 384), (512, 512)]
+                print(f"   🔧 SHIRG: Set image_grid_pinpoints for 384² and 512² views")
+            
+            # Ensure proper patch merge type
+            if not hasattr(self.shirg_model.config, 'mm_patch_merge_type'):
+                self.shirg_model.config.mm_patch_merge_type = 'spatial_unpad'
+                print(f"   🔧 SHIRG: Set mm_patch_merge_type = 'spatial_unpad'")
             
             # SHIRG-SETUP-FIX: 2025-07-29 - Proper SHIRG model setup
             # ISSUE: SHIRG models need same setup as baseline plus SHIRG configuration
@@ -640,31 +651,7 @@ class LaViDaModelRunner:
             print(f"   📋 No LoRA weights found, using base model weights")
             print(f"   📋 Continuing without LoRA weights")
     
-    def _resize_for_shirg(self, image, target_size=672):
-        """Resize image for SHIRG processing (672x672)"""
-        try:
-            if hasattr(image, 'size'):
-                # PIL Image
-                return image.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            elif torch.is_tensor(image):
-                # Tensor image - convert to PIL first
-                if image.dim() == 4:
-                    image = image.squeeze(0)
-                if image.dim() == 3 and image.shape[0] in [1, 3]:
-                    # CHW format
-                    image = image.permute(1, 2, 0)
-                
-                # Convert to PIL
-                if image.max() <= 1.0:
-                    image = (image * 255).byte()
-                image_pil = Image.fromarray(image.cpu().numpy())
-                return image_pil.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            else:
-                print(f"   ⚠️ Unknown image type: {type(image)}")
-                return image
-        except Exception as e:
-            print(f"   ⚠️ Error resizing image: {e}")
-            return image
+    # DEPRECATED: _resize_for_shirg removed - SHIRG-Fovea uses anyres 5-view processing
     
     def _validate_and_convert_image(self, image, sample_id):
         """
@@ -1248,10 +1235,12 @@ class LaViDaModelRunner:
                 if validated_image is None:
                     raise ValueError(f"Invalid image format for SHIRG fallback processing")
                 
-                # Resize to 672×672 for SHIRG high-resolution processing
-                shirg_resized_image = self._resize_for_shirg(validated_image, target_size=672)
-                base_tensor = self._pil_to_tensor(shirg_resized_image)
-                image_tensor = base_tensor.to(self.device, dtype=torch.bfloat16)
+                # SHIRG-FOVEA: Use anyres processing for 5-view generation
+                # Let process_images handle the anyres splitting to 1×384² + 4×512²
+                image_tensor = process_images([validated_image], self.shirg_image_processor, self.shirg_model.config)
+                if isinstance(image_tensor, list):
+                    image_tensor = image_tensor[0]
+                image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
             
             # Get image sizes for SHIRG (required parameter)
             image_sizes = [image.size]  # Original size, processor handles resizing

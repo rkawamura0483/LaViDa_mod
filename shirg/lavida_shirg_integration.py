@@ -179,17 +179,17 @@ class LaViDaSHIRGWrapper:
             default_shirg_config.update(shirg_config)
         self.shirg_config = default_shirg_config
         
-        # Default vision configuration for LaViDa with high-resolution support
+        # Default vision configuration for LaViDa with 5-view anyres support
         default_vision_kwargs = {
             "mm_vision_tower": "google/siglip-so400m-patch14-384",  # SigLIP-SO400M
             "mm_resampler_type": None,
             "mm_projector_type": 'mlp2x_gelu', 
             "mm_hidden_size": 1152,           # SigLIP hidden size
             "use_mm_proj": True,
-            "mm_pooler_ratio": 2,
+            "mm_pooler_ratio": 2,             # For baseline pooling when SHIRG disabled
             "mm_patch_merge_type": 'spatial_unpad',  # Enable high-res processing
             "image_aspect_ratio": "anyres",           # Enable any resolution processing
-            "image_grid_pinpoints": "[(768, 768)]",    # High-res: 55×55 = 3,025 tokens
+            "image_grid_pinpoints": "[(384, 384), (512, 512)]",  # Support both global and peripheral views
         }
         
         if vision_kwargs:
@@ -431,14 +431,14 @@ class LaViDaSHIRGWrapper:
             if shirg_enabled:
                 # Patch encode_images to use SHIRG with correct signature
                 def patched_encode_images(self, images):
-                    """Patched encode_images that applies SHIRG token selection"""
+                    """Patched encode_images that applies SHIRG-Fovea token selection"""
                     
-                    print(f"🔄 SHIRG patched encode_images called with {images.shape if hasattr(images, 'shape') else type(images)} images")
+                    print(f"🔄 SHIRG-Fovea patched encode_images called with {type(images)} images")
                     
-                    # FIX: 2025-07-27 - Apply SHIRG to raw vision tower output before pooling
-                    # ISSUE: Previous integration was after pooling, getting already-reduced 729 tokens
-                    # SOLUTION: Access vision tower directly and apply SHIRG to raw patch embeddings
-                    # RESEARCH IMPACT: Tests actual research hypothesis of selecting from unpooled tokens
+                    # SHIRG-FOVEA-FIX: 2025-07-29 - Handle LaViDa's 5-view list format
+                    # ISSUE: New methodology requires processing list of 5 views
+                    # SOLUTION: Pass list directly to SHIRG forward_with_shirg
+                    # RESEARCH IMPACT: Implements correct 5-view processing per methodology
                     
                     wrapper = getattr(self, 'shirg_wrapper', None)
                     vision_tower = self.get_model().get_vision_tower()
@@ -449,38 +449,43 @@ class LaViDaSHIRGWrapper:
                         wrapper.shirg_config.get('alpha', 0) > 0):
                         
                         try:
-                            # SHIRG-X-FIX: 2025-07-28 - Use dual-scale SHIRG-X processing
-                            # ISSUE: Original SHIRG loses spatial fidelity with aggressive pruning
-                            # SOLUTION: Use SHIRG-X dual-scale architecture without coordinate embeddings
-                            # RESEARCH IMPACT: Tests SHIRG-X spatial preservation hypothesis
-                            
-                            shirg_mode = wrapper.shirg_config.get('mode', 'shirg')  # Default to main SHIRG method
-                            
-                            if shirg_mode == 'shirg' and hasattr(vision_tower, 'forward_with_shirg'):
-                                # SHIRG: Main research implementation (1152 selected + 64 scaffold = 1216 tokens)
+                            # SHIRG-Fovea: Process 5-view format (1 global + 4 peripheral)
+                            if hasattr(vision_tower, 'forward_with_shirg'):
                                 if wrapper.shirg_config.get('debug', False):
-                                    print(f"🔍 Using main SHIRG processing (1152+64=1216 tokens)")
+                                    if isinstance(images, list):
+                                        print(f"🔍 Using SHIRG-Fovea processing with {len(images)} views")
+                                    else:
+                                        print(f"🔍 Using SHIRG-Fovea processing with tensor input")
                                 
                                 try:
-                                    # Main SHIRG method with optional text embeddings
+                                    # SHIRG-Fovea method with optional text embeddings
                                     text_embeddings = wrapper._current_question_tokens
                                     if text_embeddings is not None:
                                         # Validate text embeddings shape and dtype
                                         if text_embeddings.dim() != 3:
                                             text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
                                         # Ensure text embeddings are on correct device
-                                        if text_embeddings.device != images.device:
-                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
+                                        if isinstance(images, list) and len(images) > 0:
+                                            ref_device = images[0].device if hasattr(images[0], 'device') else None
+                                            ref_dtype = images[0].dtype if hasattr(images[0], 'dtype') else None
+                                        else:
+                                            ref_device = images.device if hasattr(images, 'device') else None
+                                            ref_dtype = images.dtype if hasattr(images, 'dtype') else None
+                                            
+                                        if ref_device and text_embeddings.device != ref_device:
+                                            text_embeddings = text_embeddings.to(device=ref_device, dtype=ref_dtype)
                                     
-                                    # Call main SHIRG method
+                                    # Call SHIRG-Fovea method
                                     selected_features = vision_tower.forward_with_shirg(
                                         images, text_embeddings=text_embeddings
                                     )
                                     
                                     if wrapper.shirg_config.get('debug', False):
-                                        print(f"✅ SHIRG processing: {selected_features.shape}")
+                                        print(f"✅ SHIRG-Fovea processing: {selected_features.shape}")
                                     
-                                    return selected_features
+                                    # Apply projector to selected features
+                                    image_features = self.get_model().mm_projector(selected_features)
+                                    return image_features
                                     
                                 except Exception as shirg_error:
                                     if wrapper.shirg_config.get('debug', False):
@@ -488,23 +493,29 @@ class LaViDaSHIRGWrapper:
                                         import traceback
                                         traceback.print_exc()
                                     
-                                    # Fallback to baseline
+                                    # Fallback to baseline - process through standard vision tower
                                     if wrapper.shirg_config.get('debug', False):
                                         print("📉 Falling back to baseline LaViDa processing")
-                                    return vision_tower._forward_standard_lavida(images)
-                            
-                            elif shirg_mode == 'shirg-fixed' and hasattr(vision_tower, 'forward_with_shirg_fixed'):
-                                # SHIRG-Fixed: Consistent K=768 selection with coverage guarantee
+                                    # Use standard encode_images
+                                    return self._original_encode_images(images)
+                            else:
+                                # No SHIRG available - use baseline
                                 if wrapper.shirg_config.get('debug', False):
-                                    print(f"🔍 Using SHIRG-Fixed processing (K=768)")
-                                
-                                try:
-                                    # SHIRG-Fixed uses fixed K=768, no budget parameter needed
-                                    text_embeddings = wrapper._current_question_tokens
-                                    if text_embeddings is not None:
-                                        # Validate text embeddings shape and dtype
-                                        if text_embeddings.dim() != 3:
-                                            text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
+                                    print("📉 No SHIRG available, using baseline")
+                                return self._original_encode_images(images)
+                        except Exception as e:
+                            if wrapper.shirg_config.get('debug', False):
+                                print(f"⚠️ SHIRG selection failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            # Fallback to standard processing
+                            return self._original_encode_images(images)
+                    else:
+                        # Baseline: use standard encode_images
+                        return self._original_encode_images(images)
+                
+                # Bind method to model instance
+                import types
                                         # Ensure text embeddings are on correct device
                                         if text_embeddings.device != images.device:
                                             text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
@@ -593,37 +604,14 @@ class LaViDaSHIRGWrapper:
                             
                         except Exception as e:
                             if wrapper.shirg_config.get('debug', False):
-                                print(f"⚠️ SHIRG selection failed: {e}, trying simpler approach")
-                            
-                            # Fallback: LaViDa already removes pooling head, so vision_tower gives unpooled tokens
-                            try:
-                                raw_features = vision_tower(images)  # Already unpooled in LaViDa!
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"✅ Using LaViDa unpooled tokens: {raw_features.shape}")
-                                
-                                # Apply SHIRG to these unpooled tokens
-                                if raw_features.shape[-2] >= wrapper.shirg_config.get('target_tokens', 729):
-                                    selected_features = self.shirg_selector(
-                                        image_tokens=raw_features,
-                                        text_embeddings=wrapper._current_question_tokens,
-                                        image_sizes=getattr(self, '_current_image_sizes', None)
-                                    )
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"🎯 SHIRG applied (fallback): {raw_features.shape} → {selected_features.shape}")
-                                    image_features = selected_features
-                                else:
-                                    image_features = raw_features
-                            except Exception as e2:
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"⚠️ Fallback also failed: {e2}, using standard processing")
-                                image_features = vision_tower(images)
+                                print(f"⚠️ SHIRG selection failed: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            # Fallback to standard processing
+                            return self._original_encode_images(images)
                     else:
-                        # Baseline: use standard vision tower (already pooled to 729)
-                        image_features = vision_tower(images)
-                    
-                    # Apply mm_projector to final features
-                    image_features = self.get_model().mm_projector(image_features)
-                    return image_features
+                        # Baseline: use standard encode_images
+                        return self._original_encode_images(images)
                 
                 # Bind method to model instance
                 import types

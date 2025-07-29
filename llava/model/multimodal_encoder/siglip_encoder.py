@@ -42,7 +42,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
     
     Key Features:
     - Standard LaViDa processing (384×384 → 729 tokens)
-    - SHIRG high-resolution processing (672×672 → 1216 tokens selected)
+    - SHIRG-Fovea processing (5-view anyres → ~1832 tokens selected)
     - Cache-compatible static token selection
     - LoRA-adapted coordinate embeddings
     - Distance-aware importance scoring
@@ -56,23 +56,19 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         self.vision_tower_name = vision_tower
         self.shirg_enabled = getattr(vision_tower_cfg, 'enable_shirg', False)
         
-        # RESOLUTION-FIX: 2025-07-28 - Configure image processor based on SHIRG mode
-        # ISSUE: Using 384×384 processor for SHIRG violates research methodology
-        # SOLUTION: Use 672×672 processor when SHIRG enabled for genuine high-resolution processing
-        # RESEARCH IMPACT: Enables native high-resolution token extraction (48×48 = 2304 tokens)
-        # LAVIDA IMPACT: Maintains 384×384 baseline compatibility
+        # SHIRG-FOVEA-CONFIG: 2025-07-29 - Configure image processor for anyres mode
+        # ISSUE: SHIRG-Fovea uses same anyres processing as LaViDa but with different resolutions
+        # SOLUTION: Use standard processor - anyres splitting handled by LaViDa pipeline
+        # RESEARCH IMPACT: Enables 5-view processing (1×384² + 4×512²) per methodology
+        # LAVIDA IMPACT: Maintains compatibility with LaViDa's anyres infrastructure
+        
+        # Both baseline and SHIRG use same processor - anyres handles view generation
+        self.image_processor = SigLipImageProcessor()
         
         if self.shirg_enabled:
-            # SHIRG requires native 672×672 processing per research specification
-            self.image_processor = SigLipImageProcessor(
-                size=(672, 672),
-                crop_size={"height": 672, "width": 672}
-            )
-            rank0_print("SHIRG-CONFIG: Using 672×672 image processor for native high-resolution processing")
+            rank0_print("SHIRG-FOVEA-CONFIG: Using anyres 5-view processing (1×384² + 4×512²)")
         else:
-            # Standard LaViDa uses 384×384 processing
-            self.image_processor = SigLipImageProcessor()
-            rank0_print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
+            rank0_print("BASELINE-CONFIG: Using standard LaViDa anyres processing")
 
         if not delay_load:
             rank0_print(f"Loading vision tower: {vision_tower}")
@@ -316,7 +312,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         Returns:
             image_features: Visual tokens
                 - Standard LaViDa: [B, 729, D] from 384×384
-                - SHIRG: [B, 1216, D] from 672×672 (1152 selected + 64 scaffold)
+                - SHIRG-Fovea: [B, ~1832, D] from 5-view anyres (196 global + 4×~409 peripheral)
         """
         # GRADIENT-FIX: 2025-07-28 - CRITICAL: Always ensure gradient compatibility for validation
         # ISSUE: Validation script expects gradient flow through forward methods but tower is frozen
@@ -708,28 +704,30 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
 
     def forward_with_shirg(self, images, text_embeddings=None):
         """
-        SHIRG: Complete high-resolution processing with static hierarchical token selection
+        SHIRG-Fovea: Multi-view processing with per-view Top-K selection
         
-        This method implements the full SHIRG methodology as described in the research proposal:
-        1. Dual-scale token extraction (hi-detail + lo-res scaffold)
-        2. Distance-aware importance scoring
-        3. Static token selection (cache compatible)
-        4. Coordinate embeddings integration
+        This method implements the SHIRG-Fovea methodology:
+        1. Process LaViDa's 5-view anyres format (1 global + 4 peripheral)
+        2. Global view: 384² → 196 tokens (2×2 pooled)
+        3. Peripheral views: 4×512² → per-view Top-K selection (~409 tokens each)
+        4. Static token selection (cache compatible)
         
         Args:
-            images: Input images [B, C, H, W] or list of images
+            images: List of 5 image tensors from LaViDa's anyres splitter
             text_embeddings: Optional text embeddings for relevance scoring
             
         Returns:
-            visual_tokens: [B, 1216, D] selected tokens (1152 hi-detail + 64 scaffold)
+            visual_tokens: [B, ~1832, D] selected tokens (196 global + 4×~409 peripheral)
         """
-        # RESOLUTION-FIX: 2025-07-28 - SHIRG processes native 672×672 images per research methodology
-        # RESEARCH IMPACT: Native high-resolution processing enables genuine 48×48 patch grid (2304 tokens)
-        # LAVIDA IMPACT: Uses properly configured 672×672 image processor for SHIRG mode
+        # SHIRG-FOVEA: 2025-07-29 - Process LaViDa's 5-view anyres format per new methodology
+        # RESEARCH IMPACT: Two-scale foveation with 1×384² global + 4×512² peripheral views
+        # LAVIDA IMPACT: Maintains anyres structure while applying per-view Top-K selection
         
-        # Verify we're receiving native high-resolution images (not artificially upsampled)
-        if hasattr(images, 'shape'):
-            rank0_print(f"SHIRG-DEBUG: Processing {images.shape} native high-resolution images")
+        # Verify we're receiving 5-view anyres format
+        if isinstance(images, list):
+            rank0_print(f"SHIRG-FOVEA-DEBUG: Processing {len(images)} views from anyres splitter")
+        elif hasattr(images, 'shape'):
+            rank0_print(f"SHIRG-FOVEA-DEBUG: Single tensor input {images.shape} (expecting list of 5 views)")
         # SHIRG-FIX: 2025-07-28 - Remove exception masking to expose gradient issues
         # ISSUE: Try-catch block hides real errors preventing gradient flow debugging
         # SOLUTION: Remove masking and let actual errors surface for proper fixing
@@ -744,7 +742,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG IMPACT: Uses the complete SHIRG implementation for high-resolution processing
         
         # Call the SHIRG method directly from the mixin class
-        # This implements the complete SHIRG methodology: dual-scale tokens → selection → 1216 tokens
+        # This implements SHIRG-Fovea: 5-view tokens → per-view selection → ~1832 tokens
         return SigLipShirgExtensions.forward_with_shirg(self, images, text_embeddings)
 
     # Additional convenience methods for external compatibility
@@ -770,7 +768,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 self._enable_lora_gradients()
             rank0_print("GRADIENT-FIX: Enabled gradients for highres token extraction")
         
-        return self.extract_high_res_tokens_fixed(images)
+        # SHIRG-Fovea: Forward to the mixin's multiview extraction
+        return SigLipShirgExtensions.extract_multiview_tokens(self, images)
 
     def compare_baseline_vs_shirg(self, images, target_tokens=768, text_embeddings=None):
         """Compare standard LaViDa vs SHIRG processing"""
