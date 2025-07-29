@@ -1143,6 +1143,8 @@ class LaViDaModelRunner:
                 print(f"   🔍 Image tensor type: {type(image_tensor)}")
                 print(f"   🔍 Image tensor device: {image_tensor.device if hasattr(image_tensor, 'device') else 'No device'}")
                 print(f"   🔍 Image tensor dtype: {image_tensor.dtype if hasattr(image_tensor, 'dtype') else 'No dtype'}")
+                print(f"   🔍 Input IDs shape: {input_ids.shape if hasattr(input_ids, 'shape') else 'No shape'}")
+                print(f"   🔍 Input IDs sample: {input_ids[0, :20] if hasattr(input_ids, 'shape') and input_ids.shape[1] > 20 else input_ids}")
                                 
                 if isinstance(image_tensor, list):
                     # LaViDa expects list for multi-view anyres processing
@@ -1159,6 +1161,21 @@ class LaViDaModelRunner:
                     print(f"   🔍 Images for generate list length: {len(images_for_generate)}")
                     if len(images_for_generate) > 0 and hasattr(images_for_generate[0], 'shape'):
                         print(f"   🔍 First image shape: {images_for_generate[0].shape}")
+                
+                # SHIRG-GENERATION-DEBUG: 2025-07-29 - Add comprehensive debugging
+                # ISSUE: Empty outputs from SHIRG generation
+                # SOLUTION: Debug all inputs to generation function
+                # RESEARCH IMPACT: Identifies why SHIRG produces empty outputs
+                # LAVIDA IMPACT: Ensures SHIRG uses proper LaViDa generation
+                
+                print(f"   🔍 SHIRG generation inputs:")
+                print(f"      - input_ids: {input_ids.shape}")
+                print(f"      - images type: {type(images_for_generate)}")
+                if isinstance(images_for_generate, list):
+                    print(f"      - images list len: {len(images_for_generate)}")
+                elif hasattr(images_for_generate, 'shape'):
+                    print(f"      - images shape: {images_for_generate.shape}")
+                print(f"      - image_sizes: {image_sizes}")
                 
                 # Use identical LaViDa generation parameters as baseline
                 result = self.shirg_model.generate(
@@ -1180,10 +1197,18 @@ class LaViDaModelRunner:
                 if isinstance(result, tuple) and len(result) == 2:
                     cont, hist = result
                     output_ids = cont
+                    print(f"   🔍 SHIRG generation result type: tuple")
+                    print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
+                    if hasattr(output_ids, 'shape') and output_ids.numel() < 20:
+                        print(f"   🔍 Output IDs content: {output_ids}")
                 else:
                     # Fallback if only single value returned
                     output_ids = result
                     hist = None
+                    print(f"   🔍 SHIRG generation result type: {type(result)}")
+                    print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
+                    if hasattr(output_ids, 'shape') and output_ids.numel() < 20:
+                        print(f"   🔍 Output IDs content: {output_ids}")
             
             # SHIRG-DECODE-FIX: 2025-07-29 - Use same LaViDa decoding as baseline
             # ISSUE: SHIRG must use identical decoding method as baseline for fair comparison
@@ -1193,9 +1218,12 @@ class LaViDaModelRunner:
             
             # Decode SHIRG response (same as baseline)
             text_outputs = self.shirg_tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+            print(f"   🔍 SHIRG decoded text outputs (raw): {text_outputs}")
             # Clean up LaViDa-specific artifacts
             text_outputs = [text_output.lstrip('!') for text_output in text_outputs]
+            print(f"   🔍 SHIRG decoded text outputs (cleaned): {text_outputs}")
             response = text_outputs[0] if text_outputs else ""
+            print(f"   🔍 SHIRG final response: '{response}'")
             
             # Calculate tokens for analysis
             response_tokens = self.shirg_tokenizer.encode(response, return_tensors='pt')[0]

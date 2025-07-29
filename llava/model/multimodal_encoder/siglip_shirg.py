@@ -144,19 +144,21 @@ class SigLipShirgExtensions:
                 
                 processed_views.append(view_tokens)
             
-            # CRITICAL: Concatenate views to match LaViDa's expected format
-            # LaViDa's encode_images expects concatenated views that it will later split
-            # SHIRG-CONCAT-DIM-FIX: 2025-07-29 - Concatenate along token dimension, not batch
-            # ISSUE: torch.cat on dim=0 fails when views have different token counts
-            # SOLUTION: Concatenate along dim=1 to combine tokens from all views
-            # RESEARCH IMPACT: Maintains proper SHIRG token structure (196 + 4×328 = 1508)
-            # LAVIDA IMPACT: Creates single tensor with all tokens for LaViDa processing
-            concatenated_output = torch.cat(processed_views, dim=1)  # [B, 1508, D]
+            # SHIRG-5VIEW-FIX: 2025-07-29 - Return 5 separate views as LaViDa expects
+            # ISSUE: LaViDa expects 5 separate views to process through prepare_inputs_labels_for_multimodal
+            # SOLUTION: Stack views along batch dimension to maintain 5-view structure
+            # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
+            # LAVIDA IMPACT: Allows LaViDa to process SHIRG views through standard pipeline
             
-            rank0_print(f"SHIRG-Fovea: Returning concatenated views with shape {concatenated_output.shape}")
-            rank0_print(f"   This will be split by LaViDa into {len(processed_views)} views")
+            # Stack views along batch dimension: [5, varying_tokens, D]
+            # View 0: [1, 196, D] - global pooled
+            # Views 1-4: [1, 328, D] - peripheral selected
+            stacked_output = torch.cat(processed_views, dim=0)  # [5, varying_tokens, D]
             
-            return concatenated_output
+            rank0_print(f"SHIRG-Fovea: Returning 5 views stacked with shape {stacked_output.shape}")
+            rank0_print(f"   View token counts: {[view.shape[1] for view in processed_views]}")
+            
+            return stacked_output
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")

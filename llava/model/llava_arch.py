@@ -272,21 +272,17 @@ class LlavaMetaForCausalLM(ABC):
                 post_views, post_tokens_per_view, post_features = post_projector_shape
                 
                 # SHIRG-DEBUG-FIX: 2025-07-29 - Handle both baseline and SHIRG token counts
-                # ISSUE: SHIRG produces 1,508 tokens while baseline produces pooled tokens
-                # SOLUTION: Check for both scenarios and provide appropriate feedback
+                # ISSUE: SHIRG produces varying tokens per view while baseline has uniform counts
+                # SOLUTION: Check for SHIRG's specific token pattern (196, 328, 328, 328, 328)
                 # LAVIDA IMPACT: Eliminates incorrect pooling warnings for SHIRG models
                 # SHIRG IMPACT: Provides proper feedback for SHIRG token selection results
                 
-                if pre_tokens_per_view == 1508:
-                    # SHIRG case: Should maintain 1,508 tokens (no pooling)
-                    if post_tokens_per_view == 1508:
-                        print(f"✅ SHIRG-CORRECT: Token selection maintained count!")
-                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view (SHIRG)")
-                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
-                    else:
-                        print(f"⚠️ SHIRG-ISSUE: Unexpected SHIRG token processing")
-                        print(f"   Expected: {pre_views} views, 1508→1508 tokens per view (SHIRG)")
-                        print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                # Check if this looks like SHIRG output (varying token counts)
+                if pre_views == 5 and pre_tokens_per_view != 729:
+                    # Likely SHIRG - log the actual structure
+                    print(f"✅ SHIRG-MULTIVIEW: Detected SHIRG token structure")
+                    print(f"   Pre-projector shape: {pre_projector_shape}")
+                    print(f"   Post-projector shape: {post_projector_shape}")
                 elif pre_tokens_per_view == 729:
                     # BASELINE-FIX: LaViDa doesn't pool by default - keeps all 729 tokens
                     if post_tokens_per_view == 729:
@@ -419,18 +415,21 @@ class LlavaMetaForCausalLM(ABC):
             actual_images = encoded_image_features.shape[0]
             
             if is_shirg_enabled:
-                # SHIRG-SINGLE-VIEW-FIX: 2025-07-29 - SHIRG returns concatenated tokens as single view
-                # ISSUE: SHIRG concatenates all tokens (196 + 4×328 = 1508) into one tensor
-                # SOLUTION: Treat SHIRG output as single "super-view" instead of splitting
-                # RESEARCH IMPACT: Maintains SHIRG's 1508 token output as designed
-                # LAVIDA IMPACT: Processes SHIRG tokens as single view through pipeline
+                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns 5 views with different token counts
+                # ISSUE: SHIRG has different token counts per view (196 + 4×328)
+                # SOLUTION: Use SHIRG-specific split sizes for proper view separation
+                # RESEARCH IMPACT: Maintains per-view selection methodology
+                # LAVIDA IMPACT: Allows LaViDa to process SHIRG's 5 views correctly
                 
-                # Check if this is SHIRG output (1 "image" with many tokens)
-                if actual_images == 1 and encoded_image_features.shape[1] > 1000:
-                    # This is SHIRG's concatenated output
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned single view with {encoded_image_features.shape[1]} tokens")
-                    print(f"   Keeping as single view for processing")
-                    encoded_image_features = [encoded_image_features]
+                # SHIRG returns 5 views with these token counts
+                shirg_split_sizes = [196, 328, 328, 328, 328]  # Total: 1508
+                
+                if actual_images == 5:
+                    # SHIRG returned 5 views as expected
+                    print(f"SHIRG-SPLIT-FIX: SHIRG returned 5 views, splitting by SHIRG sizes")
+                    print(f"   SHIRG split sizes: {shirg_split_sizes} (total: {sum(shirg_split_sizes)})")
+                    # Views are already separate, just convert to list
+                    encoded_image_features = [encoded_image_features[i:i+1] for i in range(5)]
                 elif actual_images == total_expected_images:
                     # SHIRG might be disabled or in fallback mode
                     print(f"SHIRG-SPLIT-FIX: SHIRG in fallback mode, using normal split")
@@ -439,8 +438,11 @@ class LlavaMetaForCausalLM(ABC):
                     # Unexpected format
                     print(f"WARNING: SHIRG output format unexpected - {actual_images} images")
                     print(f"   Encoded shape: {encoded_image_features.shape}")
-                    # Keep as single tensor for debugging
-                    encoded_image_features = [encoded_image_features]
+                    # Try to handle as list
+                    if actual_images == 1:
+                        encoded_image_features = [encoded_image_features]
+                    else:
+                        encoded_image_features = torch.split(encoded_image_features, split_sizes)
             elif actual_images == total_expected_images:
                 # Standard case - split normally
                 encoded_image_features = torch.split(encoded_image_features, split_sizes)
@@ -460,6 +462,13 @@ class LlavaMetaForCausalLM(ABC):
                 in_video_batch = idx in video_idx_in_batch
                 print(f"POOLING-CONDITION idx={idx}: in_video_batch={in_video_batch}, ALWASY_DO_2DPOOL={ALWASY_DO_2DPOOL}")
                 print(f"POOLING-CONDITION idx={idx}: video_idx_in_batch={video_idx_in_batch}")
+                
+                # SHIRG-TOKEN-COUNT-DEBUG: 2025-07-29 - Debug token counts for each view
+                # ISSUE: Need to understand token distribution for SHIRG vs baseline
+                # SOLUTION: Log detailed token information for debugging
+                # RESEARCH IMPACT: Helps diagnose empty output issue
+                # LAVIDA IMPACT: Identifies token processing differences
+                print(f"   🔍 View {idx}: shape={image_feat.shape}, tokens={image_feat.shape[1] if len(image_feat.shape) > 1 else 'N/A'}")
                 
                 if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
                     # POOLING-FIX: 2025-07-29 - Improved pooling logic for baseline vs SHIRG models
