@@ -383,7 +383,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # Convert to list of individual patches like original LaViDa expects
             patch_list = [images[i] for i in range(num_patches)]
             rank0_print(f"ANYRES-FIX: Converted to {len(patch_list)} individual patches")
-            # Process as list (original LaViDa behavior)
+            # Process as list and return proper shape for split_with_sizes
             return self._process_patch_list(patch_list)
         # Handle standard single image tensors [B, C, H, W] where B=1
         elif hasattr(images, 'shape') and len(images.shape) == 4:
@@ -557,11 +557,11 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
 
     def _process_patch_list(self, patch_list):
         """
-        ANYRES-FIX: 2025-07-29 - Process LaViDa anyres patches as list like original implementation
-        ISSUE: LaViDa anyres creates patches but expects list processing, not batch processing
-        SOLUTION: Process each patch individually and concatenate results like original LaViDa
-        LAVIDA IMPACT: Maintains exact LaViDa anyres behavior for multi-patch images
-        SHIRG IMPACT: Preserves patch-based processing for SHIRG token selection
+        ANYRES-FIX: 2025-07-29 - Process LaViDa anyres patches maintaining batch dimension for split_with_sizes
+        ISSUE: LaViDa's split_with_sizes expects batch dimension to match number of patches, not concatenated tokens
+        SOLUTION: Return [num_patches, tokens_per_patch, features] instead of [1, total_tokens, features]
+        LAVIDA IMPACT: Fixes split_with_sizes error in anyres processing pipeline
+        SHIRG IMPACT: Maintains proper patch-based processing for SHIRG token selection
         """
         image_features = []
         
@@ -618,16 +618,30 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 
             image_features.append(patch_feature)
         
-        # Concatenate all patches along token dimension like original LaViDa
-        # Result: [1, total_tokens, features] where total_tokens = num_patches * 729
-        concatenated_features = torch.cat(image_features, dim=1)
+        # CRITICAL-FIX: 2025-07-29 - Stack patches along batch dimension for LaViDa compatibility
+        # ISSUE: torch.split_with_sizes expects batch dimension to match split_sizes
+        # SOLUTION: Stack patches as [num_patches, tokens_per_patch, features] not concatenate
+        # LAVIDA IMPACT: Fixes split_with_sizes error by returning correct tensor shape
+        # ORIGINAL EXPECTED: [5, 729, 1152] for 5 patches with 729 tokens each
         
-        total_tokens = concatenated_features.shape[1]
-        expected_total = len(patch_list) * (384 // 14) ** 2
-        rank0_print(f"ANYRES-DEBUG: Final concatenated features: {concatenated_features.shape}")
-        rank0_print(f"ANYRES-DEBUG: Total tokens: {total_tokens}, expected: {expected_total}")
+        # Stack all patches along batch dimension
+        # Result: [num_patches, tokens_per_patch, features] where tokens_per_patch = 729
+        stacked_features = torch.cat(image_features, dim=0)  # Concatenate along batch dim
         
-        return concatenated_features
+        num_patches = len(patch_list)
+        tokens_per_patch = (384 // 14) ** 2  # 729
+        feature_dim = stacked_features.shape[-1]
+        
+        rank0_print(f"ANYRES-DEBUG: Stacked features shape: {stacked_features.shape}")
+        rank0_print(f"ANYRES-DEBUG: Expected shape: [{num_patches}, {tokens_per_patch}, {feature_dim}]")
+        
+        # Ensure correct shape for LaViDa's split_with_sizes
+        expected_shape = (num_patches, tokens_per_patch, feature_dim)
+        if stacked_features.shape != expected_shape:
+            rank0_print(f"⚠️ Shape mismatch! Reshaping {stacked_features.shape} -> {expected_shape}")
+            stacked_features = stacked_features.view(expected_shape)
+        
+        return stacked_features
 
     def to(self, *args, **kwargs):
         """
