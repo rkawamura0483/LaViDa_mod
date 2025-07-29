@@ -150,20 +150,22 @@ class SigLipShirgExtensions:
             # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
             # LAVIDA IMPACT: Allows LaViDa to process SHIRG views through standard pipeline
             
-            # CRITICAL: LaViDa expects multiple views stacked along batch dimension
-            # Baseline: 5 views × 729 tokens each → stacked as [5, 729, D]
-            # SHIRG: 5 views with different tokens → stack as [5, varying_tokens, D]
+            # SHIRG-CONCAT-FIX: 2025-07-29 - Concatenate along token dimension, not batch
+            # ISSUE: LaViDa expects concatenated tokens, not stacked views with different sizes
+            # SOLUTION: Concatenate all tokens along dimension 1 to create single token sequence
+            # RESEARCH IMPACT: Achieves target ~1600-1800 tokens as per SHIRG methodology
+            # LAVIDA IMPACT: Returns standard token format that LaViDa can process
             
-            # Stack views along batch dimension like baseline LaViDa
-            # This creates a tensor where each "batch" is a different view
-            stacked_views = torch.cat(processed_views, dim=0)  # [5, varying_tokens, D]
+            # Concatenate all views along token dimension: [B, total_tokens, D]
+            # Global (196) + 4×Peripheral (4×328) = ~1508 tokens
+            concatenated_tokens = torch.cat(processed_views, dim=1)  # [B, 1508, D]
             
-            rank0_print(f"SHIRG-Fovea: Returning 5 stacked views with shape {stacked_views.shape}")
-            rank0_print(f"   View 0 (global): {processed_views[0].shape}")
-            rank0_print(f"   Views 1-4 (peripheral): {processed_views[1].shape} each")
-            rank0_print("   LaViDa will process these 5 views separately")
+            rank0_print(f"SHIRG-Fovea: Returning concatenated tokens with shape {concatenated_tokens.shape}")
+            rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
+            rank0_print(f"   Peripheral tokens per view: {processed_views[1].shape[1]}")
+            rank0_print(f"   Total SHIRG tokens: {concatenated_tokens.shape[1]}")
             
-            return stacked_views
+            return concatenated_tokens
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")

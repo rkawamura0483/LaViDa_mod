@@ -54,7 +54,24 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         self.is_loaded = False
         self.config = SigLipVisionConfig()
         self.vision_tower_name = vision_tower
-        self.shirg_enabled = getattr(vision_tower_cfg, 'enable_shirg', False)
+        # SHIRG-CONFIG-ROBUST-FIX: 2025-07-29 - More robust SHIRG configuration detection
+        # ISSUE: SHIRG configuration not properly detected from vision_tower_cfg
+        # SOLUTION: Check multiple sources and log configuration state
+        # RESEARCH IMPACT: Ensures SHIRG is enabled when intended
+        # LAVIDA IMPACT: Prevents unintended fallback to baseline
+        
+        self.shirg_enabled = False
+        
+        # Check vision_tower_cfg (can be dict or object)
+        if isinstance(vision_tower_cfg, dict):
+            self.shirg_enabled = vision_tower_cfg.get('enable_shirg', False)
+            rank0_print(f"SHIRG-CONFIG: From vision_tower_cfg dict: enable_shirg={self.shirg_enabled}")
+        elif hasattr(vision_tower_cfg, 'enable_shirg'):
+            self.shirg_enabled = getattr(vision_tower_cfg, 'enable_shirg', False)
+            rank0_print(f"SHIRG-CONFIG: From vision_tower_cfg attr: enable_shirg={self.shirg_enabled}")
+        
+        # Store config for later use
+        self.vision_tower_cfg = vision_tower_cfg
         
         # SHIRG-FOVEA-CONFIG: 2025-07-29 - Configure image processor for anyres mode
         # ISSUE: SHIRG-Fovea uses same anyres processing as LaViDa but with different resolutions
@@ -356,6 +373,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # Determine whether to use SHIRG
         should_use_shirg = use_shirg if use_shirg is not None else self.shirg_enabled
         
+        # SHIRG-CONFIG-DEBUG: 2025-07-29 - Debug SHIRG configuration state
+        # ISSUE: SHIRG may be disabled or not properly configured
+        # SOLUTION: Add detailed logging of SHIRG state
+        # RESEARCH IMPACT: Helps diagnose why SHIRG isn't being used
+        # LAVIDA IMPACT: Identifies configuration issues
+        rank0_print(f"SHIRG-CONFIG-DEBUG: shirg_enabled={self.shirg_enabled}, use_shirg={use_shirg}, should_use_shirg={should_use_shirg}")
+        if hasattr(self.config, 'enable_shirg'):
+            rank0_print(f"SHIRG-CONFIG-DEBUG: config.enable_shirg={self.config.enable_shirg}")
+        
         # Check if we have concatenated views from LaViDa's prepare_inputs_labels_for_multimodal
         is_concatenated_views = False
         if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] == 5:
@@ -364,13 +390,49 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated 5-view tensor: {images.shape}")
         
         if should_use_shirg and is_concatenated_views:
-            # SHIRG processes all 5 views together and returns single tensor
+            # SHIRG-5VIEW-OUTPUT-FIX: 2025-07-29 - Return 5 separate views for LaViDa's split logic
+            # ISSUE: SHIRG returns concatenated tokens but LaViDa expects to split by views
+            # SOLUTION: Process with SHIRG but return as 5 separate tensors stacked along batch dim
+            # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
+            # LAVIDA IMPACT: Allows LaViDa's split_with_sizes to work correctly with SHIRG output
+            
             rank0_print("SHIRG-CONCAT-FIX: Processing 5 views with SHIRG")
             # Convert to list format for SHIRG
             view_list = [images[i] for i in range(5)]
+            
+            # Process through SHIRG to get concatenated tokens
             shirg_tokens = self.forward_with_shirg(view_list, text_embeddings)
-            # Return with batch dimension to match LaViDa's expectations
-            return shirg_tokens
+            
+            # SHIRG-OUTPUT-DEBUG: 2025-07-29 - Debug SHIRG output shape and content
+            # ISSUE: Need to understand why SHIRG is returning 729 tokens instead of 1508
+            # SOLUTION: Add comprehensive logging of SHIRG output
+            # RESEARCH IMPACT: Helps diagnose SHIRG token selection issues
+            # LAVIDA IMPACT: Identifies integration problems between SHIRG and LaViDa
+            rank0_print(f"SHIRG-OUTPUT-DEBUG: SHIRG returned shape: {shirg_tokens.shape}")
+            rank0_print(f"SHIRG-OUTPUT-DEBUG: Expected ~1508 tokens, got {shirg_tokens.shape[1] if len(shirg_tokens.shape) > 1 else 'N/A'}")
+            
+            # CRITICAL: LaViDa expects to split features back into 5 views
+            # SHIRG returns [1, 1508, D] but LaViDa needs [5, varying_tokens, D]
+            # We need to split SHIRG output back into 5 views with correct token counts
+            
+            # SHIRG token distribution: [196, 328, 328, 328, 328]
+            shirg_token_splits = [196, 328, 328, 328, 328]
+            
+            # Split concatenated tokens back into views
+            if shirg_tokens.shape[0] == 1 and shirg_tokens.shape[1] == sum(shirg_token_splits):
+                # Split along token dimension
+                split_views = torch.split(shirg_tokens, shirg_token_splits, dim=1)
+                # Stack along batch dimension to create [5, varying_tokens, D]
+                stacked_views = torch.cat(split_views, dim=0)
+                rank0_print(f"SHIRG-5VIEW-OUTPUT: Split {shirg_tokens.shape} into 5 views")
+                for i, view in enumerate(split_views):
+                    rank0_print(f"   View {i}: {view.shape}")
+                rank0_print(f"   Stacked output: {stacked_views.shape}")
+                return stacked_views
+            else:
+                # Fallback if SHIRG output unexpected
+                rank0_print(f"SHIRG-5VIEW-OUTPUT: Unexpected SHIRG shape {shirg_tokens.shape}, returning as-is")
+                return shirg_tokens
         elif should_use_shirg:
             # SHIRG: High-resolution processing with token selection
             return self.forward_with_shirg(images, text_embeddings)
