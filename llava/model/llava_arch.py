@@ -268,15 +268,18 @@ class LlavaMetaForCausalLM(ABC):
                         print(f"   Expected: {pre_views} views, 1216→1216 tokens per view (SHIRG)")
                         print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
                 elif pre_tokens_per_view == 729:
-                    # Baseline LaViDa case: Should pool 729→196 tokens
-                    if post_tokens_per_view == 196:
-                        print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling worked!")
+                    # BASELINE-FIX: LaViDa doesn't pool by default - keeps all 729 tokens
+                    if post_tokens_per_view == 729:
+                        print(f"✅ BASELINE-CORRECT: LaViDa maintains full token count (no pooling)")
+                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
+                    elif post_tokens_per_view == 196:
+                        print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling applied!")
                         print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
                         print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
                     else:
-                        print(f"⚠️ POOLER-ISSUE: Unexpected multi-view pooling result")
-                        print(f"   Expected: {pre_views} views, 729→196 tokens per view")
-                        print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
+                        print(f"⚠️ UNEXPECTED: Different token reduction")
+                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
                 else:
                     # Other token counts
                     print(f"MM_PROJECTOR-DEBUG: Processing {pre_tokens_per_view} tokens per view")
