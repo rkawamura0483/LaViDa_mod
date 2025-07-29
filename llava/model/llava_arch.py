@@ -309,7 +309,21 @@ class LlavaMetaForCausalLM(ABC):
             image_features = []
             for idx, image_feat in enumerate(encoded_image_features):
                 if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
-                    image_features.append(self.get_2dPool(image_feat))
+                    # SHIRG-FIX: 2025-07-29 - Bypass get_2dPool for SHIRG tokens per research methodology
+                    # ISSUE: SHIRG produces 1,216 tokens but get_2dPool expects 729 tokens (27×27 grid)
+                    # ROOT CAUSE: SHIRG does its own internal pooling and should go directly to language model
+                    # SOLUTION: Detect SHIRG mode and bypass get_2dPool to maintain research methodology
+                    # LAVIDA IMPACT: Enables SHIRG integration while preserving standard LaViDa processing
+                    # SHIRG IMPACT: Fixes core tensor dimension mismatch and follows SHIRG pipeline exactly
+                    
+                    vision_tower = self.get_vision_tower()
+                    if hasattr(vision_tower, 'shirg_enabled') and vision_tower.shirg_enabled:
+                        # SHIRG tokens bypass get_2dPool - they're already processed per SHIRG methodology
+                        # SHIRG Research: 672×672 → 2,304 tokens → 1,216 selected → direct to LM
+                        image_features.append(image_feat)
+                    else:
+                        # Standard LaViDa tokens need get_2dPool processing (384×384 → 729 → pooled)
+                        image_features.append(self.get_2dPool(image_feat))
                 else:
                     image_features.append(image_feat)
             # image_features = self.encode_multimodals(concat_images, video_idx_in_batch, split_sizes)
