@@ -403,8 +403,15 @@ def process_images(images, image_processor, model_cfg):
     # SOLUTION: Check for SHIRG mode and use custom 3-view preprocessing
     # RESEARCH IMPACT: Implements SHIRG-Fovea architecture with 980 tokens
     # LAVIDA IMPACT: Preserves original LaViDa processing for non-SHIRG mode
-    if getattr(model_cfg, "enable_shirg", False) and getattr(model_cfg, "shirg_3view_mode", False):
+    
+    # SHIRG-PREPROCESSING-DEBUG: 2025-07-29 - Debug SHIRG 3-view mode detection
+    enable_shirg = getattr(model_cfg, "enable_shirg", False)
+    shirg_3view_mode = getattr(model_cfg, "shirg_3view_mode", False)
+    print(f"SHIRG-PREPROCESS: enable_shirg={enable_shirg}, shirg_3view_mode={shirg_3view_mode}, aspect_ratio={image_aspect_ratio}")
+    
+    if enable_shirg and shirg_3view_mode:
         # SHIRG 3-view mode: process as 1 global + 2 foveal
+        print("SHIRG-PREPROCESS: Using SHIRG 3-view processing (1×384² + 2×448²)")
         for image in images:
             image = process_shirg_3view_image(image, image_processor)
             new_images.append(image)
