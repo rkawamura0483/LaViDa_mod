@@ -790,15 +790,20 @@ class LlavaMetaForCausalLM(ABC):
             # SOLUTION: Log sequence composition details
             # RESEARCH IMPACT: Identifies sequence construction issues
             # LAVIDA IMPACT: Ensures proper token embedding combination
+            
+            # Calculate text and image token positions for debugging
+            text_token_positions = torch.where(cur_new_labels != IGNORE_INDEX)[0].cpu().tolist()
+            image_token_start_positions = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].cpu().tolist()
+            
             print(f"SHIRG-SEQUENCE-DEBUG: Sequence composition for batch {batch_idx}:")
             print(f"   Total embeddings: {cur_new_input_embeds.shape}")
-            print(f"   Text token positions: {text_token_positions[:20]}...")  # First 20 positions
-            print(f"   Image token start position: {image_token_start_idx[0] if image_token_start_idx else 'None'}")
+            print(f"   Text token positions: {text_token_positions[:20]}..." if text_token_positions else "   No text tokens found")
+            print(f"   Image token start positions: {image_token_start_positions[:5]}..." if image_token_start_positions else "   No image tokens found")
             print(f"   Label distribution: IGNORE={(cur_new_labels == IGNORE_INDEX).sum()}, others={cur_new_labels.shape[0] - (cur_new_labels == IGNORE_INDEX).sum()}")
             
             # Check embedding values at boundaries
-            if image_token_start_idx:
-                idx = image_token_start_idx[0]
+            if image_token_start_positions:
+                idx = image_token_start_positions[0]
                 if idx > 0:
                     print(f"   Embedding before image: mean={cur_new_input_embeds[idx-1].mean():.4f}")
                 print(f"   First image embedding: mean={cur_new_input_embeds[idx].mean():.4f}")
