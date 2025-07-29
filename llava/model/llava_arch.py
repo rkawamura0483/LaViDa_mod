@@ -389,16 +389,44 @@ class LlavaMetaForCausalLM(ABC):
             is_shirg_enabled = (hasattr(vision_tower, 'shirg_enabled') and vision_tower.shirg_enabled and 
                                hasattr(self.config, 'enable_shirg') and self.config.enable_shirg)
             
+            # SHIRG-SPLIT-ROBUST-FIX: 2025-07-29 - More robust detection of SHIRG output
+            # ISSUE: SHIRG can return different shapes depending on success/fallback
+            # SOLUTION: Check if tensor can be split by expected sizes before attempting
+            # RESEARCH IMPACT: Enables SHIRG to work even when fallback occurs
+            # LAVIDA IMPACT: Prevents split errors in all SHIRG scenarios
+            
             # This is a list, each element is [num_images, patch * patch, dim]
             # rank_print(f"Concat images : {concat_images.shape}")
-            if is_shirg_enabled and encoded_image_features.shape[0] == 1:
-                # SHIRG returns single tensor with all selected tokens concatenated
-                # Don't split - treat as single "super-view" containing all selected tokens
-                print(f"SHIRG-SPLIT-FIX: SHIRG mode detected, treating as single view with {encoded_image_features.shape[1]} tokens")
-                encoded_image_features = [encoded_image_features]
-            else:
-                # Standard LaViDa processing - split back into separate views
+            
+            # Check if the encoded features match the expected split pattern
+            total_expected_images = sum(split_sizes)
+            actual_images = encoded_image_features.shape[0]
+            
+            if is_shirg_enabled and actual_images != total_expected_images:
+                # SHIRG returns different number of "images" than expected
+                # This could be concatenated tokens (1 tensor) or fallback (1 view)
+                print(f"SHIRG-SPLIT-FIX: SHIRG output detected - expected {total_expected_images} views, got {actual_images}")
+                print(f"   Encoded shape: {encoded_image_features.shape}")
+                
+                # For SHIRG, we keep the tensor as-is without splitting
+                if encoded_image_features.dim() == 3:  # [batch, tokens, features]
+                    encoded_image_features = [encoded_image_features]
+                else:
+                    # Ensure it's a list
+                    encoded_image_features = [encoded_image_features]
+            elif actual_images == total_expected_images:
+                # Standard case - split normally
                 encoded_image_features = torch.split(encoded_image_features, split_sizes)
+            else:
+                # Mismatch but not SHIRG - this is an error condition
+                print(f"WARNING: Image count mismatch - expected {total_expected_images}, got {actual_images}")
+                # Try to handle gracefully
+                if actual_images == 1:
+                    # Single image, don't split
+                    encoded_image_features = [encoded_image_features]
+                else:
+                    # Attempt split anyway
+                    encoded_image_features = torch.split(encoded_image_features, split_sizes)
             image_features = []
             for idx, image_feat in enumerate(encoded_image_features):
                 # DEBUG: Log the pooling condition evaluation
