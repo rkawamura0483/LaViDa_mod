@@ -584,6 +584,110 @@ class LaViDaModelRunner:
             print(f"   ⚠️ Error resizing image: {e}")
             return image
     
+    def _validate_and_convert_image(self, image, sample_id):
+        """
+        Validate and convert image to PIL format for SHIRG processing
+        
+        Args:
+            image: Input image in various formats (PIL, numpy, tensor, etc.)
+            sample_id: Sample identifier for debugging
+            
+        Returns:
+            PIL.Image: Validated PIL image ready for processing
+        """
+        try:
+            # SHIRG-IMAGE-VALIDATION-FIX: 2025-07-29 - Comprehensive image format validation
+            # ISSUE: Images from HuggingFace datasets can be in various formats causing preprocessing errors
+            # SOLUTION: Validate and normalize all image formats to PIL.Image before processing
+            # RESEARCH IMPACT: Enables SHIRG to process any dataset image format reliably  
+            # LAVIDA IMPACT: Maintains consistent image format across baseline and SHIRG processing
+            
+            # Check for None/invalid image
+            if image is None:
+                print(f"   ❌ Sample {sample_id}: Image is None")
+                return None
+            
+            # Handle PIL Images (most common case)
+            if isinstance(image, Image.Image):
+                # Ensure RGB mode for proper channel dimension inference
+                if image.mode != 'RGB':
+                    print(f"   🔄 Sample {sample_id}: Converting {image.mode} to RGB")
+                    image = image.convert('RGB')
+                
+                # Validate image has valid dimensions
+                width, height = image.size
+                if width == 0 or height == 0:
+                    print(f"   ❌ Sample {sample_id}: Invalid image dimensions {width}x{height}")
+                    return None
+                
+                print(f"   ✅ Sample {sample_id}: Valid PIL Image {width}x{height} in {image.mode} mode")
+                return image
+            
+            # Handle numpy arrays
+            elif isinstance(image, np.ndarray):
+                print(f"   🔄 Sample {sample_id}: Converting numpy array to PIL Image")
+                
+                # Handle different numpy array formats
+                if image.ndim == 2:
+                    # Grayscale image
+                    image = np.stack([image] * 3, axis=-1)
+                elif image.ndim == 3:
+                    # Color image - ensure HWC format
+                    if image.shape[0] in [1, 3, 4]:  # CHW format
+                        image = np.transpose(image, (1, 2, 0))
+                    
+                    # Take only RGB channels if RGBA
+                    if image.shape[-1] == 4:
+                        image = image[:, :, :3]
+                    elif image.shape[-1] == 1:
+                        image = np.stack([image[:, :, 0]] * 3, axis=-1)
+                else:
+                    print(f"   ❌ Sample {sample_id}: Unsupported numpy array shape {image.shape}")
+                    return None
+                
+                # Normalize to 0-255 range if needed
+                if image.dtype == np.float32 or image.dtype == np.float64:
+                    if image.max() <= 1.0:
+                        image = (image * 255).astype(np.uint8)
+                    else:
+                        image = image.astype(np.uint8)
+                elif image.dtype != np.uint8:
+                    image = image.astype(np.uint8)
+                
+                # Convert to PIL
+                pil_image = Image.fromarray(image)
+                print(f"   ✅ Sample {sample_id}: Converted numpy array to PIL Image {pil_image.size}")
+                return pil_image
+            
+            # Handle torch tensors
+            elif torch.is_tensor(image):
+                print(f"   🔄 Sample {sample_id}: Converting torch tensor to PIL Image")
+                
+                # Move to CPU and convert to numpy
+                image_np = image.detach().cpu().numpy()
+                
+                # Handle batch dimension
+                if image_np.ndim == 4:
+                    image_np = image_np.squeeze(0)
+                
+                # Recursive call with numpy array
+                return self._validate_and_convert_image(image_np, sample_id)
+            
+            # Handle other formats (try to convert to PIL)
+            else:
+                print(f"   ⚠️ Sample {sample_id}: Unknown image type {type(image)}, attempting conversion")
+                try:
+                    # Try direct PIL conversion
+                    pil_image = Image.fromarray(np.array(image))
+                    return self._validate_and_convert_image(pil_image, sample_id)
+                except Exception as conv_error:
+                    print(f"   ❌ Sample {sample_id}: Failed to convert {type(image)} to PIL: {conv_error}")
+                    return None
+                    
+        except Exception as e:
+            print(f"   ❌ Sample {sample_id}: Image validation failed: {e}")
+            return None
+    
     def _prepare_input_ids(self, question, tokenizer):
         """Prepare input IDs for inference following EXACT original LaViDa pattern"""
         try:
@@ -748,8 +852,19 @@ class LaViDaModelRunner:
         try:
             # Prepare image
             if TORCHVISION_AVAILABLE:
+                # BASELINE-IMAGE-VALIDATION-FIX: 2025-07-29 - Add same validation as SHIRG for consistency
+                # ISSUE: Baseline also needs image validation to prevent format errors
+                # SOLUTION: Use same validation method as SHIRG for consistent processing
+                # RESEARCH IMPACT: Ensures both baseline and SHIRG handle dataset images reliably
+                # LAVIDA IMPACT: Maintains LaViDa's image processing pipeline compatibility
+                
+                # Validate and ensure proper image format (same as SHIRG)
+                validated_image = self._validate_and_convert_image(image, "baseline")
+                if validated_image is None:
+                    raise ValueError(f"Invalid image format for baseline inference")
+                
                 # Use proper image processing
-                image_tensor = process_images([image], self.baseline_image_processor, self.baseline_model.config)
+                image_tensor = process_images([validated_image], self.baseline_image_processor, self.baseline_model.config)
                 if isinstance(image_tensor, list):
                     image_tensor = image_tensor[0]
                 # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
@@ -760,7 +875,18 @@ class LaViDaModelRunner:
                 image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
             else:
                 # Fallback tensor conversion
-                image_tensor = self._pil_to_tensor(image)
+                # BASELINE-FALLBACK-VALIDATION-FIX: 2025-07-29 - Add validation for baseline fallback path
+                # ISSUE: Baseline fallback path also needs image validation for consistency
+                # SOLUTION: Validate image before manual tensor conversion
+                # RESEARCH IMPACT: Ensures all baseline processing paths handle images reliably
+                # LAVIDA IMPACT: Maintains consistent image format handling across all baseline paths
+                
+                # Validate image before fallback processing
+                validated_image = self._validate_and_convert_image(image, "baseline-fallback")
+                if validated_image is None:
+                    raise ValueError(f"Invalid image format for baseline fallback processing")
+                
+                image_tensor = self._pil_to_tensor(validated_image)
                 # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
                 # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
                 # SOLUTION: Use BFloat16 consistently for LaViDa models
@@ -913,12 +1039,18 @@ class LaViDaModelRunner:
             # LAVIDA IMPACT: Bypasses LaViDa's anyres processing for SHIRG-specific high-res handling
             
             if TORCHVISION_AVAILABLE:
-                # SHIRG-IMAGE-FORMAT-FIX: 2025-07-29 - Use LaViDa's process_images for proper format handling
+                # SHIRG-IMAGE-FORMAT-FIX: 2025-07-29 - Add comprehensive image validation before processing
                 # ISSUE: Direct preprocess call fails with "Unable to infer channel dimension format" 
-                # SOLUTION: Use same process_images function as baseline LaViDa for format compatibility
+                # SOLUTION: Validate and convert image to PIL format before processing
                 # RESEARCH IMPACT: Enables SHIRG to process dataset images in any format (PIL, numpy, tensor)
                 # LAVIDA IMPACT: Maintains LaViDa's image processing pipeline compatibility
-                image_tensor = process_images([image], self.shirg_image_processor, self.shirg_model.config)
+                
+                # Validate and ensure proper image format
+                validated_image = self._validate_and_convert_image(image, sample_id)
+                if validated_image is None:
+                    raise ValueError(f"Invalid image format for sample {sample_id}")
+                
+                image_tensor = process_images([validated_image], self.shirg_image_processor, self.shirg_model.config)
                 if isinstance(image_tensor, list):
                     image_tensor = image_tensor[0]
                 
@@ -931,8 +1063,19 @@ class LaViDaModelRunner:
                 print(f"SHIRG-PROCESSING: Image tensor shape after processing: {image_tensor.shape}")
             else:
                 # Fallback: manual processing for SHIRG requirements
+                # SHIRG-FALLBACK-VALIDATION-FIX: 2025-07-29 - Add validation for fallback path too
+                # ISSUE: Fallback path also needs image validation for consistency
+                # SOLUTION: Validate image before manual processing
+                # RESEARCH IMPACT: Ensures all SHIRG processing paths handle images reliably
+                # LAVIDA IMPACT: Maintains consistent image format handling across all paths
+                
+                # Validate image before fallback processing
+                validated_image = self._validate_and_convert_image(image, sample_id)
+                if validated_image is None:
+                    raise ValueError(f"Invalid image format for SHIRG fallback processing")
+                
                 # Resize to 672×672 for SHIRG high-resolution processing
-                shirg_resized_image = self._resize_for_shirg(image, target_size=672)
+                shirg_resized_image = self._resize_for_shirg(validated_image, target_size=672)
                 base_tensor = self._pil_to_tensor(shirg_resized_image)
                 image_tensor = base_tensor.to(self.device, dtype=torch.bfloat16)
             
