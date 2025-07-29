@@ -460,22 +460,12 @@ class OCRVQAResultAnalyzer:
     def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    def combine_baseline_and_shirg_results(self, baseline_results, shirg_results, ocr_vqa_samples):
+    def combine_baseline_and_shirg_results(self, baseline_results, shirg_results, ocr_vqa_samples, model_runner=None):
         """Combine baseline and SHIRG results for comprehensive analysis"""
         all_results = {}
         
         print(f"\n📊 COMBINING RESULTS")
         print("=" * 30)
-        
-        # VISUALIZATION-INTEGRATION-FIX: 2025-07-29 - Create visualizations during result combination
-        # ISSUE: Visualization creation was in unused validate_single_image method, never executed
-        # SOLUTION: Integrate visualization creation into main execution flow
-        # RESEARCH IMPACT: Enables actual token selection visualization for SHIRG validation
-        # LAVIDA IMPACT: Provides visual evidence of token selection differences
-        
-        # Import model runner for visualization metadata extraction
-        from real_ocr_vqa_model_runner import LaViDaModelRunner
-        temp_model_runner = LaViDaModelRunner()
         
         # Ensure all samples have both baseline and SHIRG results
         for sample_name in ocr_vqa_samples.keys():
@@ -501,12 +491,16 @@ class OCRVQAResultAnalyzer:
                 sample_data['image'], baseline_result, shirg_result, sample_data['question']
             )
             
-            # Create token selection visualization (NOW ACTUALLY EXECUTED)
-            print(f"🎨 Creating visualization for {sample_name}...")
-            viz_path = self._create_token_selection_visualization(
-                sample_name, sample_data['image'], baseline_result, shirg_result, 
-                sample_data['question'], temp_model_runner
-            )
+            # Create token selection visualization only if model_runner provided
+            viz_path = None
+            if model_runner is not None:
+                print(f"🎨 Creating visualization for {sample_name}...")
+                viz_path = self._create_token_selection_visualization(
+                    sample_name, sample_data['image'], baseline_result, shirg_result, 
+                    sample_data['question'], model_runner
+                )
+            else:
+                print(f"⚠️ Skipping visualization for {sample_name} - no model_runner provided")
             
             all_results[sample_name] = {
                 'sample_data': sample_data,

@@ -62,15 +62,21 @@ class RealOCRVQAValidator:
         print("=" * 40)
         shirg_results = self.model_runner._run_all_shirg_inferences(ocr_vqa_samples)
         
-        # Unload SHIRG model to free memory
-        self.model_runner._unload_shirg_model()
-        
-        # Phase 3: Combine and analyze results
+        # Phase 3: Combine and analyze results WITH visualization (BEFORE unloading models)
         print("\n🔄 PHASE 3: RESULT ANALYSIS AND VISUALIZATION")
         print("=" * 40)
+        
+        # VISUALIZATION-TIMING-FIX: 2025-07-29 - Create visualizations BEFORE unloading models
+        # ISSUE: Models were unloaded before visualization, causing SHIRG tower unavailable errors
+        # SOLUTION: Pass initialized model_runner to enable visualization, then unload
+        # RESEARCH IMPACT: Enables actual SHIRG token selection visualization
+        # LAVIDA IMPACT: Provides visual evidence of baseline vs SHIRG differences
         all_results = self.result_analyzer.combine_baseline_and_shirg_results(
-            baseline_results, shirg_results, ocr_vqa_samples
+            baseline_results, shirg_results, ocr_vqa_samples, model_runner=self.model_runner
         )
+        
+        # NOW unload SHIRG model after visualization is complete
+        self.model_runner._unload_shirg_model()
         
         # Save consolidated results
         results_file, summary_file, simplified_file = self.result_analyzer.save_consolidated_results(all_results)
