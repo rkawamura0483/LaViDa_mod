@@ -129,6 +129,19 @@ class LaViDaModelRunner:
             print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
             
             # Load baseline model components with proper LaViDa configuration
+            # OVERWRITE-CONFIG-FIX: 2025-07-29 - Force override model config to use pooler projector
+            # ISSUE: Pretrained LaViDa model has saved mm_projector_type that overrides vision_kwargs
+            # SOLUTION: Use overwrite_config parameter to force pooler configuration after model loading
+            # LAVIDA IMPACT: Ensures baseline LaViDa uses pooler projector as per paper specification
+            # SHIRG IMPACT: Provides correct baseline reference with proper token reduction (5×196=980 tokens)
+            overwrite_config = {
+                "mm_projector_type": "pooler",
+                "mm_pooler_ratio": 2,
+                "image_aspect_ratio": "anyres",
+                "image_grid_pinpoints": [(768, 768)],
+                "mm_patch_merge_type": "spatial_unpad"
+            }
+            
             self.baseline_tokenizer, self.baseline_model, self.baseline_image_processor, _ = load_pretrained_model(
                 model_path=self.pretrained_path,
                 model_base=None,
@@ -138,6 +151,7 @@ class LaViDaModelRunner:
                 device=self.device,
                 device_map=None,
                 vision_kwargs=vision_kwargs,
+                overwrite_config=overwrite_config,  # Force override saved config
                 torch_dtype='bfloat16'
             )
             

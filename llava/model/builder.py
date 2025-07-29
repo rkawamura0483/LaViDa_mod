@@ -207,7 +207,23 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf", use_fast=False)
                         rank0_print("✅ Using LLaMA-2 tokenizer as fallback for LaViDa compatibility")
                 
-                model = LlavaLladaForMaskedDiffusion.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation='eager', **kwargs)
+                # OVERWRITE-CONFIG-FIX: 2025-07-29 - Support config override for LaViDa models like other branches
+                # ISSUE: LaViDa branch doesn't handle overwrite_config parameter to force pooler projector 
+                # SOLUTION: Load config, apply overrides, then load model with modified config
+                # LAVIDA IMPACT: Enables forcing pooler projector type to override saved model config
+                # SHIRG IMPACT: Allows proper baseline with pooled tokens for SHIRG comparison
+                if customized_config is None:
+                    llava_cfg = LlavaLladaConfig.from_pretrained(model_path)
+                else:
+                    llava_cfg = customized_config
+                
+                if overwrite_config is not None:
+                    rank0_print(f"Overwriting LaViDa config with {overwrite_config}")
+                    for k, v in overwrite_config.items():
+                        setattr(llava_cfg, k, v)
+                        rank0_print(f"  Set {k} = {v}")
+                
+                model = LlavaLladaForMaskedDiffusion.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation='eager', config=llava_cfg, **kwargs)
             elif "dream" in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_path,trust_remote_code=True)
                 model = LlavaDreamForMaskedDiffusion.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation='eager', **kwargs)
