@@ -146,19 +146,28 @@ class SigLipShirgExtensions:
             
             # SHIRG-5VIEW-FIX: 2025-07-29 - Return 5 separate views as LaViDa expects
             # ISSUE: LaViDa expects 5 separate views to process through prepare_inputs_labels_for_multimodal
-            # SOLUTION: Stack views along batch dimension to maintain 5-view structure
+            # SOLUTION: Return list of 5 views or stack properly to maintain view separation
             # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
             # LAVIDA IMPACT: Allows LaViDa to process SHIRG views through standard pipeline
             
-            # Stack views along batch dimension: [5, varying_tokens, D]
-            # View 0: [1, 196, D] - global pooled
-            # Views 1-4: [1, 328, D] - peripheral selected
-            stacked_output = torch.cat(processed_views, dim=0)  # [5, varying_tokens, D]
+            # CRITICAL: LaViDa's encode_images expects vision tower to return features that can be split
+            # For multi-view, it expects either:
+            # 1. List of tensors (one per view)
+            # 2. Concatenated tensor that it will split using split_sizes
             
-            rank0_print(f"SHIRG-Fovea: Returning 5 views stacked with shape {stacked_output.shape}")
+            # Since LaViDa concatenates views before passing to vision tower, we need to
+            # return a concatenated tensor that matches LaViDa's expected format
+            
+            # Stack views along token dimension to create single tensor
+            # This matches how LaViDa processes multi-view images
+            concatenated_output = torch.cat(processed_views, dim=1)  # [1, total_tokens, D]
+            
+            rank0_print(f"SHIRG-Fovea: Returning concatenated views with shape {concatenated_output.shape}")
+            rank0_print(f"   Total tokens: {concatenated_output.shape[1]} (196 + 4×328 = 1508)")
             rank0_print(f"   View token counts: {[view.shape[1] for view in processed_views]}")
+            rank0_print("   This will be split by LaViDa into 5 views")
             
-            return stacked_output
+            return concatenated_output
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")

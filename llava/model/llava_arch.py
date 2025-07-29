@@ -413,30 +413,32 @@ class LlavaMetaForCausalLM(ABC):
             # Check if the encoded features match the expected split pattern
             total_expected_images = sum(split_sizes)
             actual_images = encoded_image_features.shape[0]
+            total_tokens = encoded_image_features.shape[1] if len(encoded_image_features.shape) > 1 else 0
             
             if is_shirg_enabled:
-                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns 5 views with different token counts
-                # ISSUE: SHIRG has different token counts per view (196 + 4×328)
-                # SOLUTION: Use SHIRG-specific split sizes for proper view separation
-                # RESEARCH IMPACT: Maintains per-view selection methodology
-                # LAVIDA IMPACT: Allows LaViDa to process SHIRG's 5 views correctly
+                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns concatenated tokens as single view
+                # ISSUE: SHIRG concatenates all tokens from 5 views into single tensor [1, 1508, D]
+                # SOLUTION: Detect SHIRG output by token count and handle as single concatenated view
+                # RESEARCH IMPACT: Maintains SHIRG's per-view selection while working with LaViDa
+                # LAVIDA IMPACT: Allows LaViDa to process SHIRG tokens without splitting errors
                 
-                # SHIRG returns 5 views with these token counts
-                shirg_split_sizes = [196, 328, 328, 328, 328]  # Total: 1508
+                # SHIRG returns concatenated tokens: 196 + 4×328 = 1508
+                expected_shirg_tokens = 196 + 4 * 328  # 1508
                 
-                if actual_images == 5:
-                    # SHIRG returned 5 views as expected
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned 5 views, splitting by SHIRG sizes")
-                    print(f"   SHIRG split sizes: {shirg_split_sizes} (total: {sum(shirg_split_sizes)})")
-                    # Views are already separate, just convert to list
-                    encoded_image_features = [encoded_image_features[i:i+1] for i in range(5)]
+                if actual_images == 1 and total_tokens == expected_shirg_tokens:
+                    # SHIRG returned concatenated tokens as expected
+                    print(f"SHIRG-SPLIT-FIX: SHIRG returned single view with {total_tokens} tokens")
+                    print(f"   Keeping as single view for processing")
+                    # Keep as single view - don't split
+                    encoded_image_features = [encoded_image_features]
                 elif actual_images == total_expected_images:
                     # SHIRG might be disabled or in fallback mode
                     print(f"SHIRG-SPLIT-FIX: SHIRG in fallback mode, using normal split")
                     encoded_image_features = torch.split(encoded_image_features, split_sizes)
                 else:
-                    # Unexpected format
-                    print(f"WARNING: SHIRG output format unexpected - {actual_images} images")
+                    # Unexpected format - try to handle gracefully
+                    print(f"WARNING: SHIRG output format unexpected - {actual_images} images, {total_tokens} tokens")
+                    print(f"   Expected either 1 image with {expected_shirg_tokens} tokens or {total_expected_images} images")
                     print(f"   Encoded shape: {encoded_image_features.shape}")
                     # Try to handle as list
                     if actual_images == 1:
