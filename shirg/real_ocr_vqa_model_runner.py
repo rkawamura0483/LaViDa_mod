@@ -970,19 +970,23 @@ class LaViDaModelRunner:
                 # Get image sizes (required for LaViDa)
                 image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
                                 
-                # Use LaViDa diffusion generation (same as original predict.py)
+                # GENERATION-FIX: 2025-07-29 - Improved generation parameters for better OCR responses
+                # ISSUE: Short responses (7 characters) suggest generation parameter issues
+                # SOLUTION: Use better generation parameters for OCR tasks
+                # RESEARCH IMPACT: Enables proper OCR response generation for validation
+                # LAVIDA IMPACT: Maintains LaViDa diffusion generation while improving response quality
                 result = self.baseline_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
-                    do_sample=False,        # Same as original
-                    temperature=0.1,        # Same as original
-                    max_new_tokens=64,      # Same as original (changed from 512)
+                    do_sample=False,        # Deterministic for reproducible results
+                    temperature=0.1,        # Low temperature for focused responses
+                    max_new_tokens=128,     # Increased for longer OCR responses
                     block_length=64,        # LaViDa diffusion block size
                     step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
                     tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
                     prefix_lm=True,         # LaViDa prefix caching
-                    verbose=True,           # FIXED: Set to True to get (cont, hist) tuple
+                    verbose=True,           # Set to True to get (cont, hist) tuple
                     schedule='shift'        # LaViDa diffusion schedule
                 )
                 
@@ -1302,12 +1306,12 @@ class LaViDaModelRunner:
                     image_sizes=image_sizes,
                     do_sample=False,
                     temperature=0.1,
-                    max_new_tokens=64,   # Same as baseline (was 128)
+                    max_new_tokens=128,  # Same as baseline (increased for better OCR responses)
                     block_length=64,     # LaViDa diffusion block size
                     step_ratio=0.5,      # LaViDa diffusion steps
                     tokenizer=self.shirg_tokenizer,
                     prefix_lm=True,      # LaViDa prefix caching
-                    verbose=True,        # FIXED: Set to True to get (cont, hist) tuple
+                    verbose=True,        # Set to True to get (cont, hist) tuple
                     schedule='shift'     # LaViDa diffusion schedule
                 )
                 
