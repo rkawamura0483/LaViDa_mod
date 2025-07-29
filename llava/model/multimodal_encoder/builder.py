@@ -20,7 +20,18 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
         else:
             return CLIPVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     elif "siglip" in vision_tower:
-        return SigLipVisionTower(vision_tower, vision_tower_cfg=vision_tower_cfg, **kwargs)
+        # BASELINE-FIX: 2025-07-29 - Use original encoder for baseline models
+        # ISSUE: Baseline models were using SHIRG-modified encoder causing wrong behavior
+        # SOLUTION: Check for use_original_encoder flag and use original LaViDa encoder
+        # RESEARCH IMPACT: Provides proper baseline for SHIRG comparison
+        # LAVIDA IMPACT: Restores original LaViDa vision processing for baseline
+        if getattr(vision_tower_cfg, 'use_original_encoder', False):
+            # Use original LaViDa encoder for proper baseline comparison
+            from .original_siglip_encoder import SigLipVisionTower as OriginalSigLipVisionTower
+            return OriginalSigLipVisionTower(vision_tower, vision_tower_cfg, **kwargs)
+        else:
+            # Use SHIRG-enabled encoder (default)
+            return SigLipVisionTower(vision_tower, vision_tower_cfg=vision_tower_cfg, **kwargs)
     elif vision_tower.startswith("hf:"):
         return HFVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     elif vision_tower in ["imagebind_huge"]:

@@ -143,12 +143,11 @@ import os
 DEBUG_PRINT_IMAGE_RES = os.environ.get("DEBUG_PRINT_IMAGE_RES", False)
 NOT_ALWASY_DO_2DPOOL = os.environ.get("NOT_ALWASY_DO_2DPOOL", False)
 ALWASY_DO_2DPOOL = not NOT_ALWASY_DO_2DPOOL
-# POOLING-FIX: 2025-07-29 - Force pooling for images to match expected LaViDa behavior
-# ISSUE: Pooling only happens for videos by default, not images
-# SOLUTION: Force ALWASY_DO_2DPOOL=True to enable pooling for all modalities
-# LAVIDA IMPACT: Enables token reduction from 729 to 196 per view as expected
-# SHIRG IMPACT: Provides proper baseline for SHIRG comparison
-ALWASY_DO_2DPOOL = True
+# ENVIRONMENT-FIX: 2025-07-29 - Respect environment variables instead of hardcoding
+# ISSUE: Hardcoded ALWASY_DO_2DPOOL=True overrides environment variable control
+# SOLUTION: Let environment variables control pooling behavior properly
+# RESEARCH IMPACT: Enables proper baseline vs SHIRG control via environment variables
+# LAVIDA IMPACT: Restores LaViDa's original pooling behavior control mechanism
 # breakpoint()
 
 def unpad_image(tensor, original_size):
@@ -385,15 +384,20 @@ class LlavaMetaForCausalLM(ABC):
             image_features = []
             for idx, image_feat in enumerate(encoded_image_features):
                 if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
-                    # SHIRG-FIX: 2025-07-29 - Bypass get_2dPool for SHIRG tokens per research methodology
-                    # ISSUE: SHIRG produces 1,216 tokens but get_2dPool expects 729 tokens (27×27 grid)
-                    # ROOT CAUSE: SHIRG does its own internal pooling and should go directly to language model
-                    # SOLUTION: Detect SHIRG mode and bypass get_2dPool to maintain research methodology
-                    # LAVIDA IMPACT: Enables SHIRG integration while preserving standard LaViDa processing
-                    # SHIRG IMPACT: Fixes core tensor dimension mismatch and follows SHIRG pipeline exactly
+                    # POOLING-FIX: 2025-07-29 - Improved pooling logic for baseline vs SHIRG models
+                    # ISSUE: SHIRG bypass logic was too broad, affecting baseline models incorrectly
+                    # SOLUTION: Check for explicit SHIRG configuration in model config, not just vision tower
+                    # RESEARCH IMPACT: Ensures only properly configured SHIRG models bypass pooling
+                    # LAVIDA IMPACT: Restores proper baseline LaViDa pooling behavior
                     
                     vision_tower = self.get_vision_tower()
-                    if hasattr(vision_tower, 'shirg_enabled') and vision_tower.shirg_enabled:
+                    # Only bypass pooling if model is explicitly configured for SHIRG
+                    model_has_shirg = (hasattr(vision_tower, 'shirg_enabled') and 
+                                     vision_tower.shirg_enabled and 
+                                     hasattr(self.config, 'enable_shirg') and 
+                                     self.config.enable_shirg)
+                    
+                    if model_has_shirg:
                         # SHIRG tokens bypass get_2dPool - they're already processed per SHIRG methodology
                         # SHIRG Research: 672×672 → 2,304 tokens → 1,216 selected → direct to LM
                         image_features.append(image_feat)

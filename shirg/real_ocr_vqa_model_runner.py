@@ -132,6 +132,11 @@ class LaViDaModelRunner:
             # SOLUTION: Use original mlp2x_gelu projector and let LaViDa handle pooling internally
             # LAVIDA IMPACT: Maintains original pretrained weights for proper baseline
             # SHIRG IMPACT: Provides working baseline for comparison
+            # BASELINE-FIX: 2025-07-29 - Use original LaViDa architecture without SHIRG modifications
+            # ISSUE: Baseline was using SHIRG-modified components causing wrong token counts and poor performance
+            # SOLUTION: Explicitly disable SHIRG and force original LaViDa encoder usage
+            # RESEARCH IMPACT: Provides proper baseline for SHIRG comparison with correct 980 token flow
+            # LAVIDA IMPACT: Restores original LaViDa behavior for accurate baseline performance
             overwrite_config = {
                 # Keep original projector type to use pretrained weights
                 "mm_projector_type": "mlp2x_gelu",  # Original LaViDa projector
@@ -140,7 +145,10 @@ class LaViDaModelRunner:
                 "mm_patch_merge_type": "spatial_unpad",
                 # Add pooling configuration that LaViDa might use internally
                 "mm_spatial_pool_mode": "average",
-                "mm_spatial_pool_stride": 2
+                "mm_spatial_pool_stride": 2,
+                # CRITICAL: Explicitly disable SHIRG for baseline
+                "enable_shirg": False,
+                "use_original_encoder": True  # Force original encoder usage
             }
             
             self.baseline_tokenizer, self.baseline_model, self.baseline_image_processor, _ = load_pretrained_model(
@@ -244,6 +252,24 @@ class LaViDaModelRunner:
                     print("   ⚠️ Vision tower is None")
             else:
                 print("   ⚠️ Model has no get_vision_tower method")
+            
+            # POOLING-DEBUG: 2025-07-29 - Add comprehensive debug output for pooling configuration
+            # ISSUE: Need to track exact pooling configuration to debug token flow issues
+            # SOLUTION: Add detailed debug output showing all pooling-related settings
+            # RESEARCH IMPACT: Enables precise diagnosis of pooling issues in baseline vs SHIRG
+            # LAVIDA IMPACT: Validates LaViDa's pooling configuration is correct
+            print(f"\\n🔍 BASELINE POOLING DEBUG:")
+            print(f"   Environment NOT_ALWASY_DO_2DPOOL: {os.environ.get('NOT_ALWASY_DO_2DPOOL', 'not set')}")
+            print(f"   Model config enable_shirg: {getattr(self.baseline_model.config, 'enable_shirg', 'not set')}")
+            print(f"   Model config mm_spatial_pool_stride: {getattr(self.baseline_model.config, 'mm_spatial_pool_stride', 'not set')}")
+            print(f"   Model config mm_spatial_pool_mode: {getattr(self.baseline_model.config, 'mm_spatial_pool_mode', 'not set')}")
+            if self.baseline_tower:
+                print(f"   Vision tower shirg_enabled: {getattr(self.baseline_tower, 'shirg_enabled', 'not set')}")
+                print(f"   Vision tower type: {type(self.baseline_tower).__name__}")
+                if hasattr(self.baseline_tower, 'config'):
+                    print(f"   Vision tower config enable_shirg: {getattr(self.baseline_tower.config, 'enable_shirg', 'not set')}")
+            print(f"   Expected token flow: 3,645 → 980 tokens (with pooling)")
+            print(f"   Current pooling environment: {'ENABLED' if os.environ.get('NOT_ALWASY_DO_2DPOOL', '1') == '0' else 'DISABLED'}")
             
             # Memory check after loading
             if torch.cuda.is_available():
@@ -827,13 +853,7 @@ class LaViDaModelRunner:
                 print(f"   ⚠️ LaViDa original pattern failed: {conv_error}")
                 import traceback
                 traceback.print_exc()
-                
-                # FALLBACK-FIX: 2025-07-29 - If original pattern fails, use manual conversation building
-                # ISSUE: copy.deepcopy may fail if template has problematic tokenizer
-                # SOLUTION: Build conversation manually with same structure
-                # RESEARCH IMPACT: Allows research validation to continue with LaViDa-compatible prompts
-                # LAVIDA IMPACT: Maintains LaViDa conversation structure even with tokenizer issues
-                
+
                 print(f"   🔄 Attempting manual conversation building as fallback...")
                 try:
                     conv_template = conv_templates["llada"]
@@ -943,30 +963,13 @@ class LaViDaModelRunner:
                     raise ValueError(f"Invalid image format for baseline fallback processing")
                 
                 image_tensor = self._pil_to_tensor(validated_image)
-                # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
-                # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
-                # SOLUTION: Use BFloat16 consistently for LaViDa models
-                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
-                # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
                 image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
-            
-            # LAVIDA-GENERATION-FIX: 2025-07-29 - Use exact LaViDa generation from original predict.py
-            # ISSUE: Current generation doesn't follow LaViDa diffusion-based generation
-            # SOLUTION: Use exact LaViDa generation method with diffusion parameters
-            # RESEARCH IMPACT: Ensures baseline uses proper LaViDa diffusion generation
-            # LAVIDA IMPACT: Maintains LaViDa's core diffusion-based generation method
             
             # Run inference using LaViDa diffusion generation (following original predict.py)
             with torch.inference_mode():
                 # Get image sizes (required for LaViDa)
                 image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
-                
-                # LAVIDA-RETURN-FIX: 2025-07-29 - Handle LaViDa generate return format properly
-                # ISSUE: LaViDa generate() returns (cont, hist) only when verbose=True, just cont when verbose=False
-                # SOLUTION: Set verbose=True to get both cont and hist, or handle single return value correctly
-                # RESEARCH IMPACT: Enables proper LaViDa baseline inference for SHIRG comparison
-                # LAVIDA IMPACT: Maintains exact LaViDa generation behavior
-                
+                                
                 # Use LaViDa diffusion generation (same as original predict.py)
                 result = self.baseline_model.generate(
                     input_ids,
@@ -1275,19 +1278,7 @@ class LaViDaModelRunner:
                 print(f"   🔍 Image tensor type: {type(image_tensor)}")
                 print(f"   🔍 Image tensor device: {image_tensor.device if hasattr(image_tensor, 'device') else 'No device'}")
                 print(f"   🔍 Image tensor dtype: {image_tensor.dtype if hasattr(image_tensor, 'dtype') else 'No dtype'}")
-                
-                # SHIRG-RETURN-FIX: 2025-07-29 - Handle LaViDa generate return format properly for SHIRG
-                # ISSUE: SHIRG model also uses LaViDa generate() which has same return format dependency
-                # SOLUTION: Set verbose=True to get both cont and hist, or handle single return value correctly
-                # RESEARCH IMPACT: Enables proper SHIRG inference for comparison with baseline
-                # SHIRG IMPACT: Maintains exact LaViDa generation behavior while using SHIRG tokens
-                
-                # TENSOR-FORMAT-FIX: 2025-07-29 - Ensure image tensor is in correct format
-                # ISSUE: LaViDa expects tensor, not list of tensors for single image
-                # SOLUTION: Extract single tensor if in list format
-                # RESEARCH IMPACT: Enables SHIRG inference to work properly
-                # LAVIDA IMPACT: Maintains compatibility with LaViDa's generate function
-                
+                                
                 if isinstance(image_tensor, list):
                     # LaViDa expects list for multi-view anyres processing
                     images_for_generate = image_tensor
@@ -1606,11 +1597,6 @@ class LaViDaModelRunner:
                         print(f"      Image tensor shape: {image_tensor.shape}")
                         print(f"      Image tensor dtype: {image_tensor.dtype}")
                         
-                        # METHOD-FIX: 2025-07-29 - Use correct method name for SHIRG token extraction
-                        # ISSUE: Method was incorrectly named as extract_shirg_tokens
-                        # SOLUTION: Use extract_dual_scale_tokens which is the actual method in siglip_shirg.py
-                        # RESEARCH IMPACT: Enables proper SHIRG dual-scale token extraction
-                        # LAVIDA IMPACT: Fixes method call to existing SHIRG implementation
                         features, scaffold = self.shirg_tower.extract_dual_scale_tokens(image_tensor)
                         
                         selection_info = {
