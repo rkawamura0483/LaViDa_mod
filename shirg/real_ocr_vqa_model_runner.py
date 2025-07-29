@@ -981,7 +981,7 @@ class LaViDaModelRunner:
                     image_sizes=image_sizes,
                     do_sample=False,        # Deterministic for reproducible results
                     temperature=0.1,        # Low temperature for focused responses
-                    max_new_tokens=128,     # Increased for longer OCR responses
+                    max_new_tokens=64,     # Increased for longer OCR responses
                     block_length=64,        # LaViDa diffusion block size
                     step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
                     tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
