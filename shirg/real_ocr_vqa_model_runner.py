@@ -1199,16 +1199,29 @@ class LaViDaModelRunner:
                     output_ids = cont
                     print(f"   🔍 SHIRG generation result type: tuple")
                     print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
-                    if hasattr(output_ids, 'shape') and output_ids.numel() < 20:
-                        print(f"   🔍 Output IDs content: {output_ids}")
+                    # SHIRG-DECODE-DEBUG: 2025-07-29 - Enhanced debugging for empty outputs
+                    # ISSUE: SHIRG generates 64 tokens but they decode to empty string
+                    # SOLUTION: Add detailed logging of token IDs to diagnose the issue
+                    # RESEARCH IMPACT: Helps identify why SHIRG produces empty responses
+                    # LAVIDA IMPACT: Ensures SHIRG can generate meaningful outputs like baseline
+                    
+                    print(f"   🔍 Output IDs first 20 tokens: {output_ids[0, :20] if output_ids.shape[0] > 0 else 'No tokens'}")
+                    print(f"   🔍 Output IDs unique values: {torch.unique(output_ids).tolist() if output_ids.numel() < 100 else 'Too many unique values'}")
+                    
+                    # Check for common special tokens
+                    if hasattr(self.shirg_tokenizer, 'pad_token_id'):
+                        pad_count = (output_ids == self.shirg_tokenizer.pad_token_id).sum().item()
+                        print(f"   🔍 Pad token count: {pad_count}/{output_ids.numel()}")
+                    if hasattr(self.shirg_tokenizer, 'eos_token_id'):
+                        eos_count = (output_ids == self.shirg_tokenizer.eos_token_id).sum().item()
+                        print(f"   🔍 EOS token count: {eos_count}")
                 else:
                     # Fallback if only single value returned
                     output_ids = result
                     hist = None
                     print(f"   🔍 SHIRG generation result type: {type(result)}")
                     print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
-                    if hasattr(output_ids, 'shape') and output_ids.numel() < 20:
-                        print(f"   🔍 Output IDs content: {output_ids}")
+                    print(f"   🔍 Output IDs first 20 tokens: {output_ids[0, :20] if hasattr(output_ids, 'shape') and output_ids.shape[0] > 0 else 'No tokens'}")
             
             # SHIRG-DECODE-FIX: 2025-07-29 - Use same LaViDa decoding as baseline
             # ISSUE: SHIRG must use identical decoding method as baseline for fair comparison
