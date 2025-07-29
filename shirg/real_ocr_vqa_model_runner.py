@@ -433,7 +433,8 @@ class LaViDaModelRunner:
                 "mm_projector_type": 'mlp2x_gelu',
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
-                "enable_shirg": True  # Enable SHIRG processing
+                "enable_shirg": True,  # Enable SHIRG processing
+                "image_aspect_ratio": None  # CRITICAL: Disable multi-view for SHIRG single-view processing
             }
             
             print("SHIRG-CONFIG: Using 672×672 image processor for SHIRG high-resolution processing")
@@ -456,6 +457,20 @@ class LaViDaModelRunner:
             
             # Get max token length from model config
             self.max_length = getattr(self.shirg_model.config, 'max_position_embeddings', 2048)
+            
+            # SHIRG-MODEL-CONFIG-FIX: 2025-07-29 - Set image_aspect_ratio to None for SHIRG
+            # ISSUE: SHIRG needs single-view processing, not LaViDa's multi-view "anyres" mode
+            # SOLUTION: Override image_aspect_ratio to None to disable multi-view processing
+            # RESEARCH IMPACT: Enables SHIRG to receive single 672×672 images instead of multi-view
+            # LAVIDA IMPACT: Maintains LaViDa functionality while enabling SHIRG high-resolution processing
+            if hasattr(self.shirg_model.config, 'image_aspect_ratio'):
+                original_aspect_ratio = getattr(self.shirg_model.config, 'image_aspect_ratio', None)
+                self.shirg_model.config.image_aspect_ratio = None
+                print(f"   🔧 SHIRG: Disabled multi-view processing (was: {original_aspect_ratio}, now: None)")
+            else:
+                # Add the attribute if it doesn't exist
+                setattr(self.shirg_model.config, 'image_aspect_ratio', None)
+                print(f"   🔧 SHIRG: Set image_aspect_ratio = None for single-view processing")
             
             # SHIRG-SETUP-FIX: 2025-07-29 - Proper SHIRG model setup
             # ISSUE: SHIRG models need same setup as baseline plus SHIRG configuration

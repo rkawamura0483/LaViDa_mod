@@ -280,10 +280,14 @@ class SigLipShirgExtensions:
                         images_input = images_input.requires_grad_(True)
                 
                 # POSITION-FIX: Enable position embedding interpolation for high-resolution
+                # COMPATIBILITY-FIX: 2025-07-29 - Remove unsupported interpolate_pos_encoding parameter
+                # ISSUE: HuggingFace SigLIP models don't support interpolate_pos_encoding parameter
+                # SOLUTION: Use standard forward call - position interpolation handled internally
+                # LAVIDA IMPACT: Enables SigLIP processing without parameter mismatch errors
+                # SHIRG IMPACT: Allows high-resolution processing with proper position handling
                 image_forward_outs = self.vision_tower(
                     images_input, 
-                    output_hidden_states=True,
-                    interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
+                    output_hidden_states=True
                 )
                 # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                 # ISSUE: Need to match original LaViDa token magnitude behavior exactly
@@ -424,13 +428,23 @@ class SigLipShirgExtensions:
             # LAVIDA IMPACT: Enables proper SHIRG processing with LaViDa's multi-view format
             # SHIRG IMPACT: Fixes the core tensor dimension mismatch in forward_with_shirg
             
-            # Check if this might be a LaViDa multi-view input
-            # LaViDa uses: 4 views of 336×336 (576 tokens each) + 1 view of 672×672 (2304 tokens)
-            # Total: 4 × 576 + 2304 = 4608 tokens
+            # MULTI-VIEW-FIX: 2025-07-29 - Handle different multi-view formats
+            # ISSUE: LaViDa can produce different multi-view formats depending on configuration
+            # SOLUTION: Detect and handle multiple multi-view patterns
+            # RESEARCH IMPACT: Enables SHIRG to work with various LaViDa configurations
+            # LAVIDA IMPACT: Maintains compatibility with different LaViDa multi-view modes
+            
+            # Check for standard LaViDa multi-view: 4×336² + 1×672² = 4608 tokens
             total_lavida_tokens = 4 * ((336 // 14) ** 2) + ((672 // 14) ** 2)  # 4 * 576 + 2304 = 4608
             
+            # Check for 4×384² multi-view pattern (what we're actually seeing)
+            total_384_multiview = 4 * ((384 // 14) ** 2)  # 4 * 729 = 2916 tokens
+            
+            # Check for 4×672² multi-view pattern (4 high-res views)
+            total_672_multiview = 4 * ((672 // 14) ** 2)  # 4 * 2304 = 9216 tokens
+            
             if N == total_lavida_tokens:
-                rank0_print(f"TENSOR-FIX: Detected LaViDa multi-view input ({N} tokens)")
+                rank0_print(f"TENSOR-FIX: Detected standard LaViDa multi-view input (4×336² + 1×672² = {N} tokens)")
                 rank0_print(f"   Extracting high-resolution view (last 2304 tokens)")
                 
                 # Extract the high-resolution view (last 2304 tokens)
@@ -440,6 +454,62 @@ class SigLipShirgExtensions:
                 hi_detail_tokens = high_res_tokens
                 
                 rank0_print(f"   Successfully extracted high-res view: {hi_detail_tokens.shape}")
+                
+            elif N == total_384_multiview:
+                rank0_print(f"TENSOR-FIX: Detected 4×384² multi-view input ({N} tokens)")
+                rank0_print(f"   Merging 4 views into single high-resolution representation")
+                
+                # MULTI-VIEW-MERGE-FIX: 2025-07-29 - Merge 4×384² views into 672² equivalent
+                # ISSUE: Need to create high-resolution representation from multiple 384×384 views
+                # SOLUTION: Use spatial arrangement to create unified high-resolution grid
+                # RESEARCH IMPACT: Enables SHIRG processing when LaViDa produces 4×384² views
+                # LAVIDA IMPACT: Maintains SHIRG functionality with different LaViDa configurations
+                
+                tokens_per_view = (384 // 14) ** 2  # 729 tokens per 384×384 view
+                
+                # Reshape each view to spatial grid: 729 → 27×27
+                view_grid_size = int(math.sqrt(tokens_per_view))  # 27
+                
+                # Reshape to [B, 4, 27, 27, D]
+                spatial_views = hi_detail_tokens.reshape(B, 4, view_grid_size, view_grid_size, D)
+                
+                # Arrange 4 views in 2×2 pattern to create 54×54 grid, then downsample to 48×48
+                # Views arrangement: [0, 1]
+                #                   [2, 3]
+                top_row = torch.cat([spatial_views[:, 0], spatial_views[:, 1]], dim=2)    # [B, 27, 54, D]
+                bottom_row = torch.cat([spatial_views[:, 2], spatial_views[:, 3]], dim=2) # [B, 27, 54, D]
+                merged_spatial = torch.cat([top_row, bottom_row], dim=1)  # [B, 54, 54, D]
+                
+                # Downsample from 54×54 to 48×48 using adaptive pooling
+                merged_spatial = merged_spatial.permute(0, 3, 1, 2)  # [B, D, 54, 54]
+                downsampled = F.adaptive_avg_pool2d(merged_spatial, (48, 48))  # [B, D, 48, 48]
+                
+                # Reshape back to token sequence: [B, D, 48, 48] → [B, 2304, D]
+                hi_detail_tokens = downsampled.permute(0, 2, 3, 1).reshape(B, 48*48, D)
+                
+                N = expected_tokens_672  # Update N to 2304
+                grid_size = 48  # Update grid_size to 48
+                
+                rank0_print(f"   Successfully merged 4×384² views to 672² equivalent: {hi_detail_tokens.shape}")
+                
+            elif N == total_672_multiview:
+                rank0_print(f"TENSOR-FIX: Detected 4×672² multi-view input ({N} tokens)")
+                rank0_print(f"   Using first high-resolution view (first 2304 tokens)")
+                
+                # MULTI-VIEW-SELECT-FIX: 2025-07-29 - Select best view from 4 high-resolution views
+                # ISSUE: Have 4 high-resolution views but need to select 1 for SHIRG processing
+                # SOLUTION: Use the first view as representative (could be improved to select best)
+                # RESEARCH IMPACT: Enables SHIRG processing with 4×672² multi-view input
+                # LAVIDA IMPACT: Maintains SHIRG functionality when LaViDa produces multiple high-res views
+                
+                tokens_per_view = (672 // 14) ** 2  # 2304 tokens per 672×672 view
+                
+                # Extract the first high-resolution view
+                hi_detail_tokens = hi_detail_tokens[:, :tokens_per_view, :]  # [B, 2304, D]
+                N = expected_tokens_672  # Update N to 2304
+                grid_size = 48  # Update grid_size to 48
+                
+                rank0_print(f"   Successfully selected first high-res view: {hi_detail_tokens.shape}")
                 
             else:
                 # Emergency fallback: use 1D processing without spatial reshape
@@ -623,10 +693,14 @@ class SigLipShirgExtensions:
                         images_input = images_input.requires_grad_(True)
                 
                 # POSITION-FIX: Enable position embedding interpolation for high-resolution
+                # COMPATIBILITY-FIX: 2025-07-29 - Remove unsupported interpolate_pos_encoding parameter
+                # ISSUE: HuggingFace SigLIP models don't support interpolate_pos_encoding parameter
+                # SOLUTION: Use standard forward call - position interpolation handled internally
+                # LAVIDA IMPACT: Enables SigLIP processing without parameter mismatch errors
+                # SHIRG IMPACT: Allows high-resolution processing with proper position handling
                 image_forward_outs = self.vision_tower(
                     images_input, 
-                    output_hidden_states=True,
-                    interpolate_pos_encoding=True  # CRITICAL: Enable position interpolation
+                    output_hidden_states=True
                 )
                 # SHIRG-FIX: 2025-07-28 - Use raw hidden states like original LaViDa
                 # ISSUE: Need to match original LaViDa token magnitude behavior exactly
