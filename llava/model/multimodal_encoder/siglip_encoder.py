@@ -383,6 +383,20 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # Process as list and return proper shape for split_with_sizes
             return self._process_patch_list(patch_list)
         
+        # SHIRG-5D-FIX: 2025-07-29 - Handle 5D tensor input [B, num_views, C, H, W]
+        # ISSUE: SHIRG processing may receive 5D tensor from image processor
+        # SOLUTION: Squeeze batch dimension and process as anyres patches
+        # RESEARCH IMPACT: Enables SHIRG to process batched anyres images
+        # LAVIDA IMPACT: Maintains compatibility with batched image processing
+        if hasattr(images, 'shape') and len(images.shape) == 5:
+            B, num_patches, C, H, W = images.shape
+            if B == 1:
+                rank0_print(f"SHIRG-5D-FIX: Processing 5D tensor {images.shape} as {num_patches} anyres patches")
+                images = images.squeeze(0)  # Remove batch dimension to get [num_patches, C, H, W]
+                # Fall through to handle as 4D tensor
+            else:
+                raise ValueError(f"Batch processing not supported for anyres images: {images.shape}")
+        
         # Handle anyres patch tensors from LaViDa [num_patches, C, H, W]
         if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] > 1:
             # This is likely an anyres patch tensor - convert to list format

@@ -42,13 +42,45 @@ class SigLipShirgExtensions:
         4. Maintain cache compatibility
         
         Args:
-            pixel_values: List of 5 image tensors from LaViDa's anyres
+            pixel_values: Either list of 5 image tensors OR stacked tensor [5, C, H, W] from LaViDa's anyres
             text_embeddings: Optional text embeddings for scoring
             
         Returns:
             visual_tokens: [B, ~1832, D] selected tokens (196 global + 4×~409 peripheral)
         """
         try:
+            # SHIRG-INPUT-FIX: 2025-07-29 - Handle both list and stacked tensor inputs from LaViDa
+            # ISSUE: process_anyres_image returns stacked tensor [5, C, H, W], not list of 5 views
+            # SOLUTION: Convert stacked tensor to list of views for SHIRG processing
+            # RESEARCH IMPACT: Enables SHIRG to work with LaViDa's actual anyres output format
+            # LAVIDA IMPACT: Maintains compatibility with LaViDa's image processing pipeline
+            
+            # Convert input to list of views if needed
+            if torch.is_tensor(pixel_values) and len(pixel_values.shape) == 4:
+                # Stacked tensor from process_anyres_image: [num_views, C, H, W]
+                if pixel_values.shape[0] == 5:  # Expected 5 views for SHIRG-Fovea
+                    rank0_print(f"SHIRG-INPUT-FIX: Converting stacked tensor {pixel_values.shape} to list of 5 views")
+                    pixel_values = [pixel_values[i] for i in range(5)]
+                elif pixel_values.shape[0] == 1:  # Single batch with 5 views
+                    # Check if it's actually [1, 5, C, H, W]
+                    if len(pixel_values.shape) == 5 and pixel_values.shape[1] == 5:
+                        rank0_print(f"SHIRG-INPUT-FIX: Converting batched tensor {pixel_values.shape} to list of 5 views")
+                        pixel_values = pixel_values.squeeze(0)  # Remove batch dim
+                        pixel_values = [pixel_values[i] for i in range(5)]
+                    else:
+                        raise ValueError(f"Unexpected tensor shape for SHIRG-Fovea: {pixel_values.shape}")
+                else:
+                    raise ValueError(f"SHIRG-Fovea expects 5 views, got tensor with {pixel_values.shape[0]} views")
+            elif torch.is_tensor(pixel_values) and len(pixel_values.shape) == 5:
+                # Handle [B, num_views, C, H, W] format
+                B, num_views = pixel_values.shape[:2]
+                if num_views == 5 and B == 1:
+                    rank0_print(f"SHIRG-INPUT-FIX: Converting 5D tensor {pixel_values.shape} to list of 5 views")
+                    pixel_values = pixel_values.squeeze(0)  # Remove batch dimension
+                    pixel_values = [pixel_values[i] for i in range(5)]
+                else:
+                    raise ValueError(f"SHIRG-Fovea expects [1, 5, C, H, W], got {pixel_values.shape}")
+            
             # Step 1: Extract multiview tokens (1 global + 4 peripheral)
             global_pooled, peripheral_features = self.extract_multiview_tokens(pixel_values)
             
@@ -58,7 +90,7 @@ class SigLipShirgExtensions:
             
             # Step 2: Per-view Top-K selection on peripheral views
             keep_ratio = 0.45  # 45% keep rate as per research (40-50% range)
-            K = int(keep_ratio * 1024)  # ~460 tokens per view
+            K = int(keep_ratio * 729)  # ~328 tokens per view (adapted for 384² patches)
             
             selected_peripheral = []
             for i, view_tokens in enumerate(peripheral_features):
@@ -74,7 +106,7 @@ class SigLipShirgExtensions:
             rank0_print(f"SHIRG-Fovea: Final token count: {N} (196 global + 4×{K} peripheral = {196 + 4*K})")
             
             # Ensure gradient flow for LoRA training
-            final_tokens = self.ensure_gradient_flow(final_tokens, pixel_values[0])
+            final_tokens = self.ensure_gradient_flow(final_tokens, pixel_values[0] if isinstance(pixel_values, list) else pixel_values)
             
             # Final dtype consistency check
             if torch.cuda.is_available() and final_tokens.dtype != torch.bfloat16:
@@ -93,6 +125,12 @@ class SigLipShirgExtensions:
             # Process first view only as fallback
             if isinstance(pixel_values, list) and len(pixel_values) > 0:
                 fallback_image = pixel_values[0]
+            elif torch.is_tensor(pixel_values):
+                # Take first view from tensor
+                if len(pixel_values.shape) >= 4 and pixel_values.shape[0] >= 1:
+                    fallback_image = pixel_values[0]
+                else:
+                    fallback_image = pixel_values
             else:
                 fallback_image = pixel_values
             
@@ -110,19 +148,19 @@ class SigLipShirgExtensions:
     
     def extract_multiview_tokens(self, pixel_values):
         """
-        SHIRG-Fovea: Extract tokens from LaViDa's 5-view anyres format per new methodology
+        SHIRG-Fovea: Extract tokens from LaViDa's 5-view anyres format
         
-        Implements the updated SHIRG research design:
-        - 1 global 384² view → 196 tokens (2×2 pooled)
-        - 4 peripheral 512² views → 4×1024 tokens each
+        Adapts to LaViDa's actual anyres output:
+        - LaViDa produces 5×384² views from 768×768 grid
+        - SHIRG treats first as global (pooled to 196) and rest as peripheral
         
         Args:
             pixel_values: List of 5 image tensors from LaViDa's anyres splitter:
-                         [global_384², peripheral_512²_1, ..., peripheral_512²_4]
+                         All are 384×384 patches
             
         Returns:
             global_pooled: [B, 196, D] pooled global context tokens
-            peripheral_features: List of 4 tensors, each [B, 1024, D]
+            peripheral_features: List of 4 tensors, each [B, 729, D]
         """
         start_time = time.time()
         
@@ -132,6 +170,12 @@ class SigLipShirgExtensions:
         
         if len(pixel_values) != 5:
             raise ValueError(f"SHIRG-Fovea expects exactly 5 views (1 global + 4 peripheral), got {len(pixel_values)}")
+        
+        # SHIRG-ADAPTATION: 2025-07-29 - Work with LaViDa's 5×384² patches
+        # ISSUE: LaViDa produces 5×384² patches, not 1×384² + 4×512² as originally planned
+        # SOLUTION: Adapt SHIRG to work with LaViDa's format while maintaining research goals
+        # RESEARCH IMPACT: Same per-view selection principle, adapted to available resolutions
+        # LAVIDA IMPACT: Full compatibility with LaViDa's existing anyres processing
         
         # Process global view: 384² → 729 tokens → 2×2 pool → 196 tokens
         global_view = pixel_values[0]  # First view is global 384²
@@ -195,9 +239,9 @@ class SigLipShirgExtensions:
             ).permute(0, 2, 3, 1)
             global_pooled = pooled_spatial.reshape(B, 196, D)
         
-        # Process 4 peripheral views: 512² → 1024 tokens each
+        # Process 4 peripheral views: 384² → 729 tokens each (same as global but no pooling)
         peripheral_features = []
-        for i in range(1, 5):  # Views 1-4 are peripheral 512²
+        for i in range(1, 5):  # Views 1-4 are peripheral 384²
             peripheral_view = pixel_values[i]
             
             # Ensure proper device and dtype
@@ -218,11 +262,11 @@ class SigLipShirgExtensions:
                     peripheral_view = peripheral_view.unsqueeze(0)
                 
                 image_forward_outs = self.vision_tower(peripheral_view, output_hidden_states=True)
-                view_features = image_forward_outs.hidden_states[-1]  # [B, 1024, D] for 512²
+                view_features = image_forward_outs.hidden_states[-1]  # [B, 729, D] for 384²
             
-            # Validate token count
-            if view_features.shape[1] != 1024:
-                rank0_print(f"⚠️ SHIRG-Fovea: Expected 1024 tokens from peripheral view {i}, got {view_features.shape[1]}")
+            # Validate token count (all views are 384² so expect 729 tokens)
+            if view_features.shape[1] != 729:
+                rank0_print(f"⚠️ SHIRG-Fovea: Expected 729 tokens from peripheral view {i}, got {view_features.shape[1]}")
             
             peripheral_features.append(view_features)
         
@@ -240,8 +284,8 @@ class SigLipShirgExtensions:
         Implements the research methodology scoring: 0.7 × attn + 0.3 × sim
         
         Args:
-            view_tokens: [B, 1024, D] tokens from one peripheral view
-            K: Number of tokens to keep (typically ~409 for 40% keep rate)
+            view_tokens: [B, 729, D] tokens from one peripheral view (384² patch)
+            K: Number of tokens to keep (typically ~328 for 45% keep rate)
             text_embeddings: Optional text embeddings for similarity scoring
             
         Returns:
