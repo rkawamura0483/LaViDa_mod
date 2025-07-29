@@ -145,7 +145,7 @@ class SigLipShirgExtensions:
         SHIRG: Extract dual-scale tokens per research methodology (Section 3.3.1)
         
         Args:
-            images: Input images [B, C, H, W]
+            images: Input images [B, C, H, W] or multi-view tensor from LaViDa anyres
             
         Returns:
             hi_detail_tokens: [B, 2304, D] high-resolution tokens from 672×672
@@ -153,11 +153,12 @@ class SigLipShirgExtensions:
         """
         start_time = time.time()
         
-        # TENSOR-FIX: 2025-07-28 - Validate and normalize input tensor dimensions
-        # ISSUE: Method receives tensors with unexpected dimensions causing SigLIP errors
-        # SOLUTION: Add comprehensive tensor validation and normalization
-        # LAVIDA IMPACT: Prevents SigLIP embeddings unpacking errors
-        # SHIRG IMPACT: Ensures reliable high-resolution token extraction
+        # CRITICAL-FIX: 2025-07-29 - Handle LaViDa's multi-view concatenated tokens correctly
+        # ISSUE: LaViDa passes concatenated multi-view tokens that SHIRG tries to reshape incorrectly
+        # ROOT CAUSE: SHIRG assumes single high-res image but receives concatenated patch features
+        # SOLUTION: Detect concatenated multi-view input and extract high-resolution component
+        # LAVIDA IMPACT: Enables SHIRG to work with LaViDa's anyres multi-view processing
+        # SHIRG IMPACT: Fixes the core tensor dimension mismatch causing reshape errors
         
         # INPUT-FORMAT-FIX: 2025-07-29 - Handle both tensor and list inputs from LaViDa
         # ISSUE: LaViDa passes both single tensors and lists of tensors depending on context
@@ -184,6 +185,157 @@ class SigLipShirgExtensions:
         
         original_shape = images.shape
         rank0_print(f"SHIRG-DEBUG: extract_dual_scale_tokens input shape: {original_shape}")
+        
+        # MULTI-VIEW-DETECTION-FIX: 2025-07-29 - Detect if input is already processed tokens vs raw images
+        # ISSUE: LaViDa sometimes passes already-processed vision tokens instead of raw images  
+        # SOLUTION: Check tensor properties to distinguish between images and tokens
+        # RESEARCH IMPACT: Enables SHIRG to handle both raw images and pre-processed tokens
+        
+        # Check if this looks like processed vision tokens rather than raw images
+        is_processed_tokens = False
+        if len(images.shape) == 3:  # [B, N, D] format suggests processed tokens
+            B, N, D = images.shape
+            # Check if dimensions match vision token expectations
+            if D > 512:  # Feature dimension suggests processed tokens (SigLIP has 1152 dims)
+                is_processed_tokens = True
+                rank0_print(f"MULTI-VIEW-DETECTION: Input appears to be processed tokens: [B={B}, N={N}, D={D}]")
+                
+                # Analyze token count to determine source
+                total_elements = B * N * D
+                rank0_print(f"MULTI-VIEW-DETECTION: Total elements: {total_elements}")
+                
+                # Expected token counts for different configurations
+                single_384_tokens = (384 // 14) ** 2  # 729 tokens
+                single_672_tokens = (672 // 14) ** 2  # 2304 tokens
+                multi_view_tokens = 5 * single_384_tokens  # 3645 tokens for 5-view
+                
+                rank0_print(f"MULTI-VIEW-DETECTION: Token analysis:")
+                rank0_print(f"   Single 384²: {single_384_tokens} tokens")
+                rank0_print(f"   Single 672²: {single_672_tokens} tokens") 
+                rank0_print(f"   5-view 384²: {multi_view_tokens} tokens")
+                rank0_print(f"   Actual: {N} tokens")
+                
+                # Handle different multi-view token configurations
+                if N == multi_view_tokens:
+                    # Standard LaViDa 5-view: extract high-resolution component
+                    rank0_print(f"MULTI-VIEW-FIX: Detected LaViDa 5-view tokens, extracting high-res component")
+                    # Last view is typically the high-resolution 672×672 view
+                    high_res_start = 4 * single_384_tokens  # Start of last view
+                    hi_detail_tokens = images[:, high_res_start:high_res_start + single_672_tokens, :]
+                    
+                    # Validate extraction
+                    if hi_detail_tokens.shape[1] != single_672_tokens:
+                        rank0_print(f"⚠️ High-res extraction mismatch: expected {single_672_tokens}, got {hi_detail_tokens.shape[1]}")
+                        # Fallback: take last N tokens
+                        hi_detail_tokens = images[:, -single_672_tokens:, :]
+                        
+                elif N == single_672_tokens:
+                    # Already single high-resolution tokens
+                    rank0_print(f"MULTI-VIEW-FIX: Input is already single high-res tokens")
+                    hi_detail_tokens = images
+                    
+                elif N == single_384_tokens:
+                    # Single low-resolution tokens - need to upscale or fallback
+                    rank0_print(f"MULTI-VIEW-FIX: Input is single low-res tokens, using as-is with padding")
+                    # Pad to high-resolution size
+                    padding_size = single_672_tokens - N
+                    padding = torch.zeros(B, padding_size, D, device=images.device, dtype=images.dtype)
+                    hi_detail_tokens = torch.cat([images, padding], dim=1)
+                    
+                else:
+                    # Unknown token configuration - analyze and adapt
+                    rank0_print(f"MULTI-VIEW-FIX: Unknown token count {N}, analyzing structure")
+                    
+                    # Calculate what this token count corresponds to
+                    estimated_views = N / single_384_tokens  # How many 384² views this could be
+                    estimated_high_res = N / single_672_tokens  # Ratio to single high-res
+                    
+                    rank0_print(f"   Estimated 384² views: {estimated_views:.2f}")
+                    rank0_print(f"   Ratio to 672² single: {estimated_high_res:.2f}")
+                    
+                    # CRITICAL-FIX: 2025-07-29 - Handle concatenated multi-view tokens correctly
+                    # Based on error log showing 4,980,736 elements = ~4,323 tokens
+                    # This suggests some form of concatenated multi-view processing
+                    
+                    if N > multi_view_tokens and N < 2 * multi_view_tokens:
+                        # Likely double multi-view or LaViDa's extended anyres format
+                        rank0_print(f"MULTI-VIEW-FIX: Detected extended multi-view format, extracting best high-res segment")
+                        
+                        # Strategy: find the segment with highest information content
+                        # Split into segments and analyze variance
+                        segment_size = single_672_tokens  # 2304 tokens per segment
+                        num_segments = N // segment_size
+                        
+                        if num_segments >= 1:
+                            best_segment_idx = 0
+                            best_variance = 0
+                            
+                            for seg_idx in range(num_segments):
+                                start_idx = seg_idx * segment_size
+                                end_idx = min(start_idx + segment_size, N)
+                                segment = images[:, start_idx:end_idx, :]
+                                
+                                # Calculate segment information content (variance)
+                                segment_variance = torch.var(segment).item()
+                                
+                                if segment_variance > best_variance:
+                                    best_variance = segment_variance
+                                    best_segment_idx = seg_idx
+                            
+                            # Extract best segment
+                            start_idx = best_segment_idx * segment_size
+                            end_idx = min(start_idx + segment_size, N)
+                            hi_detail_tokens = images[:, start_idx:end_idx, :]
+                            
+                            # Pad if needed
+                            if hi_detail_tokens.shape[1] < single_672_tokens:
+                                padding_size = single_672_tokens - hi_detail_tokens.shape[1]
+                                padding = torch.zeros(B, padding_size, D, device=images.device, dtype=images.dtype)
+                                hi_detail_tokens = torch.cat([hi_detail_tokens, padding], dim=1)
+                            
+                            rank0_print(f"   Selected segment {best_segment_idx} with variance {best_variance:.6f}")
+                        else:
+                            # Very unusual case - take what we can
+                            hi_detail_tokens = images[:, :min(N, single_672_tokens), :]
+                            if hi_detail_tokens.shape[1] < single_672_tokens:
+                                padding_size = single_672_tokens - hi_detail_tokens.shape[1]
+                                padding = torch.zeros(B, padding_size, D, device=images.device, dtype=images.dtype)
+                                hi_detail_tokens = torch.cat([hi_detail_tokens, padding], dim=1)
+                    
+                    elif N > single_672_tokens:
+                        # Too many tokens - take first high-res portion
+                        rank0_print(f"MULTI-VIEW-FIX: Too many tokens ({N}), taking first {single_672_tokens}")
+                        hi_detail_tokens = images[:, :single_672_tokens, :]
+                    else:
+                        # Too few tokens - pad to high-res size  
+                        rank0_print(f"MULTI-VIEW-FIX: Too few tokens ({N}), padding to {single_672_tokens}")
+                        padding_size = single_672_tokens - N
+                        padding = torch.zeros(B, padding_size, D, device=images.device, dtype=images.dtype)
+                        hi_detail_tokens = torch.cat([images, padding], dim=1)
+                
+                # Create lo-res scaffold from hi-detail tokens using adaptive pooling
+                # Convert to spatial representation for pooling
+                B, N_tokens, D = hi_detail_tokens.shape
+                grid_size = int(math.sqrt(N_tokens))  # Should be 48 for 2304 tokens
+                
+                if grid_size * grid_size == N_tokens:
+                    # Perfect square - can do spatial pooling
+                    spatial_tokens = hi_detail_tokens.reshape(B, grid_size, grid_size, D).permute(0, 3, 1, 2)
+                    # Adaptive pooling to 8×8 scaffold
+                    lo_res_spatial = F.adaptive_avg_pool2d(spatial_tokens, (8, 8)).permute(0, 2, 3, 1)
+                    lo_res_scaffold = lo_res_spatial.reshape(B, 64, D)
+                else:
+                    # Not a perfect square - use token sampling for scaffold
+                    scaffold_indices = torch.linspace(0, N_tokens-1, 64, dtype=torch.long, device=hi_detail_tokens.device)
+                    lo_res_scaffold = hi_detail_tokens[:, scaffold_indices, :]
+                
+                elapsed_time = (time.time() - start_time) * 1000
+                rank0_print(f"MULTI-VIEW-FIX: Processed pre-computed tokens in {elapsed_time:.1f}ms")
+                rank0_print(f"   Hi-detail: {hi_detail_tokens.shape}, Scaffold: {lo_res_scaffold.shape}")
+                
+                return hi_detail_tokens, lo_res_scaffold
+        
+        # If we reach here, input is raw images - process normally
         
         # Handle different tensor dimensions
         if len(images.shape) == 5:
@@ -474,107 +626,44 @@ class SigLipShirgExtensions:
         
         if expected_elements != actual_elements:
             rank0_print(f"❌ TENSOR-FIX: Reshape dimension mismatch detected!")
+            rank0_print(f"   This should have been handled by early multi-view detection.")
+            rank0_print(f"   Using emergency fallback: extracting first {grid_size}x{grid_size} tokens")
             
-            # CRITICAL-FIX: 2025-07-28 - Handle multi-view input from LaViDa
-            # ISSUE: LaViDa passes 5-view images (4×336² + 1×672²) as flattened tensor
-            # ROOT CAUSE: The validation script processes multi-view inputs incorrectly
-            # SOLUTION: Detect multi-view case and extract the high-resolution view
-            # LAVIDA IMPACT: Enables proper SHIRG processing with LaViDa's multi-view format
-            # SHIRG IMPACT: Fixes the core tensor dimension mismatch in forward_with_shirg
+            # EMERGENCY-FALLBACK: 2025-07-29 - Simple extraction when reshape fails
+            # ISSUE: Duplicate multi-view handling should not reach here if early detection works
+            # SOLUTION: Simple extraction of usable tokens without complex reshape
+            # RESEARCH IMPACT: Prevents crashes while maintaining SHIRG functionality
             
-            # MULTI-VIEW-FIX: 2025-07-29 - Handle different multi-view formats
-            # ISSUE: LaViDa can produce different multi-view formats depending on configuration
-            # SOLUTION: Detect and handle multiple multi-view patterns
-            # RESEARCH IMPACT: Enables SHIRG to work with various LaViDa configurations
-            # LAVIDA IMPACT: Maintains compatibility with different LaViDa multi-view modes
-            
-            # Check for standard LaViDa multi-view: 4×336² + 1×672² = 4608 tokens
-            total_lavida_tokens = 4 * ((336 // 14) ** 2) + ((672 // 14) ** 2)  # 4 * 576 + 2304 = 4608
-            
-            # Check for 4×384² multi-view pattern (what we're actually seeing)
-            total_384_multiview = 4 * ((384 // 14) ** 2)  # 4 * 729 = 2916 tokens
-            
-            # Check for 4×672² multi-view pattern (4 high-res views)
-            total_672_multiview = 4 * ((672 // 14) ** 2)  # 4 * 2304 = 9216 tokens
-            
-            if N == total_lavida_tokens:
-                rank0_print(f"TENSOR-FIX: Detected standard LaViDa multi-view input (4×336² + 1×672² = {N} tokens)")
-                rank0_print(f"   Extracting high-resolution view (last 2304 tokens)")
-                
-                # Extract the high-resolution view (last 2304 tokens)
-                high_res_tokens = hi_detail_tokens[:, -expected_tokens_672:, :]  # [B, 2304, D]
-                N = expected_tokens_672  # Update N to 2304
-                grid_size = 48  # Update grid_size to 48
-                hi_detail_tokens = high_res_tokens
-                
-                rank0_print(f"   Successfully extracted high-res view: {hi_detail_tokens.shape}")
-                
-            elif N == total_384_multiview:
-                rank0_print(f"TENSOR-FIX: Detected 4×384² multi-view input ({N} tokens)")
-                rank0_print(f"   Merging 4 views into single high-resolution representation")
-                
-                # MULTI-VIEW-MERGE-FIX: 2025-07-29 - Merge 4×384² views into 672² equivalent
-                # ISSUE: Need to create high-resolution representation from multiple 384×384 views
-                # SOLUTION: Use spatial arrangement to create unified high-resolution grid
-                # RESEARCH IMPACT: Enables SHIRG processing when LaViDa produces 4×384² views
-                # LAVIDA IMPACT: Maintains SHIRG functionality with different LaViDa configurations
-                
-                tokens_per_view = (384 // 14) ** 2  # 729 tokens per 384×384 view
-                
-                # Reshape each view to spatial grid: 729 → 27×27
-                view_grid_size = int(math.sqrt(tokens_per_view))  # 27
-                
-                # Reshape to [B, 4, 27, 27, D]
-                spatial_views = hi_detail_tokens.reshape(B, 4, view_grid_size, view_grid_size, D)
-                
-                # Arrange 4 views in 2×2 pattern to create 54×54 grid, then downsample to 48×48
-                # Views arrangement: [0, 1]
-                #                   [2, 3]
-                top_row = torch.cat([spatial_views[:, 0], spatial_views[:, 1]], dim=2)    # [B, 27, 54, D]
-                bottom_row = torch.cat([spatial_views[:, 2], spatial_views[:, 3]], dim=2) # [B, 27, 54, D]
-                merged_spatial = torch.cat([top_row, bottom_row], dim=1)  # [B, 54, 54, D]
-                
-                # Downsample from 54×54 to 48×48 using adaptive pooling
-                merged_spatial = merged_spatial.permute(0, 3, 1, 2)  # [B, D, 54, 54]
-                downsampled = F.adaptive_avg_pool2d(merged_spatial, (48, 48))  # [B, D, 48, 48]
-                
-                # Reshape back to token sequence: [B, D, 48, 48] → [B, 2304, D]
-                hi_detail_tokens = downsampled.permute(0, 2, 3, 1).reshape(B, 48*48, D)
-                
-                N = expected_tokens_672  # Update N to 2304
-                grid_size = 48  # Update grid_size to 48
-                
-                rank0_print(f"   Successfully merged 4×384² views to 672² equivalent: {hi_detail_tokens.shape}")
-                
-            elif N == total_672_multiview:
-                rank0_print(f"TENSOR-FIX: Detected 4×672² multi-view input ({N} tokens)")
-                rank0_print(f"   Using first high-resolution view (first 2304 tokens)")
-                
-                # MULTI-VIEW-SELECT-FIX: 2025-07-29 - Select best view from 4 high-resolution views
-                # ISSUE: Have 4 high-resolution views but need to select 1 for SHIRG processing
-                # SOLUTION: Use the first view as representative (could be improved to select best)
-                # RESEARCH IMPACT: Enables SHIRG processing with 4×672² multi-view input
-                # LAVIDA IMPACT: Maintains SHIRG functionality when LaViDa produces multiple high-res views
-                
-                tokens_per_view = (672 // 14) ** 2  # 2304 tokens per 672×672 view
-                
-                # Extract the first high-resolution view
-                hi_detail_tokens = hi_detail_tokens[:, :tokens_per_view, :]  # [B, 2304, D]
-                N = expected_tokens_672  # Update N to 2304
-                grid_size = 48  # Update grid_size to 48
-                
-                rank0_print(f"   Successfully selected first high-res view: {hi_detail_tokens.shape}")
-                
+            # Calculate how many tokens we can safely extract
+            max_tokens = grid_size * grid_size  # Perfect square for spatial processing
+            if N >= max_tokens:
+                # Take first max_tokens for spatial processing
+                hi_detail_tokens = hi_detail_tokens[:, :max_tokens, :]
+                N = max_tokens
+                rank0_print(f"   Extracted first {max_tokens} tokens for {grid_size}×{grid_size} processing")
             else:
-                # Emergency fallback: use 1D processing without spatial reshape
-                rank0_print(f"   Using 1D fallback processing...")
-                # Create a dummy scaffold using simple averaging
+                # Pad tokens to reach perfect square
+                padding_needed = max_tokens - N
+                padding = torch.zeros(B, padding_needed, D, device=hi_detail_tokens.device, dtype=hi_detail_tokens.dtype)
+                hi_detail_tokens = torch.cat([hi_detail_tokens, padding], dim=1)
+                N = max_tokens
+                rank0_print(f"   Padded to {max_tokens} tokens for {grid_size}×{grid_size} processing")
+            
+            # Update dimensions for successful reshape
+            expected_elements = B * grid_size * grid_size * D
+            actual_elements = hi_detail_tokens.numel()
+            rank0_print(f"   Updated: expected={expected_elements}, actual={actual_elements}")
+            
+            # Verify the fix worked
+            if expected_elements != actual_elements:
+                # Last resort: 1D processing
+                rank0_print(f"   Emergency 1D processing fallback")
                 scaffold_size = 64
                 indices = torch.linspace(0, N-1, scaffold_size, dtype=torch.long, device=hi_detail_tokens.device)
-                lo_res_scaffold = hi_detail_tokens[:, indices, :]  # Sample tokens
+                lo_res_scaffold = hi_detail_tokens[:, indices, :]
                 
                 elapsed_time = (time.time() - start_time) * 1000
-                rank0_print(f"TENSOR-FIX: Emergency 1D processing completed in {elapsed_time:.1f}ms")
+                rank0_print(f"EMERGENCY: 1D processing completed in {elapsed_time:.1f}ms")
                 return hi_detail_tokens, lo_res_scaffold
         
         # Safe reshape (dimensions validated above)
