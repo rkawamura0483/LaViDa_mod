@@ -109,37 +109,30 @@ class LaViDaModelRunner:
             # RESEARCH IMPACT: Enables proper LaViDa baseline with multi-view token processing (5 views total)
             # SHIRG IMPACT: Provides correct baseline reference for SHIRG comparison
             
-            # LAVIDA-PAPER-FIX: 2025-07-29 - Correct baseline configuration per LaViDa paper
+            # LAVIDA-ORIGINAL-FIX: 2025-07-29 - Use LaViDa's original configuration
             # TOKEN FLOW: Original image → 5 views (4×384² patches + 1×384² global)
             # ENCODING: Each view → SigLIP → 729 tokens (27×27 grid)
-            # POOLING: Each view → 2×2 average pooling → 196 tokens (14×14 grid)  
-            # TOTAL: 5 views × 196 tokens = 980 tokens → mm_projector → language model
-            # This matches the exact LaViDa paper specification
-            vision_kwargs = {
-                "mm_vision_tower": "google/siglip-so400m-patch14-384",
-                "mm_resampler_type": None,
-                "mm_projector_type": 'pooler',  # LAVIDA-PAPER-FIX: Use pooler for 2x2 average pooling as per paper
-                "mm_hidden_size": 1152,
-                "use_mm_proj": True,
-                "mm_pooler_ratio": 2,  # LAVIDA-PAPER-FIX: 2x2 pooling to reduce 729→196 tokens per view
-                "image_aspect_ratio": "anyres",  # CRITICAL: Enable multi-view processing
-                "image_grid_pinpoints": [(768, 768)]  # Required for anyres processing
-            }
+            # PROJECTOR: mlp2x_gelu projector (original LaViDa)
+            # POOLING: Handled by get_2dPool if needed
+            # This uses the actual pretrained LaViDa architecture
             
             print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
             
             # Load baseline model components with proper LaViDa configuration
-            # OVERWRITE-CONFIG-FIX: 2025-07-29 - Force override model config to use pooler projector
-            # ISSUE: Pretrained LaViDa model has saved mm_projector_type that overrides vision_kwargs
-            # SOLUTION: Use overwrite_config parameter to force pooler configuration after model loading
-            # LAVIDA IMPACT: Ensures baseline LaViDa uses pooler projector as per paper specification
-            # SHIRG IMPACT: Provides correct baseline reference with proper token reduction (5×196=980 tokens)
+            # ORIGINAL-ARCHITECTURE-FIX: 2025-07-29 - Use LaViDa's original architecture
+            # ISSUE: Forcing pooler projector breaks weight loading and causes empty outputs
+            # SOLUTION: Use original mlp2x_gelu projector and let LaViDa handle pooling internally
+            # LAVIDA IMPACT: Maintains original pretrained weights for proper baseline
+            # SHIRG IMPACT: Provides working baseline for comparison
             overwrite_config = {
-                "mm_projector_type": "pooler",
-                "mm_pooler_ratio": 2,
+                # Keep original projector type to use pretrained weights
+                "mm_projector_type": "mlp2x_gelu",  # Original LaViDa projector
                 "image_aspect_ratio": "anyres",
                 "image_grid_pinpoints": [(768, 768)],
-                "mm_patch_merge_type": "spatial_unpad"
+                "mm_patch_merge_type": "spatial_unpad",
+                # Add pooling configuration that LaViDa might use internally
+                "mm_spatial_pool_mode": "average",
+                "mm_spatial_pool_stride": 2
             }
             
             self.baseline_tokenizer, self.baseline_model, self.baseline_image_processor, _ = load_pretrained_model(
@@ -150,8 +143,7 @@ class LaViDaModelRunner:
                 load_4bit=False,
                 device=self.device,
                 device_map=None,
-                vision_kwargs=vision_kwargs,
-                overwrite_config=overwrite_config,  # Force override saved config
+                overwrite_config=overwrite_config,  # Use original architecture with these settings
                 torch_dtype='bfloat16'
             )
             

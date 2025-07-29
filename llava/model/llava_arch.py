@@ -390,23 +390,8 @@ class LlavaMetaForCausalLM(ABC):
                         # SHIRG Research: 672×672 → 2,304 tokens → 1,216 selected → direct to LM
                         image_features.append(image_feat)
                     else:
-                        # POOLER-DOUBLE-POOL-FIX: 2025-07-29 - Avoid double pooling when PoolerProjector already pooled
-                        # ISSUE: PoolerProjector already reduced 729→196 tokens, but get_2dPool expects 729
-                        # SOLUTION: Check if tokens were already pooled by detecting token count != 729
-                        # LAVIDA IMPACT: Prevents "shape '[5, 27, 27, -1]' is invalid" errors
-                        # RESEARCH IMPACT: Ensures correct baseline with proper pooling
-                        
-                        # Check if already pooled by PoolerProjector
-                        num_tokens = image_feat.shape[1] if len(image_feat.shape) >= 2 else image_feat.numel()
-                        expected_unpooled_tokens = 729  # 27×27 for 384×384 SigLIP
-                        
-                        if num_tokens == expected_unpooled_tokens:
-                            # Not yet pooled, apply get_2dPool
-                            image_features.append(self.get_2dPool(image_feat))
-                        else:
-                            # Already pooled by PoolerProjector (e.g., 196 tokens), skip get_2dPool
-                            print(f"POOLER-DOUBLE-FIX: Skipping get_2dPool - already pooled to {num_tokens} tokens")
-                            image_features.append(image_feat)
+                        # Standard LaViDa tokens need get_2dPool processing (384×384 → 729 → pooled)
+                        image_features.append(self.get_2dPool(image_feat))
                 else:
                     image_features.append(image_feat)
             # image_features = self.encode_multimodals(concat_images, video_idx_in_batch, split_sizes)
