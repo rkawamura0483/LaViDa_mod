@@ -26,7 +26,7 @@ from llava.model.language_model.llava_llada import LlavaLladaForMaskedDiffusion,
 from llava.model.language_model.llava_dream import LlavaDreamForMaskedDiffusion
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", torch_dtype="float16",attn_implementation="sdpa", customized_config=None, overwrite_config=None,resize_embeddings=True, **kwargs):
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", torch_dtype="bfloat16",attn_implementation="sdpa", customized_config=None, overwrite_config=None,resize_embeddings=True, **kwargs):
     kwargs["device_map"] = device_map
 
     if load_8bit:
@@ -39,7 +39,13 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
     elif torch_dtype == "bfloat16":
         kwargs["torch_dtype"] = torch.bfloat16
     else:
-        import pdb;pdb.set_trace()
+        # DTYPE-FIX: 2025-07-29 - Default to BFloat16 for LaViDa compatibility
+        # ISSUE: LaViDa models use BFloat16 but builder defaults to Float16
+        # SOLUTION: Default to BFloat16 to match LaViDa's expected dtype
+        # LAVIDA IMPACT: Eliminates dtype mismatches throughout LaViDa pipeline
+        # SHIRG IMPACT: Ensures SHIRG extensions work with correct dtypes
+        rank0_print(f"DTYPE-FIX: Unknown torch_dtype '{torch_dtype}', defaulting to BFloat16 for LaViDa compatibility")
+        kwargs["torch_dtype"] = torch.bfloat16
 
     if customized_config is not None:
         kwargs["config"] = customized_config
@@ -331,9 +337,20 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 # LaViDa models use BFloat16 for diffusion processing
                 vision_tower.to(device="cuda", dtype=torch.bfloat16)
                 rank0_print("DTYPE-FIX: Vision tower configured with BFloat16 for LaViDa compatibility")
+                
+                # DTYPE-FIX: 2025-07-29 - Ensure mm_projector uses same dtype as vision tower
+                # ISSUE: mm_projector may have different dtype than vision tower, causing dtype mismatch
+                # SOLUTION: Align mm_projector dtype with vision tower (BFloat16 for LaViDa)
+                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
+                # SHIRG IMPACT: Ensures SHIRG token processing has consistent dtypes through projector
+                if hasattr(model, 'mm_projector') and model.mm_projector is not None:
+                    model.mm_projector.to(device="cuda", dtype=torch.bfloat16)
+                    rank0_print("DTYPE-FIX: MM projector configured with BFloat16 for LaViDa compatibility")
             else:
                 # Other models use Float16
                 vision_tower.to(device="cuda", dtype=torch.float16)
+                if hasattr(model, 'mm_projector') and model.mm_projector is not None:
+                    model.mm_projector.to(device="cuda", dtype=torch.float16)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):

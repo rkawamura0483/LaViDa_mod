@@ -327,8 +327,11 @@ class OCRVQADatasetLoader:
                                     elif 'answer' in example:
                                         ground_truth = example['answer']
                                 
-                                # Resize for SHIRG processing
-                                processed_image = self._resize_for_shirg(image)
+                                # SHIRG-METHODOLOGY-FIX: 2025-07-29 - Use original image, let SHIRG models handle resizing
+                                # ISSUE: Manual resizing violates SHIRG research methodology
+                                # SOLUTION: Pass original image, SHIRG vision tower handles 672×672 processing
+                                # RESEARCH IMPACT: Enables native high-resolution processing per SHIRG specification
+                                processed_image = image  # Use original image for both baseline and SHIRG
                                 
                                 sample_name = f"{dataset_info['type'].lower().replace('-', '_')}_{total_loaded:02d}"
                                 
