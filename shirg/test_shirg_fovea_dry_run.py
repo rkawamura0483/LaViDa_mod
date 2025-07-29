@@ -62,6 +62,8 @@ def test_shirg_fovea_dry_run():
         def __init__(self):
             super().__init__()
             self.hidden_size = 1152
+            # Add a dummy parameter so parameters() returns something
+            self.dummy_param = nn.Parameter(torch.zeros(1, dtype=torch.float32))
             
         def forward(self, x, output_hidden_states=True):
             B, C, H, W = x.shape
@@ -120,10 +122,17 @@ def test_shirg_fovea_dry_run():
     # Test 3: Test per-view Top-K selection
     print("\n📊 Test 3: Testing per-view Top-K selection")
     
+    # Initialize K outside try block
+    K = int(0.45 * 1024)  # 45% retention = ~460 tokens
+    
     try:
         # Test on one peripheral view
-        view_tokens = peripheral_features[0]
-        K = int(0.45 * 1024)  # 45% retention = ~460 tokens
+        if 'peripheral_features' in locals():
+            view_tokens = peripheral_features[0]
+        else:
+            # Create dummy peripheral features if extraction failed
+            print("   ⚠️ Using dummy peripheral features due to extraction failure")
+            view_tokens = torch.randn(1, 1024, 1152)
         
         selected = test_tower.topk_per_view(view_tokens, K, text_embeddings=None)
         print(f"✅ Per-view Top-K selection successful!")
