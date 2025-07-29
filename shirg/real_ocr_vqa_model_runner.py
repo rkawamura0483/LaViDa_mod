@@ -913,10 +913,14 @@ class LaViDaModelRunner:
             # LAVIDA IMPACT: Bypasses LaViDa's anyres processing for SHIRG-specific high-res handling
             
             if TORCHVISION_AVAILABLE:
-                # Process image directly with SHIRG's 672×672 processor
-                # CRITICAL: Use preprocess directly to avoid anyres multi-view processing
-                processed_dict = self.shirg_image_processor.preprocess([image], return_tensors="pt")
-                image_tensor = processed_dict["pixel_values"]  # Should be [1, 3, 672, 672]
+                # SHIRG-IMAGE-FORMAT-FIX: 2025-07-29 - Use LaViDa's process_images for proper format handling
+                # ISSUE: Direct preprocess call fails with "Unable to infer channel dimension format" 
+                # SOLUTION: Use same process_images function as baseline LaViDa for format compatibility
+                # RESEARCH IMPACT: Enables SHIRG to process dataset images in any format (PIL, numpy, tensor)
+                # LAVIDA IMPACT: Maintains LaViDa's image processing pipeline compatibility
+                image_tensor = process_images([image], self.shirg_image_processor, self.shirg_model.config)
+                if isinstance(image_tensor, list):
+                    image_tensor = image_tensor[0]
                 
                 # Convert to proper format for LaViDa
                 if isinstance(image_tensor, torch.Tensor):
@@ -924,7 +928,7 @@ class LaViDaModelRunner:
                 else:
                     raise ValueError(f"Unexpected image tensor type: {type(image_tensor)}")
                 
-                print(f"SHIRG-PROCESSING: Image tensor shape after preprocessing: {image_tensor.shape}")
+                print(f"SHIRG-PROCESSING: Image tensor shape after processing: {image_tensor.shape}")
             else:
                 # Fallback: manual processing for SHIRG requirements
                 # Resize to 672×672 for SHIRG high-resolution processing
