@@ -130,11 +130,22 @@ class SigLipShirgExtensions:
             token_increase = total_tokens / baseline_tokens
             rank0_print(f"   Token increase vs baseline: {token_increase:.2f}x ({total_tokens} vs {baseline_tokens})")
             
+            # SHIRG-TOKEN-DEBUG: 2025-07-29 - Add detailed token debugging
+            # ISSUE: Need to understand token values before concatenation
+            # SOLUTION: Log token statistics for each view
+            # RESEARCH IMPACT: Helps diagnose empty generation issue
+            # LAVIDA IMPACT: Identifies token processing problems
+            
             # Ensure gradient flow and dtype consistency for each view
             processed_views = []
             sample_image = pixel_values[0] if isinstance(pixel_values, list) else pixel_values
             
             for view_idx, view_tokens in enumerate(multiview_output):
+                # Debug token values before processing
+                rank0_print(f"SHIRG-TOKEN-DEBUG View {view_idx}: shape={view_tokens.shape}, "
+                           f"mean={view_tokens.mean().item():.4f}, std={view_tokens.std().item():.4f}, "
+                           f"min={view_tokens.min().item():.4f}, max={view_tokens.max().item():.4f}")
+                
                 # Ensure gradient flow for LoRA training
                 view_tokens = self.ensure_gradient_flow(view_tokens, sample_image)
                 
@@ -160,10 +171,18 @@ class SigLipShirgExtensions:
             # Global (196) + 4×Peripheral (4×328) = ~1508 tokens
             concatenated_tokens = torch.cat(processed_views, dim=1)  # [B, 1508, D]
             
+            # SHIRG-CONCAT-DEBUG: 2025-07-29 - Debug concatenated token values
+            # ISSUE: Need to verify tokens after concatenation
+            # SOLUTION: Log statistics of final concatenated tokens
+            # RESEARCH IMPACT: Ensures token quality through pipeline
+            # LAVIDA IMPACT: Identifies if concatenation causes issues
             rank0_print(f"SHIRG-Fovea: Returning concatenated tokens with shape {concatenated_tokens.shape}")
             rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
             rank0_print(f"   Peripheral tokens per view: {processed_views[1].shape[1]}")
             rank0_print(f"   Total SHIRG tokens: {concatenated_tokens.shape[1]}")
+            rank0_print(f"SHIRG-CONCAT-DEBUG: Final tokens - mean={concatenated_tokens.mean().item():.4f}, "
+                       f"std={concatenated_tokens.std().item():.4f}, "
+                       f"min={concatenated_tokens.min().item():.4f}, max={concatenated_tokens.max().item():.4f}")
             
             return concatenated_tokens
             

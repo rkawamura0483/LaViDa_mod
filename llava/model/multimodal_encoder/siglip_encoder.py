@@ -397,6 +397,17 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # LAVIDA IMPACT: Allows LaViDa's split_with_sizes to work correctly with SHIRG output
             
             rank0_print("SHIRG-CONCAT-FIX: Processing 5 views with SHIRG")
+            
+            # BASELINE-COMPARISON-DEBUG: 2025-07-29 - Compare baseline vs SHIRG processing
+            # ISSUE: Need to understand difference between baseline and SHIRG
+            # SOLUTION: Process same input through baseline for comparison
+            # RESEARCH IMPACT: Identifies processing differences
+            # LAVIDA IMPACT: Helps diagnose SHIRG-specific issues
+            print("BASELINE-COMPARISON-DEBUG: Processing baseline for comparison...")
+            baseline_tokens = self._forward_standard_lavida(images)
+            print(f"   Baseline output: shape={baseline_tokens.shape}, "
+                  f"mean={baseline_tokens.mean().item():.4f}, std={baseline_tokens.std().item():.4f}")
+            
             # Convert to list format for SHIRG
             view_list = [images[i] for i in range(5)]
             

@@ -263,6 +263,14 @@ class LlavaMetaForCausalLM(ABC):
         # LAVIDA-PAPER-FIX: Verify pooler projector worked correctly
         if hasattr(image_features, 'shape'):
             print(f"MM_PROJECTOR-DEBUG: After projector: {image_features.shape}")
+            # SHIRG-PROJECTOR-DEBUG: 2025-07-29 - Debug projected token values
+            # ISSUE: Need to verify token quality after projection
+            # SOLUTION: Log statistics of projected tokens
+            # RESEARCH IMPACT: Identifies if projection causes empty outputs
+            # LAVIDA IMPACT: Ensures SHIRG tokens are properly projected
+            print(f"MM_PROJECTOR-DEBUG: Token stats - mean={image_features.mean().item():.4f}, "
+                  f"std={image_features.std().item():.4f}, "
+                  f"min={image_features.min().item():.4f}, max={image_features.max().item():.4f}")
             post_projector_shape = image_features.shape
             
             # Check if pooling occurred correctly
@@ -543,6 +551,14 @@ class LlavaMetaForCausalLM(ABC):
                 print(f"SHIRG-FLATTEN-DEBUG: After flattening:")
                 for idx, feat in enumerate(image_features):
                     print(f"   Feature {idx}: shape = {feat.shape}")
+                    # SHIRG-FLATTEN-VALUE-DEBUG: 2025-07-29 - Check token values after flatten
+                    # ISSUE: Need to verify if flatten operation affects token values
+                    # SOLUTION: Log token statistics after flattening
+                    # RESEARCH IMPACT: Identifies if flatten causes issues
+                    # LAVIDA IMPACT: Ensures proper token handling
+                    print(f"   Feature {idx} stats: mean={feat.mean().item():.4f}, "
+                          f"std={feat.std().item():.4f}, "
+                          f"min={feat.min().item():.4f}, max={feat.max().item():.4f}")
                 # print(len(image_features))
             elif mm_patch_merge_type.startswith("spatial"):
                 new_image_features = []
@@ -754,12 +770,40 @@ class LlavaMetaForCausalLM(ABC):
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     cur_input_ids.append(torch.full((cur_image_features.shape[0],), IMAGE_TOKEN_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     print(f"   Image features inserted: {cur_image_features.shape[0]} tokens")
+                    # SHIRG-INSERT-DEBUG: 2025-07-29 - Debug token values at insertion
+                    # ISSUE: Need to verify token quality when inserted into sequence
+                    # SOLUTION: Log statistics of inserted tokens
+                    # RESEARCH IMPACT: Identifies if insertion causes issues
+                    # LAVIDA IMPACT: Ensures proper token handling in sequence
+                    print(f"   Inserted token stats: mean={cur_image_features.mean().item():.4f}, "
+                          f"std={cur_image_features.std().item():.4f}, "
+                          f"min={cur_image_features.min().item():.4f}, max={cur_image_features.max().item():.4f}")
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
 
             # import pdb; pdb.set_trace()
             cur_new_input_embeds = torch.cat(cur_new_input_embeds)
             cur_new_labels = torch.cat(cur_new_labels)
             cur_input_ids =  torch.cat(cur_input_ids)
+            
+            # SHIRG-SEQUENCE-DEBUG: 2025-07-29 - Debug complete sequence composition
+            # ISSUE: Need to verify the sequence is properly composed
+            # SOLUTION: Log sequence composition details
+            # RESEARCH IMPACT: Identifies sequence construction issues
+            # LAVIDA IMPACT: Ensures proper token embedding combination
+            print(f"SHIRG-SEQUENCE-DEBUG: Sequence composition for batch {batch_idx}:")
+            print(f"   Total embeddings: {cur_new_input_embeds.shape}")
+            print(f"   Text token positions: {text_token_positions[:20]}...")  # First 20 positions
+            print(f"   Image token start position: {image_token_start_idx[0] if image_token_start_idx else 'None'}")
+            print(f"   Label distribution: IGNORE={(cur_new_labels == IGNORE_INDEX).sum()}, others={cur_new_labels.shape[0] - (cur_new_labels == IGNORE_INDEX).sum()}")
+            
+            # Check embedding values at boundaries
+            if image_token_start_idx:
+                idx = image_token_start_idx[0]
+                if idx > 0:
+                    print(f"   Embedding before image: mean={cur_new_input_embeds[idx-1].mean():.4f}")
+                print(f"   First image embedding: mean={cur_new_input_embeds[idx].mean():.4f}")
+                if idx + 1509 < cur_new_input_embeds.shape[0]:
+                    print(f"   Embedding after image: mean={cur_new_input_embeds[idx+1509].mean():.4f}")
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
