@@ -568,3 +568,109 @@ SHIRG represents a paradigm shift toward **"maximizing quality without sacrifici
 10. **dKV-Cache for diffusion LMs** - Future integration pathway
 
 *This ten-citation framework demonstrates comprehensive landscape survey and positions SHIRG appropriately within existing literature while highlighting novel contributions.*
+
+---
+
+## 11. Important Implementation Discovery: LaViDa Pooling Behavior
+
+### 11.1 Discovery: Video-Only Pooling Default
+
+**Key Finding**: LaViDa's 2×2 average pooling (mm_spatial_pool_stride=2) is **only applied to videos by default**, not images. This explains why baseline LaViDa maintains 3,645 tokens instead of reducing to 980 tokens when processing images.
+
+**Code Analysis** (`llava/model/llava_arch.py`):
+```python
+# Line 302 in prepare_inputs_labels_for_multimodal
+if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
+    slower_img_feat = self.get_2dPool(feat, cur_mm_spatial_pool_stride)
+```
+
+**Why This Matters**:
+- When processing images, `video_idx_in_batch` is empty
+- Pooling only happens if `ALWASY_DO_2DPOOL=True` (note the typo)
+- Default behavior keeps all 3,645 tokens for images
+
+### 11.2 Pooling Control Mechanism
+
+**Environment Variable Control**:
+```python
+NOT_ALWASY_DO_2DPOOL = os.environ.get("NOT_ALWASY_DO_2DPOOL", False)
+ALWASY_DO_2DPOOL = not NOT_ALWASY_DO_2DPOOL
+```
+
+**How to Enable/Disable Pooling**:
+
+1. **Enable pooling for all modalities (images + videos)**:
+   ```python
+   # In llava_arch.py, after the environment variable setup
+   ALWASY_DO_2DPOOL = True  # Force pooling for baseline comparison
+   ```
+
+2. **Disable pooling for SHIRG**:
+   ```python
+   # For SHIRG processing, ensure pooling is disabled
+   ALWASY_DO_2DPOOL = False  # Let SHIRG handle token selection
+   ```
+
+3. **Runtime control via environment**:
+   ```bash
+   # Enable pooling
+   export NOT_ALWASY_DO_2DPOOL=0
+   
+   # Disable pooling (for SHIRG)
+   export NOT_ALWASY_DO_2DPOOL=1
+   ```
+
+### 11.3 Implications for SHIRG Implementation
+
+**SHIRG Integration Strategy**:
+1. **Baseline LaViDa**: Set `ALWASY_DO_2DPOOL=True` to enable pooling (729→196 per view)
+2. **SHIRG Mode**: Set `ALWASY_DO_2DPOOL=False` to preserve all 3,645 tokens for SHIRG selection
+3. **Token Count Alignment**: SHIRG selects 980 tokens to match pooled baseline output
+
+**Configuration Override**:
+```python
+# In SHIRG runner
+if use_shirg:
+    # Disable LaViDa pooling, let SHIRG handle selection
+    os.environ["NOT_ALWASY_DO_2DPOOL"] = "1"
+else:
+    # Enable LaViDa pooling for baseline
+    os.environ["NOT_ALWASY_DO_2DPOOL"] = "0"
+```
+
+### 11.4 Testing Configuration
+
+**Baseline Test (with pooling)**:
+```python
+# Force pooling for baseline comparison
+overwrite_config = {
+    "mm_projector_type": "mlp2x_gelu",
+    "mm_spatial_pool_stride": 2,
+    # ... other config
+}
+# Also set ALWASY_DO_2DPOOL = True in llava_arch.py
+```
+
+**SHIRG Test (no pooling)**:
+```python
+# Disable pooling for SHIRG
+overwrite_config = {
+    "mm_projector_type": "mlp2x_gelu", 
+    "mm_spatial_pool_stride": 1,  # Or rely on ALWASY_DO_2DPOOL=False
+    # ... other config
+}
+```
+
+### 11.5 Performance Implications
+
+**Token Count Summary**:
+- **Original LaViDa (images)**: 3,645 tokens (no pooling)
+- **LaViDa with pooling**: 980 tokens (5×196 after 2×2 pooling)
+- **SHIRG target**: 980 tokens (selected from 3,645)
+
+**Memory and Speed**:
+- Pooled baseline: Lower memory, faster inference
+- SHIRG: Slightly higher memory during selection, but outputs same 980 tokens
+- Cache compatibility: Both produce 980-token sequences for LM
+
+This discovery explains the confusion around LaViDa's token counts and provides clear guidance for implementing SHIRG with proper baseline comparison.

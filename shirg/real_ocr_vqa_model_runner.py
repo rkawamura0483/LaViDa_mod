@@ -89,6 +89,14 @@ class LaViDaModelRunner:
             
         print("📦 Loading baseline LaViDa model (original encoder)...")
         
+        # POOLING-FIX: 2025-07-29 - CRITICAL: Enable LaViDa pooling for baseline
+        # ISSUE: LaViDa doesn't apply 2x2 pooling to images by default, causing 3,645→3,645 tokens instead of 3,645→980
+        # SOLUTION: Set ALWASY_DO_2DPOOL=True to enable pooling for images (same as videos)
+        # RESEARCH IMPACT: Ensures baseline gets correct 980 tokens that LaViDa was trained on
+        # LAVIDA IMPACT: Matches original LaViDa behavior with proper token reduction
+        os.environ["NOT_ALWASY_DO_2DPOOL"] = "0"  # This sets ALWASY_DO_2DPOOL=True
+        print("🔧 BASELINE-CRITICAL: Enabled LaViDa pooling (3,645→980 tokens) via NOT_ALWASY_DO_2DPOOL=0")
+        
         try:
             # Explicitly load without SHIRG modifications
             print(f"   📂 Model path: {self.pretrained_path}")
@@ -450,6 +458,14 @@ class LaViDaModelRunner:
             return False
             
         print("📦 Loading SHIRG LaViDa model (SHIRG encoder)...")
+        
+        # SHIRG-POOLING-FIX: 2025-07-29 - CRITICAL: Disable LaViDa pooling for SHIRG 
+        # ISSUE: SHIRG needs all 3,645 tokens for selection, LaViDa pooling would reduce to 980 first
+        # SOLUTION: Set NOT_ALWASY_DO_2DPOOL=1 to disable pooling, let SHIRG handle token selection
+        # RESEARCH IMPACT: Enables SHIRG to select from full 3,645 token set as designed
+        # SHIRG IMPACT: SHIRG selector gets full token set (3,645→1,216) instead of pre-pooled (980→???)
+        os.environ["NOT_ALWASY_DO_2DPOOL"] = "1"  # This sets ALWASY_DO_2DPOOL=False
+        print("🔧 SHIRG-CRITICAL: Disabled LaViDa pooling (preserve 3,645 tokens) via NOT_ALWASY_DO_2DPOOL=1")
         
         try:
             # First, ensure SHIRG encoder is available
