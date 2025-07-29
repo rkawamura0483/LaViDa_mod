@@ -102,7 +102,24 @@ class LaViDaModelRunner:
             # SHIRG IMPACT: Ensures research validation can identify and resolve loading failures
             
             print("   🔄 Step 1: Loading pretrained model components...")
-            # Load baseline model components
+            
+            # LAVIDA-CONFIG-FIX: 2025-07-29 - Use proper LaViDa vision configuration
+            # ISSUE: LaViDa requires specific vision_kwargs for proper SigLIP integration
+            # SOLUTION: Use exact vision_kwargs from original LaViDa predict.py
+            # RESEARCH IMPACT: Ensures baseline LaViDa works exactly as in original implementation
+            # SHIRG IMPACT: Provides proper baseline for SHIRG comparison
+            
+            vision_kwargs = {
+                "mm_vision_tower": "google/siglip-so400m-patch14-384",
+                "mm_resampler_type": None,
+                "mm_projector_type": 'mlp2x_gelu',
+                "mm_hidden_size": 1152,
+                "use_mm_proj": True
+            }
+            
+            print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
+            
+            # Load baseline model components with proper LaViDa configuration
             self.baseline_tokenizer, self.baseline_model, self.baseline_image_processor, _ = load_pretrained_model(
                 model_path=self.pretrained_path,
                 model_base=None,
@@ -110,7 +127,9 @@ class LaViDaModelRunner:
                 load_8bit=False,
                 load_4bit=False,
                 device=self.device,
-                device_map=None
+                device_map=None,
+                vision_kwargs=vision_kwargs,
+                torch_dtype='bfloat16'
             )
             
             # VALIDATION-FIX: 2025-07-29 - Validate each component after loading
@@ -153,9 +172,19 @@ class LaViDaModelRunner:
             # Get max token length from model config
             self.max_length = getattr(self.baseline_model.config, 'max_position_embeddings', 2048)
             
+            # LAVIDA-SETUP-FIX: 2025-07-29 - Proper LaViDa model setup following original predict.py
+            # ISSUE: LaViDa models require specific setup for diffusion-based generation
+            # SOLUTION: Follow exact setup from original LaViDa predict.py
+            # RESEARCH IMPACT: Ensures baseline LaViDa generates correctly
+            # SHIRG IMPACT: Provides proper baseline performance reference
+            
             # Move to device and set eval mode
             self.baseline_model = self.baseline_model.to(self.device)
             self.baseline_model.eval()
+            
+            # LaViDa-specific setup
+            self.baseline_model.tie_weights()
+            self.baseline_model = self.baseline_model.to(torch.bfloat16)
             
             # Get vision tower
             if hasattr(self.baseline_model, 'get_vision_tower'):
@@ -391,6 +420,24 @@ class LaViDaModelRunner:
                 print(f"   ❌ SHIRG encoder not available: {e}")
                 return False
             
+            # SHIRG-CONFIG-FIX: 2025-07-29 - Use SHIRG-specific vision configuration
+            # ISSUE: SHIRG requires high-resolution vision tower configuration
+            # SOLUTION: Configure vision_kwargs for SHIRG 672x672 processing
+            # RESEARCH IMPACT: Enables SHIRG high-resolution token extraction
+            # LAVIDA IMPACT: Maintains LaViDa compatibility while adding SHIRG capabilities
+            
+            # SHIRG vision configuration for 672x672 processing
+            shirg_vision_kwargs = {
+                "mm_vision_tower": "google/siglip-so400m-patch14-384",  # Base model
+                "mm_resampler_type": None,
+                "mm_projector_type": 'mlp2x_gelu',
+                "mm_hidden_size": 1152,
+                "use_mm_proj": True,
+                "enable_shirg": True  # Enable SHIRG processing
+            }
+            
+            print("SHIRG-CONFIG: Using 672×672 image processor for SHIRG high-resolution processing")
+            
             # Load SHIRG model components
             print(f"   📂 Model path: {self.pretrained_path}")
             print(f"   🏷️ Model name: {self.model_name}")
@@ -402,15 +449,27 @@ class LaViDaModelRunner:
                 load_8bit=False,
                 load_4bit=False,
                 device=self.device,
-                device_map=None
+                device_map=None,
+                vision_kwargs=shirg_vision_kwargs,
+                torch_dtype='bfloat16'
             )
             
             # Get max token length from model config
             self.max_length = getattr(self.shirg_model.config, 'max_position_embeddings', 2048)
             
+            # SHIRG-SETUP-FIX: 2025-07-29 - Proper SHIRG model setup
+            # ISSUE: SHIRG models need same setup as baseline plus SHIRG configuration
+            # SOLUTION: Apply LaViDa setup plus SHIRG-specific configuration
+            # RESEARCH IMPACT: Ensures SHIRG generates correctly with high-resolution tokens
+            # LAVIDA IMPACT: Maintains LaViDa compatibility
+            
             # Move to device and set eval mode
             self.shirg_model = self.shirg_model.to(self.device)
             self.shirg_model.eval()
+            
+            # LaViDa-specific setup (same as baseline)
+            self.shirg_model.tie_weights()
+            self.shirg_model = self.shirg_model.to(torch.bfloat16)
             
             # Get vision tower and enable SHIRG
             if hasattr(self.shirg_model, 'get_vision_tower'):
@@ -520,9 +579,9 @@ class LaViDaModelRunner:
             # SHIRG IMPACT: Enables SHIRG vs baseline comparison regardless of tokenizer issues
             
             try:
-                # TOKENIZER-FIX: 2025-07-29 - Check if tokenizer is None before using
-                # ISSUE: tokenizer can be None if loading failed, causing AttributeError
-                # SOLUTION: Add None check and provide meaningful fallback
+                # TOKENIZER-FIX: 2025-07-29 - Comprehensive tokenizer and conversation template validation
+                # ISSUE: tokenizer can be None if loading failed, or conversation template can have None tokenizer
+                # SOLUTION: Validate both tokenizer and conversation template before use
                 # LAVIDA IMPACT: Prevents tokenizer-related crashes during baseline inference
                 # SHIRG IMPACT: Allows SHIRG vs baseline comparison to proceed
                 
@@ -530,8 +589,37 @@ class LaViDaModelRunner:
                     print(f"   ⚠️ Tokenizer is None - cannot use conversation template")
                     raise ValueError("Tokenizer is None")
                 
-                # Use conversation template for LaViDa
-                conv = conv_templates[self.conv_template_name].copy()
+                # Validate conversation template availability
+                if self.conv_template_name not in conv_templates:
+                    print(f"   ⚠️ Conversation template '{self.conv_template_name}' not found")
+                    raise ValueError(f"Conversation template '{self.conv_template_name}' not available")
+                
+                # Get conversation template and validate it
+                conv_template = conv_templates[self.conv_template_name]
+                if conv_template is None:
+                    print(f"   ⚠️ Conversation template '{self.conv_template_name}' is None")
+                    raise ValueError(f"Conversation template '{self.conv_template_name}' is None")
+                
+                # LAVIDA-CONV-FIX: 2025-07-29 - Handle LaViDa conversation template with proper fallback
+                # ISSUE: LaViDa conversation template may have None tokenizer causing copy() to fail
+                # SOLUTION: Check conversation template tokenizer and provide fallback
+                # RESEARCH IMPACT: Enables LaViDa inference to proceed with research validation
+                # LAVIDA IMPACT: Maintains compatibility with LaViDa conversation system
+                
+                # Use conversation template for LaViDa with validation
+                try:
+                    conv = conv_template.copy()
+                except Exception as copy_error:
+                    print(f"   ⚠️ Failed to copy conversation template: {copy_error}")
+                    # Create a minimal conversation manually
+                    conv = type('MockConv', (), {
+                        'roles': ('user', 'assistant'),
+                        'messages': [],
+                        'append_message': lambda self, role, message: self.messages.append([role, message]),
+                        'get_prompt': lambda self: f"{DEFAULT_IMAGE_TOKEN}\nUser: {question}\nAssistant: "
+                    })()
+                
+                # Build conversation
                 conv.append_message(conv.roles[0], DEFAULT_IMAGE_TOKEN + '\n' + question)
                 conv.append_message(conv.roles[1], None)
                 prompt = conv.get_prompt()
@@ -645,25 +733,56 @@ class LaViDaModelRunner:
             
             inference_time = time.time() - start_time
             
-            # Vision tower analysis
+            # BASELINE-DEBUG: 2025-07-29 - Enhanced vision tower analysis with debugging
+            # ISSUE: Vision features may not be properly extracted causing downstream errors
+            # SOLUTION: Add comprehensive vision tower validation and debugging
+            # LAVIDA IMPACT: Ensures LaViDa vision processing works correctly
+            # SHIRG IMPACT: Provides baseline reference for SHIRG comparison
             vision_info = {}
             if self.baseline_tower is not None:
                 try:
                     # Get vision features for analysis
                     with torch.no_grad():
+                        print(f"BASELINE-DEBUG: Image tensor shape: {image_tensor.shape}")
+                        print(f"BASELINE-DEBUG: Image tensor dtype: {image_tensor.dtype}")
+                        
                         vision_features = self.baseline_tower(image_tensor)
+                        
+                        print(f"BASELINE-DEBUG: Vision features type: {type(vision_features)}")
                         if hasattr(vision_features, 'shape'):
+                            print(f"BASELINE-DEBUG: Image features shape: {vision_features.shape}")
+                            expected_tokens = 729  # 27x27 for 384x384 LaViDa
+                            actual_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
+                            print(f"BASELINE-DEBUG: Expected {expected_tokens} tokens, got {actual_tokens} tokens")
+                            
                             vision_info = {
                                 'feature_shape': list(vision_features.shape),
-                                'num_tokens': vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel(),
-                                'feature_dim': vision_features.shape[-1] if len(vision_features.shape) > 1 else 1
+                                'num_tokens': actual_tokens,
+                                'feature_dim': vision_features.shape[-1] if len(vision_features.shape) > 1 else 1,
+                                'expected_tokens': expected_tokens,
+                                'tokens_match_expected': actual_tokens == expected_tokens
                             }
+                            
+                            # SHIRG-POOLING: Debug token structure for research validation
+                            if actual_tokens == 729:
+                                grid_size = int(math.sqrt(actual_tokens))  # Should be 27
+                                print(f"SHIRG-POOLING: Baseline LaViDa tokens {actual_tokens} → {grid_size}×{grid_size} grid")
+                        else:
+                            print(f"BASELINE-DEBUG: Vision features has no shape attribute")
+                            vision_info = {'error': 'Vision features missing shape attribute'}
+                            
                 except Exception as e:
+                    print(f"BASELINE-DEBUG: Vision tower error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     vision_info = {'error': str(e)}
+            else:
+                print(f"BASELINE-DEBUG: Vision tower is None")
+                vision_info = {'error': 'Vision tower not available'}
             
             return {
                 'response': response,
-                'tokens_used': len(response_ids),
+                'tokens_used': len(response_ids) if hasattr(response_ids, '__len__') else 0,
                 'inference_time': inference_time,
                 'vision_info': vision_info,
                 'model_type': 'baseline'
@@ -686,56 +805,39 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
-            # SHIRG-METHODOLOGY-FIX: 2025-07-29 - Native high-resolution processing per research spec
-            # ISSUE: SHIRG requires native 672×672 processing, not manual resizing
-            # SOLUTION: Use SHIRG-configured image processor for proper high-resolution processing
+            # SHIRG-IMAGE-FIX: 2025-07-29 - Native high-resolution processing per research spec
+            # ISSUE: SHIRG requires native 672×672 processing for high-resolution token extraction
+            # SOLUTION: Use SHIRG-configured image processor for 672×672 processing
             # RESEARCH IMPACT: Enables genuine high-resolution token extraction (48×48 = 2304 tokens)
             # LAVIDA IMPACT: Maintains LaViDa image processing pipeline compatibility
+            
+            # Prepare image using SHIRG-specific processing (should handle 672x672)
             if TORCHVISION_AVAILABLE:
-                # Use SHIRG image processor (configured for 672×672) for native high-res processing
+                # Use SHIRG image processor (returns list like baseline)
                 image_tensor = process_images([image], self.shirg_image_processor, self.shirg_model.config)
-                if isinstance(image_tensor, list):
-                    image_tensor = image_tensor[0]
-                # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
-                # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
-                # SOLUTION: Use BFloat16 consistently for LaViDa models
-                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
-                # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
-                image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
+                # SHIRG expects same list format as baseline LaViDa
+                image_tensor = [_image.to(dtype=torch.bfloat16, device=self.device) for _image in image_tensor]
             else:
                 # Fallback: manual processing for SHIRG requirements
                 # Resize to 672×672 for SHIRG high-resolution processing
                 shirg_resized_image = self._resize_for_shirg(image, target_size=672)
-                image_tensor = self._pil_to_tensor(shirg_resized_image)
-                # DTYPE-FIX: 2025-07-29 - Use BFloat16 for LaViDa compatibility
-                # ISSUE: Using Float16 for LaViDa causes dtype mismatch with model expectations
-                # SOLUTION: Use BFloat16 consistently for LaViDa models
-                # LAVIDA IMPACT: Eliminates "expected mat1 and mat2 to have the same dtype" errors
-                # SHIRG IMPACT: Ensures consistent dtype processing throughout SHIRG pipeline
-                image_tensor = image_tensor.to(self.device, dtype=torch.bfloat16)
+                base_tensor = self._pil_to_tensor(shirg_resized_image)
+                image_tensor = [base_tensor.to(self.device, dtype=torch.bfloat16)]
+            
+            # Get image sizes for SHIRG (required parameter)
+            image_sizes = [image.size]  # Original size, processor handles resizing
             
             # Extract token selection metadata before inference
             selection_metadata = self._extract_shirg_selection_metadata(image, question)
             
-            # Run inference
+            # SHIRG-GENERATION-FIX: 2025-07-29 - Use same LaViDa generation as baseline
+            # ISSUE: SHIRG must use identical generation method as baseline for fair comparison
+            # SOLUTION: Use exact same LaViDa diffusion generation parameters
+            # RESEARCH IMPACT: Ensures fair comparison between baseline and SHIRG
+            # SHIRG IMPACT: Only difference should be token selection, not generation method
+            
+            # Run SHIRG inference using LaViDa diffusion-based generation
             with torch.inference_mode():
-                # SHIRG-FIX: 2025-07-28 - Add proper stopping criteria matching baseline
-                # ISSUE: SHIRG and baseline must have identical generation parameters for fair comparison
-                # SOLUTION: Use same stopping criteria and generation config as baseline
-                # RESEARCH IMPACT: Ensures fair comparison between baseline and SHIRG approaches
-                from transformers import StoppingCriteria, StoppingCriteriaList
-                
-                class EosStoppingCriteria(StoppingCriteria):
-                    def __init__(self, eos_token_id):
-                        self.eos_token_id = eos_token_id
-                    
-                    def __call__(self, input_ids, scores, **kwargs):
-                        return input_ids[0, -1] == self.eos_token_id
-                
-                stopping_criteria = StoppingCriteriaList([
-                    EosStoppingCriteria(self.shirg_tokenizer.eos_token_id)
-                ])
-                
                 # Check if model supports SHIRG mode
                 use_shirg = True
                 if hasattr(self.shirg_tower, 'forward') and hasattr(self.shirg_tower, 'config'):
@@ -744,22 +846,40 @@ class LaViDaModelRunner:
                 
                 print(f"   🔍 SHIRG mode: {use_shirg}")
                 
-                output_ids = self.shirg_model.generate(
+                # Use identical LaViDa generation parameters as baseline
+                cont, hist = self.shirg_model.generate(
                     input_ids,
                     images=image_tensor,
-                    do_sample=True,
-                    temperature=0.2,
-                    top_p=0.95,
-                    max_new_tokens=512,
-                    use_cache=True,
-                    stopping_criteria=stopping_criteria,
-                    pad_token_id=self.shirg_tokenizer.eos_token_id
+                    image_sizes=image_sizes,
+                    do_sample=False,
+                    temperature=0.1,
+                    max_new_tokens=128,  # Same as baseline
+                    block_length=64,     # LaViDa diffusion block size
+                    step_ratio=0.5,      # LaViDa diffusion steps
+                    tokenizer=self.shirg_tokenizer,
+                    prefix_lm=True,      # LaViDa prefix caching
+                    verbose=False,       # Reduce output noise
+                    schedule='shift'     # LaViDa diffusion schedule
                 )
+                
+                # Get the generated continuation
+                output_ids = cont
             
-            # Decode response
-            input_token_len = input_ids.shape[1]
-            response_ids = output_ids[0][input_token_len:]
-            response = self.shirg_tokenizer.decode(response_ids, skip_special_tokens=True).strip()
+            # SHIRG-DECODE-FIX: 2025-07-29 - Use same LaViDa decoding as baseline
+            # ISSUE: SHIRG must use identical decoding method as baseline for fair comparison
+            # SOLUTION: Use exact same LaViDa decoding as baseline
+            # RESEARCH IMPACT: Ensures fair comparison between baseline and SHIRG responses
+            # SHIRG IMPACT: Only difference should be token selection, not response formatting
+            
+            # Decode SHIRG response (same as baseline)
+            text_outputs = self.shirg_tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+            # Clean up LaViDa-specific artifacts
+            text_outputs = [text_output.lstrip('!') for text_output in text_outputs]
+            response = text_outputs[0] if text_outputs else ""
+            
+            # Calculate tokens for analysis
+            response_tokens = self.shirg_tokenizer.encode(response, return_tensors='pt')[0]
+            response_ids = response_tokens  # For compatibility
             
             inference_time = time.time() - start_time
             
@@ -787,7 +907,7 @@ class LaViDaModelRunner:
             
             return {
                 'response': response,
-                'tokens_used': len(response_ids),
+                'tokens_used': len(response_ids) if hasattr(response_ids, '__len__') else 0,
                 'inference_time': inference_time,
                 'vision_info': vision_info,
                 'token_selection': selection_metadata,
