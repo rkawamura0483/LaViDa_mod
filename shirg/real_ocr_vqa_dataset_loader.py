@@ -21,9 +21,6 @@ from io import BytesIO
 import random
 import copy
 
-# Import the model runner
-from real_ocr_vqa_model_runner import LaViDaModelRunner, rank0_print
-
 # Check for torchvision availability
 try:
     import torchvision.transforms as transforms
@@ -38,6 +35,9 @@ warnings.filterwarnings('ignore')
 sys.path.append('./shirg/')
 sys.path.append('./llava/')
 sys.path.append('./')
+
+# Import the model runner
+from real_ocr_vqa_model_runner import LaViDaModelRunner, rank0_print
 
 # Import LaViDa components
 try:
