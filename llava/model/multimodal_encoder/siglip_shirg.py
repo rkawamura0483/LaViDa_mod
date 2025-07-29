@@ -4,12 +4,12 @@ SHIRG-Fovea: Static Hierarchical Relevance Gate for High-Resolution Diffusion VL
 
 This module contains all SHIRG-specific functionality for high-resolution
 token selection and processing, following the updated research methodology
-with 5-view processing (1 global + 4 peripheral).
+with 3-view processing (1 global + 2 foveal).
 
 Research Implementation based on:
-- Two-scale foveation: Global 384² + 4×512² peripheral views
-- Per-view static Top-K selection (40-50% retention)
-- Cache-compatible processing for LaViDa
+- Two-scale foveation: Global 384² + 2×448² foveal views
+- Per-view static Top-K selection (50% retention for foveal views)
+- Cache-compatible processing for LaViDa (980 tokens total)
 """
 
 import torch
@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import math
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List
 
 from .siglip_base import SigLipVisionConfig
 from llava.utils import rank0_print
@@ -33,134 +33,75 @@ class SigLipShirgExtensions:
     
     def forward_with_shirg(self, pixel_values, text_embeddings=None):
         """
-        SHIRG-Fovea: Process LaViDa's 5-view format with per-view selection
+        SHIRG-Fovea: Process 3-view format with per-view selection
         
         Implements the new SHIRG methodology:
-        1. Extract 5-view tokens (1 global + 4 peripheral)
-        2. Per-view Top-K selection on peripheral views
-        3. Concatenate selected tokens
-        4. Maintain cache compatibility
+        1. Extract 3-view tokens (1 global 384² + 2 foveal 448²)
+        2. Apply 2×2 pooling to global view → 196 tokens
+        3. Apply 50% Top-K selection to foveal views → 392 tokens each
+        4. Concatenate for 980 total tokens (matching LaViDa baseline)
         
         Args:
-            pixel_values: Either list of 5 image tensors OR stacked tensor [5, C, H, W] from LaViDa's anyres
+            pixel_values: Either list of 3 image tensors OR stacked tensor [3, C, H, W]
             text_embeddings: Optional text embeddings for scoring
             
         Returns:
-            visual_tokens: [B, ~1832, D] selected tokens (196 global + 4×~409 peripheral)
+            visual_tokens: [B, 980, D] selected tokens (196 global + 2×392 foveal)
         """
         try:
-            # SHIRG-INPUT-FIX: 2025-07-29 - Handle both list and stacked tensor inputs from LaViDa
-            # ISSUE: process_anyres_image returns stacked tensor [5, C, H, W], not list of 5 views
-            # SOLUTION: Convert stacked tensor to list of views for SHIRG processing
-            # RESEARCH IMPACT: Enables SHIRG to work with LaViDa's actual anyres output format
-            # LAVIDA IMPACT: Maintains compatibility with LaViDa's image processing pipeline
+            # SHIRG-3VIEW-FIX: 2025-07-29 - Handle new 3-view input format
+            # ISSUE: Updated research uses 3 views instead of 5
+            # SOLUTION: Process 1 global 384² view + 2 foveal 448² views
+            # RESEARCH IMPACT: Implements new SHIRG-Fovea architecture with 980 tokens
+            # LAVIDA IMPACT: Maintains cache compatibility with baseline token count
             
             # Convert input to list of views if needed
             if torch.is_tensor(pixel_values) and len(pixel_values.shape) == 4:
-                # Stacked tensor from process_anyres_image: [num_views, C, H, W]
-                if pixel_values.shape[0] == 5:  # Expected 5 views for SHIRG-Fovea
-                    rank0_print(f"SHIRG-INPUT-FIX: Converting stacked tensor {pixel_values.shape} to list of 5 views")
-                    pixel_values = [pixel_values[i] for i in range(5)]
-                elif pixel_values.shape[0] == 1:  # Single batch with 5 views
-                    # Check if it's actually [1, 5, C, H, W]
-                    if len(pixel_values.shape) == 5 and pixel_values.shape[1] == 5:
-                        rank0_print(f"SHIRG-INPUT-FIX: Converting batched tensor {pixel_values.shape} to list of 5 views")
-                        pixel_values = pixel_values.squeeze(0)  # Remove batch dim
-                        pixel_values = [pixel_values[i] for i in range(5)]
-                    else:
-                        raise ValueError(f"Unexpected tensor shape for SHIRG-Fovea: {pixel_values.shape}")
+                # Stacked tensor: [num_views, C, H, W]
+                if pixel_values.shape[0] == 3:  # Expected 3 views for SHIRG-Fovea
+                    rank0_print(f"SHIRG-3VIEW: Converting stacked tensor {pixel_values.shape} to list of 3 views")
+                    pixel_values = [pixel_values[i] for i in range(3)]
                 else:
-                    raise ValueError(f"SHIRG-Fovea expects 5 views, got tensor with {pixel_values.shape[0]} views")
+                    raise ValueError(f"SHIRG-Fovea expects 3 views, got tensor with {pixel_values.shape[0]} views")
             elif torch.is_tensor(pixel_values) and len(pixel_values.shape) == 5:
                 # Handle [B, num_views, C, H, W] format
                 B, num_views = pixel_values.shape[:2]
-                if num_views == 5 and B == 1:
-                    rank0_print(f"SHIRG-INPUT-FIX: Converting 5D tensor {pixel_values.shape} to list of 5 views")
+                if num_views == 3 and B == 1:
+                    rank0_print(f"SHIRG-3VIEW: Converting 5D tensor {pixel_values.shape} to list of 3 views")
                     pixel_values = pixel_values.squeeze(0)  # Remove batch dimension
-                    pixel_values = [pixel_values[i] for i in range(5)]
+                    pixel_values = [pixel_values[i] for i in range(3)]
                 else:
-                    raise ValueError(f"SHIRG-Fovea expects [1, 5, C, H, W], got {pixel_values.shape}")
+                    raise ValueError(f"SHIRG-Fovea expects [1, 3, C, H, W], got {pixel_values.shape}")
             
-            # Step 1: Extract multiview tokens (1 global + 4 peripheral)
-            global_pooled, peripheral_features = self.extract_multiview_tokens(pixel_values)
+            # Step 1: Extract multiview tokens (1 global + 2 foveal)
+            global_pooled, foveal_features = self.extract_multiview_tokens(pixel_values)
             
             rank0_print(f"SHIRG-Fovea: Extracted multiview tokens")
-            rank0_print(f"   Global: {global_pooled.shape}")
-            rank0_print(f"   Peripheral: {len(peripheral_features)} views × {peripheral_features[0].shape}")
+            rank0_print(f"   Global: {global_pooled.shape} (pooled from 384²)")
+            rank0_print(f"   Foveal: {len(foveal_features)} views × {foveal_features[0].shape if foveal_features else 'None'}")
             
-            # Step 2: Per-view Top-K selection on peripheral views
-            # SHIRG-CONFIG-FIX: 2025-07-29 - Make token count configurable for debugging
-            # ISSUE: Need to test if token count is causing generation issues
-            # SOLUTION: Add configuration to switch between research target and LaViDa-compatible counts
-            # RESEARCH IMPACT: Allows testing both configurations to identify root cause
-            # LAVIDA IMPACT: Enables debugging while maintaining research objectives
+            # Step 2: Per-view Top-K selection on foveal views
+            # Fixed 50% keep rate for foveal views as per research
+            K = 392  # 50% of 784 tokens from 448² view
             
-            # Check for debug mode
-            use_baseline_token_count = getattr(self, 'use_baseline_token_count', False)
-            
-            if use_baseline_token_count:
-                # Match LaViDa baseline exactly: 980 tokens (196 global + 4×196 peripheral)
-                K = 196
-                rank0_print("   🔧 DEBUG MODE: Using baseline token count (980 total)")
-            else:
-                # Research target: ~1600-1800 tokens per SHIRG methodology
-                keep_ratio = 0.45  # 45% keep rate as per research (40-50% range)
-                K = int(keep_ratio * 729)  # ~328 tokens per view
-                rank0_print(f"   🎯 RESEARCH MODE: Using SHIRG target (~{196 + 4*K} total tokens)")
-            
-            selected_peripheral = []
-            for i, view_tokens in enumerate(peripheral_features):
+            selected_foveal = []
+            for i, view_tokens in enumerate(foveal_features):
                 selected = self.topk_per_view(view_tokens, K, text_embeddings)
-                selected_peripheral.append(selected)
-                rank0_print(f"   View {i+1}: selected {selected.shape[1]} tokens")
+                selected_foveal.append(selected)
+                rank0_print(f"   Foveal view {i+1}: selected {selected.shape[1]} tokens")
             
-            # SHIRG-MULTIVIEW-FIX: 2025-07-29 - Return tokens maintaining 5-view structure for LaViDa
-            # ISSUE: LaViDa expects to split encoded features by 5 views, but SHIRG concatenates all tokens
-            # SOLUTION: Return 5 separate tensors matching LaViDa's view structure
-            # RESEARCH IMPACT: Maintains SHIRG per-view selection while preserving LaViDa's architecture
-            # LAVIDA IMPACT: Allows LaViDa to process SHIRG tokens through standard split logic
+            # Step 3: Concatenate all tokens
+            # Global (196) + 2×Foveal (2×392) = 980 tokens total
+            all_views = [global_pooled] + selected_foveal
             
-            # Step 3: Create 5-view output matching LaViDa's expectations
-            # View 0: Global pooled tokens (196 tokens)
-            # Views 1-4: Selected peripheral tokens (K tokens each)
-            multiview_output = [global_pooled] + selected_peripheral
-            
-            # Log token counts for each view
-            total_tokens = global_pooled.shape[1] + sum(view.shape[1] for view in selected_peripheral)
-            rank0_print(f"SHIRG-Fovea: Total token count: {total_tokens} (196 global + 4×{K} peripheral = {196 + 4*K})")
-            
-            # SHIRG-TOKEN-VALIDATION: 2025-07-29 - Verify token counts match research targets
-            # ISSUE: Need to ensure SHIRG token counts align with research methodology
-            # SOLUTION: Add validation and comparison with baseline expectations
-            # RESEARCH IMPACT: Validates SHIRG achieves target ~1600-1800 tokens
-            # LAVIDA IMPACT: Ensures fair comparison with baseline's 980 tokens
-            
-            # Validate against research targets
-            if total_tokens < 1500 or total_tokens > 1900:
-                rank0_print(f"⚠️ SHIRG token count {total_tokens} outside target range 1500-1900")
-            else:
-                rank0_print(f"✅ SHIRG token count {total_tokens} within target range")
-                
-            # Compare with baseline expectation
-            baseline_tokens = 980  # LaViDa baseline: 5×196 after pooling
-            token_increase = total_tokens / baseline_tokens
-            rank0_print(f"   Token increase vs baseline: {token_increase:.2f}x ({total_tokens} vs {baseline_tokens})")
-            
-            # SHIRG-TOKEN-DEBUG: 2025-07-29 - Add detailed token debugging
-            # ISSUE: Need to understand token values before concatenation
-            # SOLUTION: Log token statistics for each view
-            # RESEARCH IMPACT: Helps diagnose empty generation issue
-            # LAVIDA IMPACT: Identifies token processing problems
-            
-            # Ensure gradient flow and dtype consistency for each view
+            # Ensure gradient flow and dtype consistency
             processed_views = []
             sample_image = pixel_values[0] if isinstance(pixel_values, list) else pixel_values
             
-            for view_idx, view_tokens in enumerate(multiview_output):
-                # Debug token values before processing
-                rank0_print(f"SHIRG-TOKEN-DEBUG View {view_idx}: shape={view_tokens.shape}, "
-                           f"mean={view_tokens.mean().item():.4f}, std={view_tokens.std().item():.4f}, "
-                           f"min={view_tokens.min().item():.4f}, max={view_tokens.max().item():.4f}")
+            for view_idx, view_tokens in enumerate(all_views):
+                # Debug token values
+                rank0_print(f"SHIRG-DEBUG View {view_idx}: shape={view_tokens.shape}, "
+                           f"mean={view_tokens.mean().item():.4f}, std={view_tokens.std().item():.4f}")
                 
                 # Ensure gradient flow for LoRA training
                 view_tokens = self.ensure_gradient_flow(view_tokens, sample_image)
@@ -171,34 +112,20 @@ class SigLipShirgExtensions:
                 
                 processed_views.append(view_tokens)
             
-            # SHIRG-5VIEW-FIX: 2025-07-29 - Return 5 separate views as LaViDa expects
-            # ISSUE: LaViDa expects 5 separate views to process through prepare_inputs_labels_for_multimodal
-            # SOLUTION: Stack views along batch dimension to match baseline LaViDa format
-            # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
-            # LAVIDA IMPACT: Allows LaViDa to process SHIRG views through standard pipeline
+            # Concatenate all views along token dimension: [B, 980, D]
+            concatenated_tokens = torch.cat(processed_views, dim=1)
             
-            # SHIRG-CONCAT-FIX: 2025-07-29 - Concatenate along token dimension, not batch
-            # ISSUE: LaViDa expects concatenated tokens, not stacked views with different sizes
-            # SOLUTION: Concatenate all tokens along dimension 1 to create single token sequence
-            # RESEARCH IMPACT: Achieves target ~1600-1800 tokens as per SHIRG methodology
-            # LAVIDA IMPACT: Returns standard token format that LaViDa can process
-            
-            # Concatenate all views along token dimension: [B, total_tokens, D]
-            # Global (196) + 4×Peripheral (4×328) = ~1508 tokens
-            concatenated_tokens = torch.cat(processed_views, dim=1)  # [B, 1508, D]
-            
-            # SHIRG-CONCAT-DEBUG: 2025-07-29 - Debug concatenated token values
-            # ISSUE: Need to verify tokens after concatenation
-            # SOLUTION: Log statistics of final concatenated tokens
-            # RESEARCH IMPACT: Ensures token quality through pipeline
-            # LAVIDA IMPACT: Identifies if concatenation causes issues
-            rank0_print(f"SHIRG-Fovea: Returning concatenated tokens with shape {concatenated_tokens.shape}")
+            # Validate token count
+            total_tokens = concatenated_tokens.shape[1]
+            rank0_print(f"SHIRG-Fovea: Final token count: {total_tokens}")
             rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
-            rank0_print(f"   Peripheral tokens per view: {processed_views[1].shape[1]}")
-            rank0_print(f"   Total SHIRG tokens: {concatenated_tokens.shape[1]}")
-            rank0_print(f"SHIRG-CONCAT-DEBUG: Final tokens - mean={concatenated_tokens.mean().item():.4f}, "
-                       f"std={concatenated_tokens.std().item():.4f}, "
-                       f"min={concatenated_tokens.min().item():.4f}, max={concatenated_tokens.max().item():.4f}")
+            rank0_print(f"   Foveal tokens per view: {processed_views[1].shape[1]}")
+            rank0_print(f"   Expected: 196 + 2×392 = 980 tokens")
+            
+            if total_tokens != 980:
+                rank0_print(f"⚠️ SHIRG token count {total_tokens} != 980 expected")
+            else:
+                rank0_print(f"✅ SHIRG token count matches target: 980")
             
             return concatenated_tokens
             
@@ -207,113 +134,72 @@ class SigLipShirgExtensions:
             import traceback
             rank0_print(f"Traceback: {traceback.format_exc()}")
             
-            # Fallback to baseline LaViDa processing
-            rank0_print("SHIRG-FALLBACK: Using baseline LaViDa processing")
-            
-            # Process first view only as fallback
-            if isinstance(pixel_values, list) and len(pixel_values) > 0:
-                fallback_image = pixel_values[0]
-            elif torch.is_tensor(pixel_values):
-                # Take first view from tensor
-                if len(pixel_values.shape) >= 4 and pixel_values.shape[0] >= 1:
-                    fallback_image = pixel_values[0]
-                else:
-                    fallback_image = pixel_values
-            else:
-                fallback_image = pixel_values
-            
-            # Process through vision tower
-            if type(fallback_image) is list:
-                fallback_image = fallback_image[0]
-            
-            if len(fallback_image.shape) == 3:
-                fallback_image = fallback_image.unsqueeze(0)
-            
-            image_forward_outs = self.vision_tower(fallback_image, output_hidden_states=True)
-            fallback_tokens = image_forward_outs.hidden_states[-1]
-            
-            return fallback_tokens
+            # Fallback to baseline processing
+            raise  # Re-raise to let encoder handle fallback
     
     def extract_multiview_tokens(self, pixel_values):
         """
-        SHIRG-Fovea: Extract tokens from LaViDa's 5-view anyres format
+        SHIRG-Fovea: Extract tokens from 3-view format
         
-        Adapts to LaViDa's actual anyres output:
-        - LaViDa produces 5×384² views from 768×768 grid
-        - SHIRG treats first as global (pooled to 196) and rest as peripheral
+        Processes:
+        - View 0: Global 384² → 729 tokens → 2×2 pool → 196 tokens
+        - Views 1-2: Foveal 448² → 784 tokens each (no pooling)
         
         Args:
-            pixel_values: List of 5 image tensors from LaViDa's anyres splitter:
-                         All are 384×384 patches
+            pixel_values: List of 3 image tensors:
+                         [384×384 global, 448×448 foveal, 448×448 foveal]
             
         Returns:
             global_pooled: [B, 196, D] pooled global context tokens
-            peripheral_features: List of 4 tensors, each [B, 729, D]
+            foveal_features: List of 2 tensors, each [B, 784, D]
         """
         start_time = time.time()
         
-        # Validate input format - expect list of 5 views from LaViDa's anyres
+        # Validate input format - expect list of 3 views
         if not isinstance(pixel_values, list):
-            raise ValueError(f"SHIRG-Fovea expects list of 5 views, got {type(pixel_values)}")
+            raise ValueError(f"SHIRG-Fovea expects list of 3 views, got {type(pixel_values)}")
         
-        if len(pixel_values) != 5:
-            raise ValueError(f"SHIRG-Fovea expects exactly 5 views (1 global + 4 peripheral), got {len(pixel_values)}")
+        if len(pixel_values) != 3:
+            raise ValueError(f"SHIRG-Fovea expects exactly 3 views (1 global + 2 foveal), got {len(pixel_values)}")
         
-        # SHIRG-ADAPTATION: 2025-07-29 - Work with LaViDa's 5×384² patches
-        # ISSUE: LaViDa produces 5×384² patches, not 1×384² + 4×512² as originally planned
-        # SOLUTION: Adapt SHIRG to work with LaViDa's format while maintaining research goals
-        # RESEARCH IMPACT: Same per-view selection principle, adapted to available resolutions
-        # LAVIDA IMPACT: Full compatibility with LaViDa's existing anyres processing
+        # Get model dtype
+        tower_dtype = next(self.vision_tower.parameters()).dtype
         
         # Process global view: 384² → 729 tokens → 2×2 pool → 196 tokens
         global_view = pixel_values[0]  # First view is global 384²
         
         # Ensure proper device and dtype
-        tower_dtype = next(self.vision_tower.parameters()).dtype
         if global_view.dtype != tower_dtype:
             global_view = global_view.to(dtype=tower_dtype)
         
+        # Add batch dimension if needed
+        if len(global_view.shape) == 3:
+            global_view = global_view.unsqueeze(0)
+        
         # Process through vision tower
-        if type(global_view) is list:
-            global_features = []
-            for img in global_view:
-                image_forward_out = self.vision_tower(img.unsqueeze(0), output_hidden_states=True)
-                image_feature = image_forward_out.hidden_states[-1]
-                global_features.append(image_feature)
-            global_features = torch.cat(global_features, dim=0)
-        else:
-            # Add batch dimension if needed
-            if len(global_view.shape) == 3:
-                global_view = global_view.unsqueeze(0)
-            
-            image_forward_outs = self.vision_tower(global_view, output_hidden_states=True)
-            global_features = image_forward_outs.hidden_states[-1]  # [B, 729, D] for 384²
+        image_forward_outs = self.vision_tower(global_view, output_hidden_states=True)
+        global_features = image_forward_outs.hidden_states[-1]  # [B, 729, D] for 384²
         
         # Apply 2×2 average pooling to get 196 tokens
         B, N, D = global_features.shape
         if N == 729:  # 27×27 patches from 384²
             # Reshape to spatial: [B, 27, 27, D]
             spatial_features = global_features.view(B, 27, 27, D)
-            # Apply 2×2 pooling: [B, 13, 13, D] (with 1 padding)
+            # Apply 2×2 pooling with proper padding to get 14×14 = 196
             pooled_spatial = F.avg_pool2d(
                 spatial_features.permute(0, 3, 1, 2),  # [B, D, 27, 27]
                 kernel_size=2,
                 stride=2,
-                padding=0  # No padding, will get 13×13 = 169, need to pad to 196
-            ).permute(0, 2, 3, 1)  # [B, 13, 13, D]
+                padding=1  # Padding to handle odd dimension
+            ).permute(0, 2, 3, 1)  # [B, 14, 14, D]
             
-            # Pad to 14×14 = 196 tokens
-            target_size = 14
-            current_size = pooled_spatial.shape[1]
-            if current_size < target_size:
-                pad_size = target_size - current_size
-                # Pad spatially
-                pooled_spatial = F.pad(
-                    pooled_spatial.permute(0, 3, 1, 2),  # [B, D, 13, 13]
-                    (0, pad_size, 0, pad_size),  # pad right and bottom
-                    mode='constant',
-                    value=0
-                ).permute(0, 2, 3, 1)  # [B, 14, 14, D]
+            # Ensure we have exactly 196 tokens
+            if pooled_spatial.shape[1] * pooled_spatial.shape[2] != 196:
+                # Use adaptive pooling as fallback
+                pooled_spatial = F.adaptive_avg_pool2d(
+                    spatial_features.permute(0, 3, 1, 2),
+                    output_size=(14, 14)
+                ).permute(0, 2, 3, 1)
             
             global_pooled = pooled_spatial.reshape(B, 196, D)
         else:
@@ -327,54 +213,46 @@ class SigLipShirgExtensions:
             ).permute(0, 2, 3, 1)
             global_pooled = pooled_spatial.reshape(B, 196, D)
         
-        # Process 4 peripheral views: 384² → 729 tokens each (same as global but no pooling)
-        peripheral_features = []
-        for i in range(1, 5):  # Views 1-4 are peripheral 384²
-            peripheral_view = pixel_values[i]
+        # Process 2 foveal views: 448² → 784 tokens each (no pooling)
+        foveal_features = []
+        for i in range(1, 3):  # Views 1-2 are foveal 448²
+            foveal_view = pixel_values[i]
             
             # Ensure proper device and dtype
-            if peripheral_view.dtype != tower_dtype:
-                peripheral_view = peripheral_view.to(dtype=tower_dtype)
+            if foveal_view.dtype != tower_dtype:
+                foveal_view = foveal_view.to(dtype=tower_dtype)
+            
+            # Add batch dimension if needed
+            if len(foveal_view.shape) == 3:
+                foveal_view = foveal_view.unsqueeze(0)
             
             # Process through vision tower
-            if type(peripheral_view) is list:
-                view_features = []
-                for img in peripheral_view:
-                    image_forward_out = self.vision_tower(img.unsqueeze(0), output_hidden_states=True)
-                    image_feature = image_forward_out.hidden_states[-1]
-                    view_features.append(image_feature)
-                view_features = torch.cat(view_features, dim=0)
-            else:
-                # Add batch dimension if needed
-                if len(peripheral_view.shape) == 3:
-                    peripheral_view = peripheral_view.unsqueeze(0)
-                
-                image_forward_outs = self.vision_tower(peripheral_view, output_hidden_states=True)
-                view_features = image_forward_outs.hidden_states[-1]  # [B, 729, D] for 384²
+            image_forward_outs = self.vision_tower(foveal_view, output_hidden_states=True)
+            view_features = image_forward_outs.hidden_states[-1]  # [B, 784, D] for 448²
             
-            # Validate token count (all views are 384² so expect 729 tokens)
-            if view_features.shape[1] != 729:
-                rank0_print(f"⚠️ SHIRG-Fovea: Expected 729 tokens from peripheral view {i}, got {view_features.shape[1]}")
+            # Validate token count (448² with patch_size=16 → 28×28 = 784 tokens)
+            expected_tokens = (448 // 16) ** 2  # 784
+            if view_features.shape[1] != expected_tokens:
+                rank0_print(f"⚠️ SHIRG-Fovea: Expected {expected_tokens} tokens from foveal view {i}, got {view_features.shape[1]}")
             
-            peripheral_features.append(view_features)
+            foveal_features.append(view_features)
         
         elapsed_time = (time.time() - start_time) * 1000
         rank0_print(f"SHIRG-Fovea: Extracted multiview tokens in {elapsed_time:.1f}ms")
-        rank0_print(f"   Global: {global_pooled.shape} (pooled from 384²)")
-        rank0_print(f"   Peripheral: {len(peripheral_features)} views × {peripheral_features[0].shape if peripheral_features else 'None'}")
+        rank0_print(f"   Global: {global_pooled.shape} (2×2 pooled from 384²)")
+        rank0_print(f"   Foveal: {len(foveal_features)} views × {foveal_features[0].shape if foveal_features else 'None'}")
         
-        return global_pooled, peripheral_features
+        return global_pooled, foveal_features
     
     def topk_per_view(self, view_tokens, K, text_embeddings=None):
         """
-        SHIRG-Fovea: Per-view Top-K selection with diversity-aware scoring
+        SHIRG-Fovea: Per-view Top-K selection with composite scoring
         
-        Implements the full research methodology scoring: 
-        score_i = softmax((0.5*a_i + 0.3*s_i - 0.1*d_i) / T), T=0.15
+        Implements scoring: 0.7*attention + 0.3*similarity
         
         Args:
-            view_tokens: [B, 729, D] tokens from one peripheral view (384² patch)
-            K: Number of tokens to keep (typically ~328 for 45% keep rate)
+            view_tokens: [B, 784, D] tokens from one foveal view (448² patch)
+            K: Number of tokens to keep (392 for 50% keep rate)
             text_embeddings: Optional text embeddings for similarity scoring
             
         Returns:
@@ -388,9 +266,8 @@ class SigLipShirgExtensions:
             F.normalize(view_tokens, dim=-1),
             F.normalize(cls_token, dim=-1).transpose(-1, -2)
         ).squeeze(-1)  # [B, N]
-        attn_scores = F.normalize(attn_scores, dim=-1)  # Normalize to 0-1
         
-        # Component 2: Text similarity (s_i)
+        # Component 2: Text similarity (s_i) or token magnitude
         if text_embeddings is not None and text_embeddings.shape[-1] == D:
             # Direct similarity if dimensions match
             sim_scores = torch.matmul(
@@ -400,32 +277,20 @@ class SigLipShirgExtensions:
         else:
             # Use token magnitude as proxy for information content
             sim_scores = torch.norm(view_tokens, dim=-1)  # [B, N]
-        sim_scores = F.normalize(sim_scores, dim=-1)  # Normalize to 0-1
         
-        # SHIRG-DIVERSITY-FIX: 2025-07-29 - Simplified diversity-aware scoring
-        # ISSUE: Complex iterative selection causes indexing errors
-        # SOLUTION: Use simpler approach with masked selection
-        # RESEARCH IMPACT: Implements diversity scoring while avoiding complexity
-        # LAVIDA IMPACT: Reliable token selection without runtime errors
+        # Normalize scores to [0, 1]
+        attn_scores = (attn_scores - attn_scores.min(dim=1, keepdim=True)[0]) / (
+            attn_scores.max(dim=1, keepdim=True)[0] - attn_scores.min(dim=1, keepdim=True)[0] + 1e-8
+        )
+        sim_scores = (sim_scores - sim_scores.min(dim=1, keepdim=True)[0]) / (
+            sim_scores.max(dim=1, keepdim=True)[0] - sim_scores.min(dim=1, keepdim=True)[0] + 1e-8
+        )
         
-        # Temperature parameter from research
-        temperature = 0.15
+        # Combine scores: 0.7*attention + 0.3*similarity
+        combined_scores = 0.7 * attn_scores + 0.3 * sim_scores
         
-        # For diversity, we'll use a simpler approach: select top-K with small random perturbation
-        # This encourages diversity without complex iterative selection
-        
-        # Add small random noise to encourage diversity (scaled by temperature)
-        noise = torch.randn_like(attn_scores) * temperature * 0.1
-        
-        # Combine scores: 0.7*a_i + 0.3*s_i (simplified from research formula)
-        # We'll handle diversity through the noise term instead of explicit penalty
-        combined_scores = 0.7 * attn_scores + 0.3 * sim_scores + noise
-        
-        # Apply temperature scaling
-        scores = combined_scores / temperature
-        
-        # Select top-K tokens at once
-        topk_values, topk_indices = torch.topk(scores, K, dim=1)  # [B, K]
+        # Select top-K tokens
+        topk_values, topk_indices = torch.topk(combined_scores, K, dim=1)  # [B, K]
         
         # Gather selected tokens
         selected_tokens = torch.gather(
@@ -446,7 +311,7 @@ class SigLipShirgExtensions:
         Returns:
             tokens: [B, N, D] tokens with ensured gradient flow
         """
-        # Always force gradient requirements on tokens (not just training mode)
+        # Always force gradient requirements on tokens
         if hasattr(tokens, 'requires_grad_'):
             tokens = tokens.requires_grad_(True)
         

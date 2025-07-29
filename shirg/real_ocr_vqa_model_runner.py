@@ -508,6 +508,11 @@ class LaViDaModelRunner:
             # SOLUTION: Use same grid pinpoints as baseline but SHIRG will handle token selection
             # RESEARCH IMPACT: SHIRG processes LaViDa's 5×384² views with per-view selection
             # LAVIDA IMPACT: Maintains compatibility with LaViDa's image preprocessing
+            # SHIRG-3VIEW-CONFIG: 2025-07-29 - Configure for new 3-view SHIRG-Fovea mode
+            # ISSUE: Research proposal uses 3-view format instead of 5-view
+            # SOLUTION: Enable shirg_3view_mode for custom preprocessing
+            # RESEARCH IMPACT: Implements updated SHIRG-Fovea architecture with 980 tokens
+            # LAVIDA IMPACT: Alternative processing path for SHIRG experiments
             shirg_vision_kwargs = {
                 "mm_vision_tower": "google/siglip-so400m-patch14-384",  # Base model
                 "mm_resampler_type": None,
@@ -515,12 +520,13 @@ class LaViDaModelRunner:
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
                 "enable_shirg": True,  # Enable SHIRG processing
-                "image_aspect_ratio": "anyres",  # CRITICAL: Enable anyres for 5-view processing
-                "image_grid_pinpoints": [(768, 768)],  # Same as baseline for compatibility
-                "mm_patch_merge_type": "spatial_unpad"  # Standard anyres processing
+                "shirg_3view_mode": True,  # NEW: Enable 3-view mode (1 global + 2 foveal)
+                "image_aspect_ratio": "anyres",  # Keep for compatibility
+                "image_grid_pinpoints": [(768, 768)],  # Keep for compatibility
+                "mm_patch_merge_type": "spatial_unpad"  # Standard processing
             }
             
-            print("SHIRG-FOVEA-CONFIG: Using anyres 5-view processing (5×384² patches from 768×768 grid)")
+            print("SHIRG-FOVEA-CONFIG: Using 3-view processing (1×384² global + 2×448² foveal)")
             
             # Load SHIRG model components
             print(f"   📂 Model path: {self.pretrained_path}")
@@ -585,7 +591,8 @@ class LaViDaModelRunner:
             # LAVIDA IMPACT: Allows proper routing of SHIRG tokens without pooling
             if hasattr(self.shirg_model, 'config'):
                 self.shirg_model.config.enable_shirg = True
-                print(f"   🔍 SHIRG enabled on model config")
+                self.shirg_model.config.shirg_3view_mode = True  # Enable 3-view mode
+                print(f"   🔍 SHIRG enabled on model config with 3-view mode")
             
             # Get vision tower and enable SHIRG
             if hasattr(self.shirg_model, 'get_vision_tower'):
