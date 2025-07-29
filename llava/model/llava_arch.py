@@ -666,13 +666,17 @@ class LlavaMetaForCausalLM(ABC):
                             pass
                         else:
                             image_feature = torch.cat((base_image_feature, image_feature), dim=0)
-                        #print(image_feature.shape)
+                        # DEBUG: Log shape after spatial_unpad processing
+                        print(f"SPATIAL-UNPAD-DEBUG: Multi-patch processed shape: {image_feature.shape}")
+                        print(f"   Base feature shape: {base_image_feature.shape}")
+                        print(f"   Total tokens after concat: {image_feature.shape[0]}")
                         new_image_features.append(image_feature)
                     else:  # single image operations
                         image_feature = image_feature[0]
                         if "unpad" in mm_patch_merge_type:
                             image_feature = torch.cat((image_feature, self.model.image_newline[None]), dim=0)
-                        # print(image_feature.shape)
+                        # DEBUG: Log shape after single image processing
+                        print(f"SPATIAL-UNPAD-DEBUG: Single image processed shape: {image_feature.shape}")
                         new_image_features.append(image_feature)
                         
                 image_features = new_image_features

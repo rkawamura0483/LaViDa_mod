@@ -423,25 +423,23 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             rank0_print(f"SHIRG-OUTPUT-DEBUG: Expected ~1508 tokens, got {shirg_tokens.shape[1] if len(shirg_tokens.shape) > 1 else 'N/A'}")
             
             # CRITICAL: LaViDa expects to split features back into 5 views
-            # SHIRG returns [1, 1508, D] but LaViDa needs compatible format for generation
-            # The issue is that SHIRG's concatenated format doesn't match baseline's multi-view format
+            # SHIRG returns [1, 1508, D] but we keep it as single view
+            # The single view path in spatial_unpad is fine - it just adds newline token
             
             # SHIRG token distribution: [196, 328, 328, 328, 328]
             shirg_token_splits = [196, 328, 328, 328, 328]
             
-            # Split concatenated tokens back into views
+            # Return SHIRG concatenated tokens
             if shirg_tokens.shape[0] == 1 and shirg_tokens.shape[1] == sum(shirg_token_splits):
-                # SHIRG-SINGLE-VIEW-FIX: 2025-07-29 - Return SHIRG as single view to avoid split issues
-                # ISSUE: LaViDa can't handle varying token counts per view in generation
-                # SOLUTION: Keep SHIRG tokens concatenated as single view
+                # SHIRG-SINGLE-VIEW: Keep as single concatenated view
+                # ISSUE: Need to ensure proper processing through spatial_unpad
+                # SOLUTION: Return as single view, let spatial_unpad handle it
                 # RESEARCH IMPACT: Maintains SHIRG's 1508 token selection
-                # LAVIDA IMPACT: LaViDa processes as single large view instead of 5 views
+                # LAVIDA IMPACT: Processes through single image path in spatial_unpad
                 
                 rank0_print(f"SHIRG-5VIEW-OUTPUT: SHIRG returns concatenated {shirg_tokens.shape}")
                 rank0_print(f"   Total tokens: {shirg_tokens.shape[1]} (196 global + 4×328 peripheral)")
                 
-                # Return SHIRG tokens as single view
-                # LaViDa will process this as one large image feature
                 return shirg_tokens
             else:
                 # Fallback if SHIRG output unexpected
