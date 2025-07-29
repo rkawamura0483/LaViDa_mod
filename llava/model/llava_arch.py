@@ -416,21 +416,18 @@ class LlavaMetaForCausalLM(ABC):
             total_tokens = encoded_image_features.shape[1] if len(encoded_image_features.shape) > 1 else 0
             
             if is_shirg_enabled:
-                # SHIRG-5VIEW-SPLIT-FIX: 2025-07-29 - SHIRG returns 5 views with different token counts
-                # ISSUE: SHIRG has different token counts per view (196, 328, 328, 328, 328)
-                # SOLUTION: Detect SHIRG's 5-view output and split manually by token counts
-                # RESEARCH IMPACT: Maintains SHIRG's per-view selection methodology
-                # LAVIDA IMPACT: Allows LaViDa to process SHIRG's 5 views correctly
+                # SHIRG-CONCAT-SPLIT-FIX: 2025-07-29 - SHIRG returns concatenated tokens as single view
+                # ISSUE: SHIRG concatenates all tokens (1508 total) into single tensor
+                # SOLUTION: Handle SHIRG's single concatenated output as one view
+                # RESEARCH IMPACT: Maintains SHIRG's ~1508 token output per methodology
+                # LAVIDA IMPACT: Processes SHIRG output as single view through pipeline
                 
-                # SHIRG returns 5 views with these token counts
-                shirg_token_counts = [196, 328, 328, 328, 328]  # Total: 1508
-                
-                if actual_images == 5:
-                    # SHIRG returned 5 views as expected
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned 5 views, keeping as separate views")
-                    print(f"   SHIRG token counts: {shirg_token_counts}")
-                    # Views are already separate, just convert to list
-                    encoded_image_features = [encoded_image_features[i:i+1] for i in range(5)]
+                if actual_images == 1 and total_tokens > 1000:
+                    # SHIRG returned concatenated tokens as single view
+                    print(f"SHIRG-SPLIT-FIX: SHIRG returned concatenated tokens as single view")
+                    print(f"   Total SHIRG tokens: {total_tokens} (expected ~1508)")
+                    # Keep as single view - don't split
+                    encoded_image_features = [encoded_image_features]
                 elif actual_images == total_expected_images:
                     # SHIRG might be disabled or in fallback mode
                     print(f"SHIRG-SPLIT-FIX: SHIRG in fallback mode, using normal split")
@@ -495,17 +492,25 @@ class LlavaMetaForCausalLM(ABC):
                     print(f"POOLING-DEBUG idx={idx}: model_has_shirg={model_has_shirg}, input_shape={image_feat.shape}")
                     
                     if model_has_shirg:
-                        # SHIRG-POOLING-LOGIC: Handle SHIRG's different views appropriately
-                        # View 0: Already pooled to 196 tokens - skip pooling
-                        # Views 1-4: Selected tokens (328 each) - skip pooling to preserve selection
-                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - checking view type")
+                        # SHIRG-POOLING-BYPASS: 2025-07-29 - Skip pooling for SHIRG tokens
+                        # ISSUE: SHIRG returns concatenated tokens that are already processed
+                        # SOLUTION: Bypass pooling entirely for SHIRG output
+                        # RESEARCH IMPACT: Preserves SHIRG's token selection (196 + 4×328 = 1508)
+                        # LAVIDA IMPACT: SHIRG tokens skip LaViDa's 2x2 pooling
                         
-                        # Check token count to determine view type
+                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - bypassing pooling")
+                        
+                        # Check token count to verify SHIRG output
                         num_tokens = image_feat.shape[1] if len(image_feat.shape) > 1 else 0
-                        if num_tokens == 196:
-                            print(f"   View {idx}: Global view (196 tokens) - already pooled, skipping")
-                        elif num_tokens == 328:
-                            print(f"   View {idx}: Peripheral view (328 tokens) - selected tokens, skipping pooling")
+                        if num_tokens > 1000:
+                            print(f"   View {idx}: SHIRG concatenated output ({num_tokens} tokens) - skipping pooling")
+                        elif num_tokens == 729:
+                            print(f"   View {idx}: Fallback to baseline (729 tokens) - will apply pooling")
+                            # This is actually baseline fallback, apply pooling
+                            pooled_feat = self.get_2dPool(image_feat)
+                            print(f"   After pooling: {pooled_feat.shape}")
+                            image_features.append(pooled_feat)
+                            continue
                         else:
                             print(f"   View {idx}: Unexpected token count {num_tokens}")
                         

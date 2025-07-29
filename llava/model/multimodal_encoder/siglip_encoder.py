@@ -420,15 +420,18 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             
             # Split concatenated tokens back into views
             if shirg_tokens.shape[0] == 1 and shirg_tokens.shape[1] == sum(shirg_token_splits):
-                # Split along token dimension
-                split_views = torch.split(shirg_tokens, shirg_token_splits, dim=1)
-                # Stack along batch dimension to create [5, varying_tokens, D]
-                stacked_views = torch.cat(split_views, dim=0)
-                rank0_print(f"SHIRG-5VIEW-OUTPUT: Split {shirg_tokens.shape} into 5 views")
-                for i, view in enumerate(split_views):
-                    rank0_print(f"   View {i}: {view.shape}")
-                rank0_print(f"   Stacked output: {stacked_views.shape}")
-                return stacked_views
+                # SHIRG-SPLIT-FIX: 2025-07-29 - Return concatenated tokens directly
+                # ISSUE: LaViDa can't handle views with different token counts after split
+                # SOLUTION: Return SHIRG's concatenated tokens as single view
+                # RESEARCH IMPACT: Maintains SHIRG's 1508 token output as designed
+                # LAVIDA IMPACT: LaViDa will process as single large view instead of 5 views
+                
+                rank0_print(f"SHIRG-5VIEW-OUTPUT: SHIRG returns concatenated {shirg_tokens.shape}")
+                rank0_print(f"   Total tokens: {shirg_tokens.shape[1]} (196 global + 4×328 peripheral)")
+                
+                # Return as single view - LaViDa will handle as one large token sequence
+                # This maintains SHIRG's research methodology while being compatible with LaViDa
+                return shirg_tokens
             else:
                 # Fallback if SHIRG output unexpected
                 rank0_print(f"SHIRG-5VIEW-OUTPUT: Unexpected SHIRG shape {shirg_tokens.shape}, returning as-is")
