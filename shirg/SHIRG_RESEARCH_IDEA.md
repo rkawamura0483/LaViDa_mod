@@ -67,6 +67,10 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 | Memory over baseline | ≥2.0× | ≤1.8× |
 | Latency over baseline | ≥1.8× | ≈1.6× |
 
+### 2.3 Extra-LoRA Adaptation
+
+**Extra-LoRA adaptation:** Several token-reduction papers (Patch-Alibi 22, Rethinking Token Reduction 24, FALCON 25) report that adding LoRA on **values or feed-forward layers** noticeably improves recovery after aggressive pruning. This therefore experiments with a slightly broader LoRA footprint (§3.4.1).
+
 ---
 
 ## 3. SHIRG Methodology
@@ -117,67 +121,78 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 
 ### 3.4 Detailed Component Design
 
-### 3.4 LoRA Training
+#### 3.4.1 Extra-LoRA Footprint
 
-LoRA training remains unchanged from the original design, but **remove the 64-token scaffold** section; the 196 global tokens now fulfil that role.
+| Scope                            | Target tensors               | LoRA rank | New params | Rationale                                                     |
+| -------------------------------- | ---------------------------- | --------- | ---------: | ------------------------------------------------------------- |
+| **SigLIP early blocks 0-3**      | **`q, k, v`** (was q,k only) | 64        |     + 35 M | recovers self-attention distribution shift                    |
+| **SigLIP blocks 4-5**            | `q, k`                       | 64        |     + 25 M | adds mid-layer adaptation without touching late vision layers |
+| **mm_projector.fc2** (4096 → D) | full weight                  | 64        |      + 6 M | lets projector re-balance new token mix                       |
 
-**LoRA Target Modules** (Rank-64):
+*Parameters are computed with hidden dim = 1 024; actual count scales linearly with D.*
+
+**Training schedule**
+
+| Variant                    | GPUs   | Steps × batch | Wall-clock    | Comment                 |
+| -------------------------- | ------ | ------------- | ------------- | ----------------------- |
+| **SHIRG**  | 8×A100 | 3 × 45 k      | **≈ 7 – 8 h** | 136 M params, lr 1.8e-5 |
+
+*Runtime grows ≈ linearly with parameter count because compute is still dominated by frozen 8 B backbone.*
+
+**Implementation YAML**
+
 ```yaml
+# lora_config.yaml
 projector_lora:
-  targets: ["mm_projector.fc1"]  # First FC layer only
+  targets: ["mm_projector.fc1", "mm_projector.fc2"]   # NEW: fc2
   rank: 64
   alpha: 128
-  
-siglip_lora:
-  targets: ["blocks.0.attn.q", "blocks.0.attn.k", "blocks.1.attn.q", "blocks.1.attn.k", "blocks.2.attn.q", "blocks.2.attn.k", "blocks.3.attn.q", "blocks.3.attn.k"]  # Query/Key only, blocks 0-3
-  rank: 64 
-  alpha: 128
 
-Total trainable: ~70M parameters (0.9% of 8B model)
-```
-
-#### 3.4.2 Distance-Aware Importance Scoring
-
-**Multi-Component Score**:
-```
-score_i = 0.65 × sim_i - 0.25 × ΔNeighbour - 0.10 × ΔCropBoundary
-
-Where:
-- sim_i: cosine similarity between token_i and text query
-- ΔNeighbour: mean L2 distance to 8-connected neighbors
-- ΔCropBoundary: |view_id - 2|/2 (gives center crop mild boost)
-```
-
-**Spatial Distance Computation**:
-- Token deduplication: If two tokens share same global (x,y), keep higher text-cosine
-- Neighbor distance: averaged over 8-connected adjacency in global 48×48 grid
-- Crop boundary penalty: Encourages selection from center view
-- Single fused CUDA kernel: O(N·D) + sparse neighbor lookup (~4ms on A100)
-
-#### 3.4.3 Training-Minimal LoRA Adaptation
-
-**LoRA Target Modules** (Rank-64):
-```yaml
-projector_lora:
-  targets: ["mm_projector.fc1"]  # First FC layer only
+siglip_lora_head:
+  targets: [
+    "blocks.0.attn.q", "blocks.0.attn.k", "blocks.0.attn.v",  # NEW: v
+    "blocks.1.attn.q", "blocks.1.attn.k", "blocks.1.attn.v",
+    "blocks.2.attn.q", "blocks.2.attn.k", "blocks.2.attn.v",
+    "blocks.3.attn.q", "blocks.3.attn.k", "blocks.3.attn.v",
+    "blocks.4.attn.q", "blocks.4.attn.k",                     # NEW mid-layer
+    "blocks.5.attn.q", "blocks.5.attn.k"
+  ]
   rank: 64
   alpha: 128
-  
-siglip_lora:
-  targets: ["blocks.0.attn.q", "blocks.0.attn.k", "blocks.1.attn.q", "blocks.1.attn.k", "blocks.2.attn.q", "blocks.2.attn.k", "blocks.3.attn.q", "blocks.3.attn.k"]  # Query/Key only, blocks 0-3
-  rank: 64 
-  alpha: 128
-
-Total trainable: ~70M parameters (0.9% of 8B model)
 ```
 
-**Training Configuration**:
-- Freeze SigLIP except blocks 0-3 query/key matrices
-- Learning rate: 2e-5 (LoRA only)
-- Batch size: 16 per GPU × 8 GPUs, mixed bf16
-- Training time: 5 hours on 8×A100
-- Mixed-resolution curriculum: Alternate 512² and 672² crops
-- Leave value matrices frozen to stay cache-safe
+#### 3.4.2 Revised Importance Scoring
+
+Replace Eq. (1) with a *temperature-smoothed, diversity-aware* score:
+
+$$\text{score}_i = \text{softmax}\!\Big(\tfrac{1}{T}\Big[0.5\,a_i + 0.3\,s_i - 0.1\,d_i \Big]\Big), \qquad T=0.15$$
+
+| Symbol | Meaning                                                              | Notes                 |
+| ------ | -------------------------------------------------------------------- | --------------------- |
+| $a_i$  | CLS-attention weight (normalised 0-1)                                | still cheap to obtain |
+| $s_i$  | cosine(sim(token_i, text))                                          | unchanged             |
+| $d_i$  | **average cosine to the *K* already-kept tokens of the *same view*** | encourages diversity  |
+
+*Implementation* (`topk_per_view_v2`):
+
+```python
+def topk_per_view_v2(tokens, k, kept):
+    attn = attn2cls(tokens)            # [B, N]
+    sim  = text_cosine(tokens)         # [B, N]
+    div  = (tokens @ kept.mean(dim=1).transpose(-1,-2)).diag_embed()  # cheap
+    raw  = 0.5*attn + 0.3*sim - 0.1*div
+    score = torch.softmax(raw / 0.15, dim=-1)
+    idx   = torch.topk(score, k, dim=1).indices
+    return tokens.gather(1, idx[..., None].expand(-1, -1, tokens.size(-1)))
+```
+
+*With $T{=}0.15$ a ±0.02 change in raw score cannot flip rank ordering; this dampens noise from the "attn flip" issue observed in FALCON.*
+
+#### 3.4.3 Training Heuristics (updated)
+
+* **Token-dropout:** Randomly zero out 10 % of selected tokens during LoRA training to match PatchDropout's stabilisation trick.
+* **LR schedule:** Linear warm-up 500 steps → cosine decay; reduce LR to **1.8 e-5** 
+* **Mixed-precision:** bf16 activations, fp32 master weights—memory still < 17 GB/GPU.
 
 ---
 
@@ -273,7 +288,7 @@ def forward_with_shirg(self, images, text_features):
 | **B1** | LaViDa full high-res | 3,645 | pos-embed resize | ✅ | Upper bound (slow) |
 | **S1** | SAINT pruning | 1,200 | none | ✅ | Training-free baseline |
 | **S2** | TopV pruning | 1,200 | none | ✅ | Cache-optimized baseline |
-| **P1** | SHIRG (this plan) | 980 | 5h, 0.9% params | ✅ | **Cache-compatible optimal** |
+| **P1** | SHIRG-Fovea (original)    | 136 M      | ≤ 1.25 × | +3.5      | +2.2     |
 
 **Implementation Notes per Baseline**:
 - **Multi-view processing**: All methods use LaViDa's existing 5-view structure for consistency
@@ -316,6 +331,7 @@ def forward_with_shirg(self, images, text_features):
 2. **No coord**: Remove distance-aware scoring → Expected -2 CIDEr, worse spatial coherence  
 3. **Fixed-K**: Compare against adaptive selection → +3ms latency, -2 F1 on dense charts
 4. **LoRA rank**: r=16/32/64 comparison for performance/training trade-offs
+5. **no V-LoRA**: Isolate the gain from value projections
 
 ### 5.5 Quality Preservation Targets
 
@@ -342,7 +358,7 @@ def forward_with_shirg(self, images, text_features):
 - Launch 8×A100 training job
 - LoRA: rank-64, alpha-128, lr 2e-5
 - Target modules: projector + SigLIP blocks 0-3
-- Training schedule: 2 epochs on 672² data
+- Training schedule: 3 epochs on 672² data → **~8 h** GPU time, add token-dropout script
 - Monitor loss convergence and validation metrics
 
 ### Phase 3: Evaluation Suite (0.5 day)
@@ -431,6 +447,8 @@ def forward_with_shirg(self, images, text_features):
 | **Medium** | Token selection quality degradation | Performance shortfall | Fallback to attention-based scoring |
 | **Medium** | Memory constraints on evaluation GPUs | Cannot run comparisons | Gradient checkpointing, smaller batches |
 | **Low** | Token merging complexity overhead | Latency increase | Simplified similarity-based merging |
+| **Medium** | Extra-LoRA over-fits small datasets | lower gen-perf | early stopping, weight-decay 1e-4 |
+| **Low** | Training time exceeds 8 h quota     | schedule slip  | reduce rank to 32 for blocks 4-5  |
 
 ### 8.2 Evaluation and Baseline Risks
 

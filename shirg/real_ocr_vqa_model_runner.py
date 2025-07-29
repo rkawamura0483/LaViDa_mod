@@ -448,12 +448,9 @@ class LaViDaModelRunner:
                 image = sample_data['image']
                 question = sample_data['question']
                 
-                # SHIRG-METHODOLOGY-FIX: 2025-07-29 - Use original image, let SHIRG vision tower handle resizing
-                # ISSUE: Manual resizing violates SHIRG research methodology which requires native high-res processing
-                # SOLUTION: Pass original image to SHIRG model, vision tower handles 672×672 processing internally
-                # RESEARCH IMPACT: Enables native high-resolution processing as specified in SHIRG research
-                # LAVIDA IMPACT: Maintains compatibility with LaViDa image processing pipeline
-                shirg_image = image  # Use original image, SHIRG vision tower will handle 672×672 processing
+                # SHIRG-Fovea: Use original image, let vision tower handle anyres 5-view processing
+                # The anyres splitter creates 1×384² global + 4×512² peripheral views
+                shirg_image = image
                 
                 # Prepare input
                 if self.shirg_tokenizer is not None:
@@ -1187,17 +1184,9 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
-            # SHIRG-IMAGE-FIX: 2025-07-29 - Native high-resolution processing per research spec
-            # ISSUE: SHIRG requires native 672×672 processing for high-resolution token extraction
-            # SOLUTION: Use SHIRG-configured image processor for 672×672 processing
-            # RESEARCH IMPACT: Enables genuine high-resolution token extraction (48×48 = 2304 tokens)
-            # LAVIDA IMPACT: Maintains LaViDa image processing pipeline compatibility
-            
-            # SHIRG-PROCESSING-FIX: 2025-07-29 - Direct high-resolution image processing for SHIRG
-            # ISSUE: SHIRG needs direct 672×672 processing, not LaViDa's multi-view anyres processing
-            # SOLUTION: Process image directly with SHIRG image processor configured for 672×672
-            # RESEARCH IMPACT: Enables native high-resolution token extraction as per SHIRG methodology
-            # LAVIDA IMPACT: Bypasses LaViDa's anyres processing for SHIRG-specific high-res handling
+            # SHIRG-Fovea: Process with anyres 5-view format
+            # Anyres splitter creates appropriate views for SHIRG-Fovea processing
+            # 1 global view (384×384) + 4 peripheral views (512×512)
             
             if TORCHVISION_AVAILABLE:
                 # SHIRG-IMAGE-FORMAT-FIX: 2025-07-29 - Add comprehensive image validation before processing
@@ -1381,13 +1370,14 @@ class LaViDaModelRunner:
                                 
                                 # SHIRG expected values
                                 if use_shirg:
-                                    # SHIRG methodology: 672×672 → 48×48 patches → selective reduction
-                                    expected_high_res = 2304  # 48×48 from 672×672 at patch size 14
-                                    expected_shirg_output = 1216  # 1152 selected + 64 scaffold per research
+                                    # SHIRG-Fovea methodology: 5-view anyres → selective reduction
+                                    expected_global = 196  # 14×14 after 2×2 pooling from 384²
+                                    expected_peripheral = 1840  # 4×460 tokens (45% of 1024 each)
+                                    expected_shirg_output = 2036  # 196 + 1840 per implementation
                                     
                                     print(f"   ✅ Expected SHIRG values:")
-                                    print(f"      📐 Input high-res: {expected_high_res} tokens (48×48 patches)")
-                                    print(f"      📐 SHIRG output: {expected_shirg_output} tokens (1152 selected + 64 scaffold)")
+                                    print(f"      📐 Input views: 1 global (384²) + 4 peripheral (512²)")
+                                    print(f"      📐 SHIRG output: {expected_shirg_output} tokens ({expected_global} global + {expected_peripheral} peripheral)")
                                     
                                     if total_tokens == expected_shirg_output:
                                         print(f"   ✅ SHIRG-PERFECT: Output = {total_tokens} tokens (matches research spec)")
@@ -1473,7 +1463,7 @@ class LaViDaModelRunner:
             # FINAL-SHIRG-SUMMARY: 2025-07-29 - Clear summary of SHIRG token flow
             print(f"\n🎯 SHIRG SUMMARY:")
             print(f"   📊 Model type: SHIRG LaViDa")
-            print(f"   📐 Expected flow: Image → 672×672 → 2,304 tokens → SHIRG selection → 1,216 tokens → LM")
+            print(f"   📐 Expected flow: Image → 5-view anyres → global(196) + peripheral(4×460) → ~2,036 tokens → LM")
             print(f"   📋 Pooling disabled: {os.environ.get('NOT_ALWASY_DO_2DPOOL', 'undefined') == '1'}")
             print(f"   🔍 SHIRG enabled: {use_shirg if 'use_shirg' in locals() else 'unknown'}")
             if vision_info.get('num_tokens'):
@@ -1543,10 +1533,8 @@ class LaViDaModelRunner:
             if self.shirg_tower is None:
                 return {'error': 'SHIRG tower not available'}
             
-            # SHIRG-METADATA-FIX: 2025-07-29 - Direct processing for metadata extraction
-            # ISSUE: Same as above - need direct 672×672 processing for SHIRG
-            # SOLUTION: Use direct preprocessing to bypass anyres multi-view
-            # RESEARCH IMPACT: Ensures consistent SHIRG processing for metadata extraction
+            # SHIRG-Fovea: Process with anyres for metadata extraction
+            # Creates 5-view format for SHIRG-Fovea processing
             # LAVIDA IMPACT: Maintains compatibility while using SHIRG-specific processing
             
             # CHANNEL-DIMENSION-FIX: 2025-07-29 - Ensure proper image format before preprocessing
@@ -1596,7 +1584,7 @@ class LaViDaModelRunner:
                             'method': 'SHIRG',
                             'input_tokens': features.shape[1] if len(features.shape) > 1 else features.numel(),
                             'scaffold_tokens': scaffold.shape[1] if len(scaffold.shape) > 1 else scaffold.numel(),
-                            'input_resolution': '672x672',
+                            'input_resolution': '5-view anyres',
                             'feature_dim': features.shape[-1] if len(features.shape) > 1 else 1
                         }
                         
@@ -1630,8 +1618,10 @@ class LaViDaModelRunner:
                             fallback_metadata = {
                                 'method': 'SHIRG_FALLBACK',
                                 'input_tokens': total_tokens,
-                                'scaffold_tokens': 64,
-                                'input_resolution': '672x672',
+                                'global_tokens': 196,
+                                'peripheral_views': 4,
+                                'peripheral_tokens_per_view': 409,
+                                'input_resolution': '5-view anyres',
                                 'feature_dim': basic_features.shape[-1] if len(basic_features.shape) > 1 else 1152,
                                 'selected_indices': mock_selected_indices,
                                 'selection_error': str(e),
@@ -1655,7 +1645,7 @@ class LaViDaModelRunner:
                         return {
                             'method': 'Standard',
                             'input_tokens': total_tokens,
-                            'scaffold_tokens': 0,  # No scaffold for standard tower
+                            'global_tokens': 729,  # Standard LaViDa tokens
                             'input_resolution': 'Variable',
                             'feature_dim': features.shape[-1] if len(features.shape) > 1 else 1,
                             'selected_indices': list(range(total_tokens)),  # All tokens "selected" for standard
@@ -1675,7 +1665,9 @@ class LaViDaModelRunner:
                 'error': f'Selection metadata extraction failed: {str(e)}',
                 'method': 'ERROR_FALLBACK',
                 'input_tokens': 2304,  # Assume SHIRG resolution
-                'scaffold_tokens': 64,
+                'global_tokens': 196,
+                'peripheral_views': 4,
+                'peripheral_tokens_per_view': 409,
                 'selected_indices': list(range(0, 2304, 2)),  # Mock selection
                 'visualization_ready': True,  # Allow visualization with error data
                 'extraction_failed': True

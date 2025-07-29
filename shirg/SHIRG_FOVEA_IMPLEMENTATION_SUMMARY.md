@@ -15,7 +15,7 @@ This document summarizes the changes made to update the SHIRG implementation fro
 - LaViDa's 5-view anyres format
 - 1 global 384² view → 196 tokens (2×2 pooled)
 - 4 peripheral 512² views → ~409 tokens each (40-50% Top-K selection)
-- Total: ~1832 tokens (196 + 4×409)
+- Total: ~2036 tokens (196 + 4×460)
 - Per-view Top-K selection with scoring: 0.7×attn + 0.3×sim
 
 ## Implementation Changes
@@ -31,7 +31,7 @@ This document summarizes the changes made to update the SHIRG implementation fro
   - Scoring: 0.7×attention_to_cls + 0.3×text_similarity
 - Updated `forward_with_shirg` for new token flow
   - Concatenates [global_196 || view1_K ... view4_K]
-  - Outputs ~1832 tokens instead of 1216
+  - Outputs ~2036 tokens instead of 1216
 
 **Removed:**
 - Dual-scale extraction logic
@@ -94,8 +94,8 @@ Input Image → anyres splitter → 5 views (768×768 grid)
 ```
 Input Image → anyres splitter → 5 views
 ├─ 1×384² global → 729 tokens → 2×2 pool → 196 tokens
-└─ 4×512² peripheral → 4×1024 tokens → Top-K (40%) → 4×~409 tokens
-→ Concatenate → ~1832 tokens → projector
+└─ 4×512² peripheral → 4×1024 tokens → Top-K (45%) → 4×~460 tokens
+→ Concatenate → ~2036 tokens → projector
 ```
 
 ## Testing

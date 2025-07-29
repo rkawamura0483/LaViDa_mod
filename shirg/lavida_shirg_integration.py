@@ -56,10 +56,10 @@ class SHIRGCacheManager:
     """
     Memory-efficient KV cache management for SHIRG tokens
     
-    SHIRG-FIXED-FIX: 2025-07-28 - PrefixKV integration for SHIRG-Fixed
-    ISSUE: SHIRG-Fixed increases token count from 729 to 768, need memory efficiency
-    SOLUTION: PrefixKV 16-bit cache compression with <2ms overhead
-    RESEARCH IMPACT: Enables SHIRG-Fixed deployment within memory constraints
+    Memory-efficient KV cache management for SHIRG tokens
+    
+    SHIRG-FOVEA: PrefixKV integration for cache compression
+    Reduces memory footprint with 16-bit compression
     """
     
     def __init__(self, enable_compression=True):
@@ -68,7 +68,7 @@ class SHIRGCacheManager:
         
     def wrap_model_with_cache_compression(self, model):
         """
-        Wrap diffusion model with PrefixKV compression for SHIRG-Fixed
+        Wrap diffusion model with PrefixKV compression for SHIRG
         
         Args:
             model: LaViDa model instance
@@ -103,10 +103,8 @@ class SHIRGCacheManager:
 
 class TextVisionAligner(nn.Module):
     """
-    SHIRG-X-FIX: 2025-07-28 - Learned text-vision dimension alignment
-    ISSUE: Text embeddings (4096D) and vision features (1152D) dimension mismatch
-    SOLUTION: Learned linear projection with proper initialization instead of pseudo-inverse
-    RESEARCH IMPACT: Preserves semantic meaning while enabling cross-modal similarity computation
+    Text-vision dimension alignment for SHIRG
+    Projects text embeddings to vision feature space for similarity computation
     """
     
     def __init__(self, text_dim=4096, vision_dim=1152):
@@ -204,7 +202,7 @@ class LaViDaSHIRGWrapper:
         self.conv_template = None
         self.shirg_selector = None
         
-        # SHIRG-Fixed cache management
+        # SHIRG cache management
         self.cache_manager = SHIRGCacheManager(enable_compression=True)
         
         # Performance tracking
@@ -257,35 +255,14 @@ class LaViDaSHIRGWrapper:
             # No separate selector needed - SHIRG is implemented in SigLipShirgExtensions
             
             
-            # SHIRG-X-FIX: Initialize text-vision aligner for dimension compatibility
-            text_hidden_dim = 4096  # LLaDA text embedding size
-            self.text_vision_aligner = TextVisionAligner(text_dim=text_hidden_dim, vision_dim=vision_hidden_dim)
-            
-            # SHIRG-X: Initialize adaptive-K gating head
-            self.adaptive_k_head = nn.Sequential(
-                nn.Linear(1, 32),      # Patch entropy → hidden
-                nn.ReLU(),
-                nn.Linear(32, 3),      # Hidden → 3 budget options
-                nn.Softmax(dim=-1)
-            )
-            
-            # SHIRG-X-FIX: 2025-07-28 - Ensure all SHIRG-X components have consistent device/dtype
-            # ISSUE: SHIRG-X components may end up on different devices or with mismatched dtypes
-            # SOLUTION: Centralized device/dtype management for all SHIRG-X components
-            # RESEARCH IMPACT: Prevents tensor device/dtype mismatch errors during SHIRG-X processing
-            self._ensure_shirg_x_device_consistency()
-            
-            # Add adaptive_k_head to vision tower for accessibility
-            if hasattr(self.model, 'get_vision_tower'):
-                vision_tower = self.model.get_vision_tower()
-                if vision_tower:
-                    vision_tower.adaptive_k_head = self.adaptive_k_head
+            # Text-vision aligner for SHIRG (if needed for future extensions)
+            # Currently SHIRG-Fovea doesn't require text alignment as scoring happens in vision space
             
             # Setup conversation template
             self._setup_conversation_template()
             
-            # SHIRG-Fixed: Apply cache compression
-            if self.shirg_config.get('mode', 'shirg-fixed') == 'shirg-fixed':
+            # Apply cache compression if enabled
+            if self.shirg_config.get('enable_cache_compression', False):
                 self.model = self.cache_manager.wrap_model_with_cache_compression(self.model)
             
             # Integrate SHIRG into model
@@ -322,50 +299,16 @@ class LaViDaSHIRGWrapper:
         
         print("✅ Applied LaViDa configuration fixes")
     
-    def _ensure_shirg_x_device_consistency(self):
+    def _ensure_device_consistency(self):
         """
-        SHIRG-X-FIX: 2025-07-28 - Centralized device/dtype consistency for all SHIRG-X components
-        ISSUE: SHIRG-X components (text_vision_aligner, adaptive_k_head) may be on different devices
-        SOLUTION: Move all components to model's device with correct dtype
-        RESEARCH IMPACT: Prevents device/dtype mismatch errors during SHIRG-X forward passes
+        Ensure all SHIRG components have consistent device/dtype
         """
         # Get target device and dtype from the main model
         target_device = self.model.device if hasattr(self.model, 'device') else 'cuda' if torch.cuda.is_available() else 'cpu'
         target_dtype = self.torch_dtype
         
-        # List of SHIRG-X components to synchronize
-        shirg_x_components = [
-            ('text_vision_aligner', self.text_vision_aligner), 
-            ('adaptive_k_head', self.adaptive_k_head)
-        ]
-        
-        for component_name, component in shirg_x_components:
-            if component is not None:
-                try:
-                    # Move component to target device and dtype
-                    component = component.to(device=target_device, dtype=target_dtype)
-                    
-                    # Update the reference
-                    setattr(self, component_name, component)
-                    
-                    if self.shirg_config.get('debug', False):
-                        print(f"✅ {component_name} moved to {target_device} with dtype {target_dtype}")
-                        
-                except Exception as e:
-                    print(f"⚠️ Failed to move {component_name} to {target_device}: {e}")
-        
-        # Special handling for vision tower components
-        if hasattr(self.model, 'get_vision_tower'):
-            vision_tower = self.model.get_vision_tower()
-            if vision_tower and hasattr(vision_tower, 'adaptive_k_head'):
-                try:
-                    vision_tower.adaptive_k_head = vision_tower.adaptive_k_head.to(
-                        device=target_device, dtype=target_dtype
-                    )
-                    if self.shirg_config.get('debug', False):
-                        print(f"✅ Vision tower adaptive_k_head moved to {target_device}")
-                except Exception as e:
-                    print(f"⚠️ Failed to move vision tower adaptive_k_head: {e}")
+        # Currently no additional components needed for SHIRG-Fovea
+        # This method is kept for potential future extensions
     
     def _setup_conversation_template(self):
         """Setup LaViDa conversation template with fallback"""
@@ -513,102 +456,6 @@ class LaViDaSHIRGWrapper:
                     else:
                         # Baseline: use standard encode_images
                         return self._original_encode_images(images)
-                
-                # Bind method to model instance
-                import types
-                                        # Ensure text embeddings are on correct device
-                                        if text_embeddings.device != images.device:
-                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
-                                    
-                                    # Call SHIRG-Fixed with validated parameters
-                                    selected_features = vision_tower.forward_with_shirg_fixed(
-                                        images=images, 
-                                        text_embeddings=text_embeddings
-                                    )
-                                    
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"🎯 SHIRG-Fixed selected: {selected_features.shape}")
-                                    
-                                    image_features = selected_features
-                                    
-                                except Exception as shirg_fixed_error:
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"❌ SHIRG-Fixed failed: {shirg_fixed_error}")
-                                    raise shirg_fixed_error
-                                    
-                            elif shirg_mode == 'shirg-x':
-                                # SHIRG-X mode deprecated, falling back to main SHIRG method
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"⚠️ SHIRG-X mode deprecated, using main SHIRG method")
-                                
-                                try:
-                                    # Use main SHIRG method
-                                    text_embeddings = wrapper._current_question_tokens
-                                    if text_embeddings is not None:
-                                        if text_embeddings.dim() != 3:
-                                            text_embeddings = text_embeddings.unsqueeze(0) if text_embeddings.dim() == 2 else text_embeddings
-                                        if text_embeddings.device != images.device:
-                                            text_embeddings = text_embeddings.to(device=images.device, dtype=images.dtype)
-                                    
-                                    # Call main SHIRG method
-                                    image_features = vision_tower.forward_with_shirg(
-                                        images, text_embeddings=text_embeddings
-                                    )
-                                    
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"✅ SHIRG processing (fallback): {image_features.shape}")
-                                    
-                                    return image_features
-                                    
-                                except Exception as shirg_error:
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"❌ SHIRG-X fallback failed: {shirg_error}")
-                                    
-                                    # Final fallback to baseline LaViDa processing
-                                    return vision_tower._forward_standard_lavida(images)
-                                
-                            else:
-                                # SHIRG-X-FIX: 2025-07-28 - Standardized fallback to consistent dual-scale extraction  
-                                # ISSUE: Multiple inconsistent extraction paths cause unpredictable behavior
-                                # SOLUTION: Use extract_shirg_x_tokens as primary fallback for consistency
-                                # RESEARCH IMPACT: Ensures reproducible high-resolution token extraction
-                                
-                                if wrapper.shirg_config.get('debug', False):
-                                    print(f"⚠️ SHIRG-X not available, using dual-scale extraction fallback")
-                                
-                                try:
-                                    # Use SHIRG-X extraction method directly
-                                    hi_detail_tokens, lo_res_scaffold = vision_tower.extract_dual_scale_tokens(images)
-                                    
-                                    # Apply SHIRG selection to hi-detail tokens
-                                    budget = wrapper.shirg_config.get('budget', 1152)  # SHIRG research default
-                                    selected_hi_detail = vision_tower.distance_aware_selection(
-                                        hi_detail_tokens, wrapper._current_question_tokens, budget
-                                    )
-                                    
-                                    # Combine dual-scale features (scaffold first, then selected)
-                                    dual_scale_features = torch.cat([lo_res_scaffold, selected_hi_detail], dim=1)
-                                    image_features = dual_scale_features
-                                    
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"✅ Fallback dual-scale extraction: {image_features.shape}")
-                                
-                                except Exception as fallback_error:
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"⚠️ Fallback extraction failed: {fallback_error}")
-                                    
-                                    # Final fallback: use standard vision tower
-                                    image_features = vision_tower(images)
-                                    if wrapper.shirg_config.get('debug', False):
-                                        print(f"🔄 Using standard vision features: {image_features.shape}")
-                            
-                        except Exception as e:
-                            if wrapper.shirg_config.get('debug', False):
-                                print(f"⚠️ SHIRG selection failed: {e}")
-                                import traceback
-                                traceback.print_exc()
-                            # Fallback to standard processing
-                            return self._original_encode_images(images)
                     else:
                         # Baseline: use standard encode_images
                         return self._original_encode_images(images)
@@ -1120,21 +967,21 @@ def compare_baseline_vs_shirg(image_path: str, question: str) -> Dict[str, Any]:
     return comparison
 
 
-def setup_shirg_fixed_lora(model, lora_config=None):
+def setup_shirg_lora(model, lora_config=None):
     """
-    Setup rank-64 LoRA for SHIRG-Fixed: projector + early SigLIP layers
+    Setup LoRA for SHIRG-Fovea: projector + early SigLIP layers
     
-    SHIRG-FIXED-FIX: 2025-07-28 - Configure LoRA for SHIRG-Fixed implementation
-    ISSUE: Need rank-64 LoRA for mm_projector and early SigLIP layers as per research plan
-    SOLUTION: Target 1.4% parameters (rank-64) for cross-resolution alignment
-    RESEARCH IMPACT: Enables SHIRG-Fixed training with minimal parameter overhead
+    Following the research methodology:
+    - Rank-64 LoRA on mm_projector.fc1 
+    - Rank-64 LoRA on SigLIP blocks 0-3 Q/K matrices
+    - Target ~0.9% parameters (70M out of 8B)
     
     Args:
-        model: LaViDa model instance
-        lora_config: LoRA configuration overrides
-        
+        model: LaViDa model with SHIRG integration
+        lora_config: Optional LoRA configuration overrides
+    
     Returns:
-        model: Model with LoRA configuration applied
+        model: Model with LoRA adapters configured
     """
     try:
         from peft import LoraConfig, get_peft_model, TaskType
@@ -1142,199 +989,112 @@ def setup_shirg_fixed_lora(model, lora_config=None):
         print("⚠️ PEFT not available. Please install PEFT for LoRA training.")
         return model
     
-    # SHIRG-Fixed LoRA configuration (rank-64 as per research plan)
-    shirg_fixed_lora_config = {
+    # SHIRG-Fovea LoRA configuration (rank-64 as per research plan)
+    shirg_lora_config = {
         'r': 64,                    # Rank: 64 for sufficient capacity
-        'lora_alpha': 32,           # Alpha: 32 (α/r = 0.5 scaling)
+        'lora_alpha': 128,          # Alpha: 2x rank for stable training
         'target_modules': [
-            # mm_projector adaptation (rank-64)
-            "mm_projector.fc1",     # First linear layer of projector
-            "mm_projector.fc2",     # Second linear layer of projector
+            # MM Projector first FC layer (primary target)
+            "mm_projector.fc1",
             
-            # Early SigLIP layers adaptation (rank-64 on blocks 0-3 QKV)
+            # Early SigLIP layers (vision adaptation) - Q/K only as per plan
             "vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
             "vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
-            "vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",
-            "vision_tower.vision_model.encoder.layers.1.self_attn.q_proj",
+            "vision_tower.vision_model.encoder.layers.1.self_attn.q_proj", 
             "vision_tower.vision_model.encoder.layers.1.self_attn.k_proj",
-            "vision_tower.vision_model.encoder.layers.1.self_attn.v_proj",
             "vision_tower.vision_model.encoder.layers.2.self_attn.q_proj",
             "vision_tower.vision_model.encoder.layers.2.self_attn.k_proj",
-            "vision_tower.vision_model.encoder.layers.2.self_attn.v_proj",
             "vision_tower.vision_model.encoder.layers.3.self_attn.q_proj",
             "vision_tower.vision_model.encoder.layers.3.self_attn.k_proj",
-            "vision_tower.vision_model.encoder.layers.3.self_attn.v_proj",
         ],
-        'lora_dropout': 0.05,       # Low dropout for stable adaptation
-        'bias': "none",             # No bias LoRA for simplicity
-        'task_type': TaskType.FEATURE_EXTRACTION
+        'lora_dropout': 0.05,
+        'bias': 'none',
+        'task_type': TaskType.FEATURE_EXTRACTION,
+        'inference_mode': False
     }
     
-    # Override with user config
+    # Apply user overrides if provided
     if lora_config:
-        shirg_fixed_lora_config.update(lora_config)
+        shirg_lora_config.update(lora_config)
     
-    # Create LoRA config
-    lora_config_obj = LoraConfig(**shirg_fixed_lora_config)
+    # Create LoRA config object
+    lora_config_obj = LoraConfig(**shirg_lora_config)
     
     # Apply LoRA to model
     model = get_peft_model(model, lora_config_obj)
     
-    # Freeze everything except LoRA parameters
+    # Freeze everything except LoRA parameters  
     for name, param in model.named_parameters():
         if "lora_" not in name:
             param.requires_grad = False
         else:
             param.requires_grad = True
-            print(f"✓ SHIRG-Fixed parameter enabled: {name}")
-    
-    return model
-
-def setup_shirg_x_lora(model, lora_config=None):
-    """
-    Setup LoRA for SHIRG-X dual-scale adaptation (Legacy - use SHIRG-Fixed instead)
-    
-    SHIRG-X-FIX: 2025-07-28 - Configure LoRA for dual-scale processing
-    ISSUE: Need to train projector and coordinate layers for variable token counts
-    SOLUTION: LoRA adaptation of mm_projector + coordinate layers
-    RESEARCH IMPACT: Enables SHIRG-X training with minimal parameter overhead
-    
-    Args:
-        model: LaViDa model instance
-        lora_config: LoRA configuration overrides
-        
-    Returns:
-        model: Model with LoRA configuration applied
-    """
-    try:
-        from peft import LoraConfig, get_peft_model, TaskType
-    except ImportError:
-        print("⚠️ PEFT not available. Please install PEFT for LoRA training.")
-        return model
-    
-    # SHIRG-X LoRA configuration
-    shirg_x_lora_config = {
-        'r': 32,                    # Rank: 32 for projector
-        'lora_alpha': 16,           # Alpha: 16 (α/r = 0.5 scaling)
-        'target_modules': [
-            "mm_projector.fc1",     # First linear layer of projector
-            "mm_projector.fc2",     # Second linear layer of projector
-        ],
-        'lora_dropout': 0.05,       # Low dropout for stable adaptation
-        'bias': "lora",             # LoRA bias for coordinate layer
-        'task_type': TaskType.FEATURE_EXTRACTION
-    }
-    
-    # Override with user config
-    if lora_config:
-        shirg_x_lora_config.update(lora_config)
-    
-    # Create LoRA config
-    lora_config_obj = LoraConfig(**shirg_x_lora_config)
-    
-    # Apply LoRA to model
-    model = get_peft_model(model, lora_config_obj)
-    
-    # Freeze everything except LoRA parameters and SHIRG-X components
-    for name, param in model.named_parameters():
-        if ("lora_" not in name and 
-            "adaptive_k_head" not in name and
-            "text_vision_aligner" not in name):
-            param.requires_grad = False
-        else:
-            param.requires_grad = True
-            print(f"✓ SHIRG-X parameter enabled: {name}")
+            print(f"✓ SHIRG-Fovea parameter enabled: {name}")
     
     return model
 
 
-def verify_shirg_fixed_setup(model):
+def verify_shirg_setup(model):
     """
-    Verify SHIRG-Fixed LoRA setup is correct
+    Verify SHIRG-Fovea LoRA setup is correct
     
-    SHIRG-FIXED-FIX: 2025-07-28 - Validation for rank-64 LoRA configuration
-    ISSUE: Need to ensure SHIRG-Fixed targets 1.4% parameters as per research plan
-    SOLUTION: Validate trainable parameter count matches expected ~120M parameters
-    RESEARCH IMPACT: Ensures SHIRG-Fixed training efficiency targets are met
+    Validates that trainable parameters match research plan:
+    - Target ~0.9% parameters (70M out of 8B)
+    - Rank-64 LoRA configuration
     """
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
     
-    print(f"SHIRG-Fixed LoRA Configuration:")
+    print(f"SHIRG-Fovea LoRA Configuration:")
     print(f"  Trainable parameters: {trainable_params:,}")
     print(f"  Total parameters: {total_params:,}")
     print(f"  Trainable ratio: {trainable_params/total_params:.4f}")
     
-    # Should be ~1.4% trainable for SHIRG-Fixed (rank-64)
-    expected_ratio = 0.014  # 1.4%
+    # Should be ~0.9% trainable for SHIRG-Fovea (rank-64)
+    expected_ratio = 0.009  # 0.9%
     actual_ratio = trainable_params/total_params
     
-    if actual_ratio > 0.02:  # More than 2%
-        print(f"⚠️ Warning: High trainable ratio ({actual_ratio:.4f} > 0.02)")
-        print("   Consider reducing LoRA rank or target modules")
-    elif actual_ratio < 0.01:  # Less than 1%
-        print(f"⚠️ Warning: Low trainable ratio ({actual_ratio:.4f} < 0.01)")
-        print("   May not have sufficient capacity for cross-resolution alignment")
+    if actual_ratio < expected_ratio * 0.8:
+        print(f"⚠️ Warning: Trainable ratio {actual_ratio:.4f} is lower than target {expected_ratio}")
+        print("   Consider increasing LoRA rank")
+    elif actual_ratio > expected_ratio * 1.5:
+        print(f"⚠️ Warning: Trainable ratio {actual_ratio:.4f} is higher than target {expected_ratio}")
+        print("   Consider reducing LoRA rank")
     else:
-        print(f"✅ SHIRG-Fixed LoRA ratio within target range: {actual_ratio:.4f}")
-    
-    return True
-
-def verify_shirg_x_setup(model):
-    """Verify SHIRG-X LoRA setup is correct (Legacy)"""
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    
-    print(f"Trainable parameters: {trainable_params:,}")
-    print(f"Total parameters: {total_params:,}")
-    print(f"Trainable ratio: {trainable_params/total_params:.4f}")
-    
-    # Should be ~0.8% trainable for SHIRG-X
-    assert trainable_params/total_params < 0.015, "Too many trainable parameters"
+        print(f"✅ SHIRG-Fovea LoRA ratio within target range: {actual_ratio:.4f}")
     
     return True
 
 
-def prepare_shirg_x_training_data():
+def prepare_shirg_training_data():
     """
-    Prepare training data for SHIRG-X spatial-aware adaptation
+    Prepare training data for SHIRG-Fovea adaptation
     
     Returns:
-        training_config: Configuration for SHIRG-X training
+        training_config: Configuration for SHIRG training
     """
     
-    # Core dataset: LCS-558K (558K image-text pairs)
-    lcs_dataset = {
-        "source": "LCS-558K", 
-        "size": 558000,
-        "format": "image-caption pairs",
-        "purpose": "Vision-language alignment for dual-scale projector"
-    }
-    
-    # Spatial reasoning enhancement: Layout-aware samples
-    spatial_dataset = {
-        "source": "EntityGrid-QA + ChartQA + DocVQA + TextVQA",
-        "size": 50000,
-        "format": "spatial layout-aware QA pairs",
-        "purpose": "Adaptive-K training for token selection"
-    }
-    
-    # SHIRG-X training configuration
+    # Training configuration for SHIRG-Fovea
     training_config = {
-        "total_samples": 608000,
-        "batch_size": 16,        # Reduced for dual-scale tokens
-        "gradient_accumulation": 8,
-        "effective_batch_size": 128,
-        "total_steps": 4750,     # 608K / 128 = 4,750 steps
-        "warmup_steps": 475,     # 10% warmup
-        "learning_rate": 2e-4,   # For projector LoRA
-        "weight_decay": 0.01,
-        "lr_scheduler": "cosine",
-        "mixed_budget_training": True,  # Train with 512, 768, 1024 budgets
-        "adaptive_k_weight": 0.1       # Loss weight for adaptive-K head
+        "datasets": {
+            "chartqa": {"weight": 0.3, "focus": "High-res spatial features"},
+            "docvqa": {"weight": 0.3, "focus": "Document understanding"},  
+            "vqa_v2": {"weight": 0.4, "focus": "General VQA"},
+        },
+        "batch_size": 16,        # Per GPU
+        "gradient_accumulation": 1,
+        "lr": 2e-5,             # LoRA learning rate
+        "warmup_ratio": 0.03,
+        "epochs": 1,
+        "mixed_precision": "bf16",
+        "lora_config": {
+            "rank": 64,
+            "alpha": 128,
+            "dropout": 0.05
+        }
     }
     
-    return lcs_dataset, spatial_dataset, training_config
+    return training_config
 
 
 # Test function for Colab
