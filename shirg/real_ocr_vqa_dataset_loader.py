@@ -577,7 +577,11 @@ class OCRVQAResultAnalyzer:
     def save_consolidated_results(self, all_results):
         """Save consolidated results to JSON file"""
         try:
-            results_dir = "./shirg_validation_results"
+            # COLAB-PATH-FIX: 2025-07-29 - Use absolute path for better Colab file browser visibility
+            # ISSUE: Relative paths ./shirg_validation_results/ not visible in Colab file browser
+            # SOLUTION: Use /content/shirg_validation_results/ for clear Colab access
+            # RESEARCH IMPACT: Enables easy access to validation result files in Colab environment
+            results_dir = "/content/shirg_validation_results"
             os.makedirs(results_dir, exist_ok=True)
             
             # Prepare results for JSON serialization
@@ -608,12 +612,40 @@ class OCRVQAResultAnalyzer:
                     'comparison': result_data['comparison']
                 }
             
-            # Save to JSON file
+            # Save detailed results to JSON file
             results_file = os.path.join(results_dir, f"shirg_validation_results_{int(time.time())}.json")
             with open(results_file, 'w') as f:
                 json.dump(json_results, f, indent=2, ensure_ascii=False)
             
-            print(f"💾 Results saved to: {results_file}")
+            print(f"💾 Detailed results saved to: {results_file}")
+            
+            # SIMPLIFIED-RESULTS-FIX: 2025-07-29 - Create simplified results with only essential fields
+            # ISSUE: Full results too verbose for user needs - want only core comparison data
+            # SOLUTION: Save simplified version with type, question, groundtruth, responses, times only
+            # RESEARCH IMPACT: Provides concise baseline vs SHIRG comparison for analysis
+            simplified_results = {}
+            for sample_name, result_data in all_results.items():
+                simplified_results[sample_name] = {
+                    'type': result_data['sample_data']['type'],
+                    'question': result_data['sample_data']['question'],
+                    'ground_truth': result_data['sample_data'].get('ground_truth'),
+                    'baseline': {
+                        'response': result_data['baseline_result'].get('response', ''),
+                        'inference_time': result_data['baseline_result'].get('inference_time', 0.0)
+                    },
+                    'shirg': {
+                        'response': result_data['shirg_result'].get('response', ''),
+                        'inference_time': result_data['shirg_result'].get('inference_time', 0.0)
+                    }
+                }
+            
+            # Save simplified results
+            simplified_file = os.path.join(results_dir, f"shirg_simplified_results_{int(time.time())}.json")
+            with open(simplified_file, 'w') as f:
+                json.dump(simplified_results, f, indent=2, ensure_ascii=False)
+            
+            print(f"💾 Simplified results saved to: {simplified_file}")
+            print(f"📋 Simplified format contains: type, question, ground_truth, baseline/shirg responses & times")
             
             # Generate summary report
             summary_report = self._generate_summary_report(all_results)
@@ -625,11 +657,11 @@ class OCRVQAResultAnalyzer:
             
             print(f"📊 Summary report saved to: {summary_file}")
             
-            return results_file, summary_file
+            return results_file, summary_file, simplified_file
             
         except Exception as e:
             print(f"❌ Error saving results: {e}")
-            return None, None
+            return None, None, None
     
     def _analyze_baseline_vs_shirg(self, image, baseline_result, shirg_result, question):
         """Analyze differences between baseline and SHIRG results"""
@@ -737,8 +769,12 @@ class OCRVQAResultAnalyzer:
             import numpy as np
             from PIL import ImageDraw, ImageFont
             
-            # Create visualization directory
-            viz_dir = "./shirg_token_visualizations"
+            # Create visualization directory - use absolute path for Colab visibility
+            # COLAB-PATH-FIX: 2025-07-29 - Use absolute paths for better Colab file browser visibility
+            # ISSUE: Relative paths ./shirg_token_visualizations/ not visible in Colab file browser
+            # SOLUTION: Use /content/shirg_token_visualizations/ for clear Colab access
+            # RESEARCH IMPACT: Enables easy access to token visualization files in Colab environment
+            viz_dir = "/content/shirg_token_visualizations"
             os.makedirs(viz_dir, exist_ok=True)
             
             # Get actual SHIRG selection metadata from vision tower

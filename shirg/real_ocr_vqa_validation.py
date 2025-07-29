@@ -73,13 +73,14 @@ class RealOCRVQAValidator:
         )
         
         # Save consolidated results
-        results_file, summary_file = self.result_analyzer.save_consolidated_results(all_results)
+        results_file, summary_file, simplified_file = self.result_analyzer.save_consolidated_results(all_results)
         
         print(f"\n✅ VALIDATION COMPLETE!")
         print(f"   📊 Processed {len(all_results)} samples")
-        print(f"   💾 Results saved: {results_file}")
-        print(f"   📋 Summary: {summary_file}")
-        print(f"   🖼️ Visualizations: ./shirg_token_visualizations/")
+        print(f"   💾 Detailed results: {results_file}")
+        print(f"   📋 Simplified results: {simplified_file}")
+        print(f"   📊 Summary: {summary_file}")
+        print(f"   🖼️ Visualizations: /content/shirg_token_visualizations/")
         
         return all_results
 
@@ -89,8 +90,8 @@ def main():
     results = validator.run_real_ocr_vqa_validation()
     
     print(f"\n🎉 Baseline vs SHIRG comparison complete!")
-    print(f"   📊 Results: ./shirg_validation_results/")
-    print(f"   🖼️ Visualizations: ./shirg_token_visualizations/")
+    print(f"   📊 Results: /content/shirg_validation_results/")
+    print(f"   🖼️ Visualizations: /content/shirg_token_visualizations/")
     return results
 
 if __name__ == "__main__":
