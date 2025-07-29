@@ -369,11 +369,24 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         Maintains original LaViDa behavior for backward compatibility.
         Handles LaViDa's 5-view multi-view format: [B, 5, C, H, W]
         """
-        # TENSOR-FIX: 2025-07-29 - Handle LaViDa's anyres patches correctly  
-        # ISSUE: LaViDa anyres creates [num_patches, C, H, W] tensor but vision tower expects list or single tensor
-        # SOLUTION: Convert anyres patch tensor to list format that original LaViDa expects
+        # TENSOR-FIX: 2025-07-29 - Handle LaViDa's 5D anyres tensor correctly  
+        # ISSUE: LaViDa anyres creates [1, 5, C, H, W] tensor but vision tower expects 4D [B, C, H, W]
+        # SOLUTION: First handle 5D tensor by removing batch dimension, then process as 4D patch tensor
         # LAVIDA IMPACT: Enables LaViDa's anyres multi-patch processing to work correctly
         # SHIRG IMPACT: Preserves LaViDa patch format for SHIRG token selection
+        
+        # Handle LaViDa's 5D anyres tensor format [1, 5, C, H, W]
+        if hasattr(images, 'shape') and len(images.shape) == 5:
+            B, num_patches, C, H, W = images.shape
+            rank0_print(f"ANYRES-FIX: Processing LaViDa 5D anyres tensor: {images.shape}")
+            # Remove batch dimension and convert to 4D [num_patches, C, H, W]
+            images = images.squeeze(0)  # Remove batch dim: [5, C, H, W]
+            rank0_print(f"ANYRES-FIX: Converted to 4D tensor: {images.shape}")
+            # Convert to list format to ensure proper handling
+            patch_list = [images[i] for i in range(images.shape[0])]
+            rank0_print(f"ANYRES-FIX: Converted to {len(patch_list)} individual patches")
+            # Process as list and return proper shape for split_with_sizes
+            return self._process_patch_list(patch_list)
         
         # Handle anyres patch tensors from LaViDa [num_patches, C, H, W]
         if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] > 1:
