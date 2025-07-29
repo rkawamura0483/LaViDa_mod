@@ -109,12 +109,19 @@ class LaViDaModelRunner:
             # RESEARCH IMPACT: Enables proper LaViDa baseline with multi-view token processing (5 views total)
             # SHIRG IMPACT: Provides correct baseline reference for SHIRG comparison
             
+            # LAVIDA-PAPER-FIX: 2025-07-29 - Correct baseline configuration per LaViDa paper
+            # TOKEN FLOW: Original image → 5 views (4×384² patches + 1×384² global)
+            # ENCODING: Each view → SigLIP → 729 tokens (27×27 grid)
+            # POOLING: Each view → 2×2 average pooling → 196 tokens (14×14 grid)  
+            # TOTAL: 5 views × 196 tokens = 980 tokens → mm_projector → language model
+            # This matches the exact LaViDa paper specification
             vision_kwargs = {
                 "mm_vision_tower": "google/siglip-so400m-patch14-384",
                 "mm_resampler_type": None,
-                "mm_projector_type": 'mlp2x_gelu',
+                "mm_projector_type": 'pooler',  # LAVIDA-PAPER-FIX: Use pooler for 2x2 average pooling as per paper
                 "mm_hidden_size": 1152,
-                "use_mm_proj": True
+                "use_mm_proj": True,
+                "mm_pooler_ratio": 2  # LAVIDA-PAPER-FIX: 2x2 pooling to reduce 729→196 tokens per view
             }
             
             print("BASELINE-CONFIG: Using 384×384 image processor for standard LaViDa processing")
@@ -455,7 +462,7 @@ class LaViDaModelRunner:
             shirg_vision_kwargs = {
                 "mm_vision_tower": "google/siglip-so400m-patch14-384",  # Base model
                 "mm_resampler_type": None,
-                "mm_projector_type": 'mlp2x_gelu',
+                "mm_projector_type": 'mlp2x_gelu',  # SHIRG keeps mlp2x_gelu for high-res processing
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
                 "enable_shirg": True,  # Enable SHIRG processing
@@ -997,22 +1004,32 @@ class LaViDaModelRunner:
                         print(f"BASELINE-DEBUG: Vision features type: {type(vision_features)}")
                         if hasattr(vision_features, 'shape'):
                             print(f"BASELINE-DEBUG: Image features shape: {vision_features.shape}")
-                            expected_tokens = 729  # 27x27 for 384x384 LaViDa
+                            # LAVIDA-PAPER-FIX: Update token expectations for multi-view + pooling
+                            # Paper: 5 views × 196 tokens (after 2x2 pooling) = 980 tokens total
+                            expected_tokens_per_view = 196  # 14x14 after 2x2 pooling from 27x27
+                            expected_total_tokens = 980  # 5 views × 196 tokens per view
                             actual_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
-                            print(f"BASELINE-DEBUG: Expected {expected_tokens} tokens, got {actual_tokens} tokens")
+                            print(f"BASELINE-DEBUG: Expected {expected_total_tokens} tokens (5×{expected_tokens_per_view} after pooling), got {actual_tokens} tokens")
                             
                             vision_info = {
                                 'feature_shape': list(vision_features.shape),
                                 'num_tokens': actual_tokens,
                                 'feature_dim': vision_features.shape[-1] if len(vision_features.shape) > 1 else 1,
-                                'expected_tokens': expected_tokens,
-                                'tokens_match_expected': actual_tokens == expected_tokens
+                                'expected_tokens': expected_total_tokens,  # LAVIDA-PAPER-FIX: Use new total expected
+                                'expected_tokens_per_view': expected_tokens_per_view,
+                                'tokens_match_expected': actual_tokens == expected_total_tokens
                             }
                             
-                            # SHIRG-POOLING: Debug token structure for research validation
-                            if actual_tokens == 729:
+                            # LAVIDA-PAPER-FIX: Debug multi-view + pooling structure for research validation
+                            if actual_tokens == expected_total_tokens:
+                                print(f"✅ BASELINE-CORRECT: LaViDa multi-view + pooling working properly: {actual_tokens} tokens")
+                                print(f"   5 views × {expected_tokens_per_view} tokens per view (14×14 after 2×2 pooling)")
+                            elif actual_tokens == 729:
                                 grid_size = int(math.sqrt(actual_tokens))  # Should be 27
-                                print(f"SHIRG-POOLING: Baseline LaViDa tokens {actual_tokens} → {grid_size}×{grid_size} grid")
+                                print(f"⚠️ BASELINE-ISSUE: Single view without pooling: {actual_tokens} → {grid_size}×{grid_size} grid")
+                                print(f"   Missing multi-view processing or 2×2 pooling step")
+                            else:
+                                print(f"⚠️ BASELINE-ISSUE: Unexpected token count: {actual_tokens} (expected {expected_total_tokens})")
                         else:
                             print(f"BASELINE-DEBUG: Vision features has no shape attribute")
                             vision_info = {'error': 'Vision features missing shape attribute'}

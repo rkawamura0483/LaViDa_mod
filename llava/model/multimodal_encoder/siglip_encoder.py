@@ -456,7 +456,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # If dtypes match, keep original tensor to preserve gradients
                 
                 # TENSOR-FIX: 2025-07-28 - Validate baseline token count for individual images
-                expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+                # NOTE: SigLIP encoder produces 729 tokens per view, pooler projector reduces to 196 per view
+                expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384 (before pooler)
                 actual_tokens = image_feature.shape[-2] if len(image_feature.shape) >= 2 else 0
                 
                 if actual_tokens != expected_tokens:
@@ -530,7 +531,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # LAVIDA IMPACT: Prevents crashes in baseline inference with proper token validation
             # SHIRG IMPACT: Ensures baseline provides correct reference for SHIRG comparison
             
-            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+            # NOTE: SigLIP encoder produces 729 tokens per view, pooler projector reduces to 196 per view
+            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384 (before pooler)
             actual_tokens = image_features.shape[-2] if len(image_features.shape) >= 2 else 0
             rank0_print(f"BASELINE-DEBUG: Single image features shape: {image_features.shape}")
             rank0_print(f"BASELINE-DEBUG: Expected {expected_tokens} tokens, got {actual_tokens} tokens")
@@ -608,7 +610,8 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             patch_feature = patch_forward_out.hidden_states[-1]
             
             # Validate patch token count (should be 729 per patch)
-            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384
+            # NOTE: SigLIP encoder produces 729 tokens per view, pooler projector reduces to 196 per view
+            expected_tokens = (384 // 14) ** 2  # 729 tokens for 384×384 (before pooler)
             actual_tokens = patch_feature.shape[-2] if len(patch_feature.shape) >= 2 else 0
             
             rank0_print(f"ANYRES-DEBUG: Patch {i+1}/{len(patch_list)} - shape: {patch_feature.shape}, tokens: {actual_tokens}")
