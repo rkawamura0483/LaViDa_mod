@@ -298,7 +298,7 @@ class LaViDaModelRunner:
                     try:
                         input_ids = self._prepare_input_ids(question, self.baseline_tokenizer)
                         if input_ids is not None:
-                            result = self._run_baseline_inference(image, input_ids, question)
+                            result = self._run_baseline_inference(image, input_ids, question, sample_name)
                             baseline_results[sample_name] = result
                             print(f"   ✅ Baseline result: {result.get('response', 'No response')[:100]}...")
                         else:
@@ -384,7 +384,7 @@ class LaViDaModelRunner:
                 # Prepare input
                 if self.shirg_tokenizer is not None:
                     input_ids = self._prepare_input_ids(question, self.shirg_tokenizer)
-                    result = self._run_shirg_inference(shirg_image, input_ids, question)
+                    result = self._run_shirg_inference(shirg_image, input_ids, question, sample_name)
                     shirg_results[sample_name] = result
                     print(f"   ✅ SHIRG result: {result.get('response', 'No response')[:100]}...")
                 else:
@@ -845,7 +845,7 @@ class LaViDaModelRunner:
             dummy_tokens = torch.tensor([[1, 2, 3]], dtype=torch.long)
             return dummy_tokens.to(self.device)
     
-    def _run_baseline_inference(self, image, input_ids, question):
+    def _run_baseline_inference(self, image, input_ids, question, sample_id="baseline_sample"):
         """Run inference with baseline LaViDa model"""
         start_time = time.time()
         
@@ -859,7 +859,7 @@ class LaViDaModelRunner:
                 # LAVIDA IMPACT: Maintains LaViDa's image processing pipeline compatibility
                 
                 # Validate and ensure proper image format (same as SHIRG)
-                validated_image = self._validate_and_convert_image(image, "baseline")
+                validated_image = self._validate_and_convert_image(image, f"{sample_id}_main")
                 if validated_image is None:
                     raise ValueError(f"Invalid image format for baseline inference")
                 
@@ -882,7 +882,7 @@ class LaViDaModelRunner:
                 # LAVIDA IMPACT: Maintains consistent image format handling across all baseline paths
                 
                 # Validate image before fallback processing
-                validated_image = self._validate_and_convert_image(image, "baseline-fallback")
+                validated_image = self._validate_and_convert_image(image, f"{sample_id}_fallback")
                 if validated_image is None:
                     raise ValueError(f"Invalid image format for baseline fallback processing")
                 
@@ -1021,7 +1021,7 @@ class LaViDaModelRunner:
                 'error': str(e)
             }
     
-    def _run_shirg_inference(self, image, input_ids, question):
+    def _run_shirg_inference(self, image, input_ids, question, sample_id="shirg_sample"):
         """Run inference with SHIRG-enabled LaViDa model"""
         start_time = time.time()
         
