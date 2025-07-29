@@ -132,11 +132,11 @@ class LaViDaModelRunner:
             # SOLUTION: Use original mlp2x_gelu projector and let LaViDa handle pooling internally
             # LAVIDA IMPACT: Maintains original pretrained weights for proper baseline
             # SHIRG IMPACT: Provides working baseline for comparison
-            # BASELINE-FIX: 2025-07-29 - Use original LaViDa architecture without SHIRG modifications
-            # ISSUE: Baseline was using SHIRG-modified components causing wrong token counts and poor performance
-            # SOLUTION: Explicitly disable SHIRG and force original LaViDa encoder usage
-            # RESEARCH IMPACT: Provides proper baseline for SHIRG comparison with correct 980 token flow
-            # LAVIDA IMPACT: Restores original LaViDa behavior for accurate baseline performance
+            # BASELINE-FIX: 2025-07-29 - Use original LaViDa architecture with fixed anyres support
+            # ISSUE: Original encoder has been fixed to support LaViDa's anyres multi-view processing
+            # SOLUTION: Use full LaViDa anyres configuration with original encoder  
+            # RESEARCH IMPACT: Provides proper baseline using original LaViDa multi-view processing
+            # LAVIDA IMPACT: Restores original LaViDa behavior with anyres support
             overwrite_config = {
                 # Keep original projector type to use pretrained weights
                 "mm_projector_type": "mlp2x_gelu",  # Original LaViDa projector

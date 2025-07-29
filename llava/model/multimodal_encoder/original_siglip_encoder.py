@@ -574,17 +574,43 @@ class SigLipVisionTower(nn.Module):
         self.is_loaded = True
 
     def forward(self, images):
+        # MULTIVIEW-FIX: 2025-07-29 - Handle LaViDa's anyres 5D tensor format
+        # ISSUE: LaViDa's anyres creates [1, 5, 3, 384, 384] tensor but original encoder expects 4D or list
+        # SOLUTION: Convert 5D anyres tensor to list format that original encoder can handle
+        # RESEARCH IMPACT: Enables original encoder to work with LaViDa's anyres processing
+        # LAVIDA IMPACT: Maintains original LaViDa multi-view capabilities with original encoder
+        
+        # Handle LaViDa's 5D anyres tensor format [B, Views, C, H, W]
+        if hasattr(images, 'shape') and len(images.shape) == 5:
+            B, num_views, C, H, W = images.shape
+            rank0_print(f"ANYRES-FIX: Processing LaViDa anyres patches: {images.shape}")
+            # Convert to list of 4D tensors [C, H, W] -> [1, C, H, W] for each view
+            images = [images[0, i] for i in range(num_views)]  # Remove batch dim and create list
+            rank0_print(f"ANYRES-FIX: Converted to {len(images)} individual patches")
+        
         if type(images) is list:
             image_features = []
-            for image in images:
-                image_forward_out = self.vision_tower(image.to(device=self.device, dtype=self.dtype).unsqueeze(0), output_hidden_states=True)
+            for i, image in enumerate(images):
+                # Handle both 3D [C, H, W] and 4D [1, C, H, W] tensors
+                if len(image.shape) == 3:
+                    image = image.unsqueeze(0)  # Add batch dimension: [C, H, W] -> [1, C, H, W]
+                    
+                image_forward_out = self.vision_tower(image.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
                 image_feature = image_forward_out.hidden_states[-1].to(image.dtype)
-                assert image_features.shape[-2] == 729
+                # ASSERTION-FIX: 2025-07-29 - Fix variable name in assertion
+                assert image_feature.shape[-2] == 729, f"Expected 729 tokens, got {image_feature.shape[-2]}"
                 image_features.append(image_feature)
+                rank0_print(f"ANYRES-DEBUG: Patch {i+1}/{len(images)} - shape: {image_feature.shape}, tokens: {image_feature.shape[-2]}")
+            
+            # Stack features to match expected output format [Views, Tokens, Features]
+            image_features = torch.cat(image_features, dim=0)  # [Views, Tokens, Features]
+            rank0_print(f"ANYRES-DEBUG: Stacked features shape: {image_features.shape}")
+            rank0_print(f"ANYRES-DEBUG: Expected shape: [{num_views if 'num_views' in locals() else len(images)}, 729, 1152]")
+            
         else:
             image_forward_outs = self.vision_tower(images.to(device=self.device, dtype=self.dtype), output_hidden_states=True)
             image_features = image_forward_outs.hidden_states[-1].to(images.dtype)
-            assert image_features.shape[-2] == 729
+            assert image_features.shape[-2] == 729, f"Expected 729 tokens, got {image_features.shape[-2]}"
 
         return image_features
 
