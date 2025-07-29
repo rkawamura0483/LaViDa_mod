@@ -272,20 +272,20 @@ class LlavaMetaForCausalLM(ABC):
                 post_views, post_tokens_per_view, post_features = post_projector_shape
                 
                 # SHIRG-DEBUG-FIX: 2025-07-29 - Handle both baseline and SHIRG token counts
-                # ISSUE: SHIRG produces 1,216 tokens while baseline produces pooled tokens
+                # ISSUE: SHIRG produces 1,508 tokens while baseline produces pooled tokens
                 # SOLUTION: Check for both scenarios and provide appropriate feedback
                 # LAVIDA IMPACT: Eliminates incorrect pooling warnings for SHIRG models
                 # SHIRG IMPACT: Provides proper feedback for SHIRG token selection results
                 
-                if pre_tokens_per_view == 1216:
-                    # SHIRG case: Should maintain 1,216 tokens (no pooling)
-                    if post_tokens_per_view == 1216:
+                if pre_tokens_per_view == 1508:
+                    # SHIRG case: Should maintain 1,508 tokens (no pooling)
+                    if post_tokens_per_view == 1508:
                         print(f"✅ SHIRG-CORRECT: Token selection maintained count!")
                         print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view (SHIRG)")
                         print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
                     else:
                         print(f"⚠️ SHIRG-ISSUE: Unexpected SHIRG token processing")
-                        print(f"   Expected: {pre_views} views, 1216→1216 tokens per view (SHIRG)")
+                        print(f"   Expected: {pre_views} views, 1508→1508 tokens per view (SHIRG)")
                         print(f"   Got: {post_views} views, {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
                 elif pre_tokens_per_view == 729:
                     # BASELINE-FIX: LaViDa doesn't pool by default - keeps all 729 tokens
@@ -418,17 +418,31 @@ class LlavaMetaForCausalLM(ABC):
             total_expected_images = sum(split_sizes)
             actual_images = encoded_image_features.shape[0]
             
-            if is_shirg_enabled and actual_images != total_expected_images:
-                # SHIRG returns different number of "images" than expected
-                # This could be concatenated tokens (1 tensor) or fallback (1 view)
-                print(f"SHIRG-SPLIT-FIX: SHIRG output detected - expected {total_expected_images} views, got {actual_images}")
-                print(f"   Encoded shape: {encoded_image_features.shape}")
+            if is_shirg_enabled:
+                # SHIRG-DYNAMIC-SPLIT: 2025-07-29 - Calculate actual split sizes for SHIRG
+                # ISSUE: SHIRG has different token counts per view (196 + 4×328 = 1508)
+                # SOLUTION: Use SHIRG-specific split sizes instead of original split_sizes
+                # RESEARCH IMPACT: Maintains per-view selection methodology
+                # LAVIDA IMPACT: Allows proper view splitting for SHIRG tokens
                 
-                # For SHIRG, we keep the tensor as-is without splitting
-                if encoded_image_features.dim() == 3:  # [batch, tokens, features]
-                    encoded_image_features = [encoded_image_features]
+                # SHIRG token distribution: 196 (global) + 4×328 (peripheral) = 1508 total
+                shirg_split_sizes = [196, 328, 328, 328, 328]  # Matching SHIRG's actual output
+                expected_shirg_total = sum(shirg_split_sizes)
+                
+                if actual_images == expected_shirg_total:
+                    # SHIRG concatenated all views as expected
+                    print(f"SHIRG-SPLIT-FIX: Using SHIRG-specific split sizes: {shirg_split_sizes}")
+                    print(f"   Total SHIRG tokens: {expected_shirg_total} (196 global + 4×328 peripheral)")
+                    encoded_image_features = torch.split(encoded_image_features, shirg_split_sizes)
+                elif actual_images == total_expected_images:
+                    # SHIRG might be disabled or in fallback mode
+                    print(f"SHIRG-SPLIT-FIX: SHIRG returned standard token count, using normal split")
+                    encoded_image_features = torch.split(encoded_image_features, split_sizes)
                 else:
-                    # Ensure it's a list
+                    # Unexpected format
+                    print(f"WARNING: SHIRG token count mismatch - expected {expected_shirg_total}, got {actual_images}")
+                    print(f"   Encoded shape: {encoded_image_features.shape}")
+                    # Keep as single tensor for debugging
                     encoded_image_features = [encoded_image_features]
             elif actual_images == total_expected_images:
                 # Standard case - split normally

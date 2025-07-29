@@ -1167,7 +1167,7 @@ class LaViDaModelRunner:
                     image_sizes=image_sizes,
                     do_sample=False,
                     temperature=0.1,
-                    max_new_tokens=128,  # Same as baseline (increased for better OCR responses)
+                    max_new_tokens=64,  # Same as baseline (increased for better OCR responses)
                     block_length=64,     # LaViDa diffusion block size
                     step_ratio=0.5,      # LaViDa diffusion steps
                     tokenizer=self.shirg_tokenizer,

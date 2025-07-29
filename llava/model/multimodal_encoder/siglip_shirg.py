@@ -98,18 +98,20 @@ class SigLipShirgExtensions:
                 selected_peripheral.append(selected)
                 rank0_print(f"   View {i+1}: selected {selected.shape[1]} tokens")
             
-            # SHIRG-LAVIDA-FIX: 2025-07-29 - Return tokens in LaViDa-compatible format
-            # ISSUE: LaViDa expects to split encoded features by views, but SHIRG concatenates all tokens
-            # SOLUTION: Return concatenated tokens with single batch dimension to match LaViDa's expectations
-            # RESEARCH IMPACT: Maintains SHIRG token selection while ensuring LaViDa compatibility
-            # LAVIDA IMPACT: Allows LaViDa to process SHIRG tokens through its standard pipeline
+            # SHIRG-MULTIVIEW-FIX: 2025-07-29 - Return tokens maintaining 5-view structure for LaViDa
+            # ISSUE: LaViDa expects to split encoded features by 5 views, but SHIRG concatenates all tokens
+            # SOLUTION: Return 5 separate tensors matching LaViDa's view structure
+            # RESEARCH IMPACT: Maintains SHIRG per-view selection while preserving LaViDa's architecture
+            # LAVIDA IMPACT: Allows LaViDa to process SHIRG tokens through standard split logic
             
-            # Step 3: Concatenate [global196 || view1_K ... view4_K]
-            final_tokens = torch.cat([global_pooled] + selected_peripheral, dim=1)
+            # Step 3: Create 5-view output matching LaViDa's expectations
+            # View 0: Global pooled tokens (196 tokens)
+            # Views 1-4: Selected peripheral tokens (K tokens each)
+            multiview_output = [global_pooled] + selected_peripheral
             
-            # Log final shape
-            B, N, D = final_tokens.shape
-            rank0_print(f"SHIRG-Fovea: Final token count: {N} (196 global + 4×{K} peripheral = {196 + 4*K})")
+            # Log token counts for each view
+            total_tokens = global_pooled.shape[1] + sum(view.shape[1] for view in selected_peripheral)
+            rank0_print(f"SHIRG-Fovea: Total token count: {total_tokens} (196 global + 4×{K} peripheral = {196 + 4*K})")
             
             # SHIRG-TOKEN-VALIDATION: 2025-07-29 - Verify token counts match research targets
             # ISSUE: Need to ensure SHIRG token counts align with research methodology
@@ -118,26 +120,38 @@ class SigLipShirgExtensions:
             # LAVIDA IMPACT: Ensures fair comparison with baseline's 980 tokens
             
             # Validate against research targets
-            if N < 1500 or N > 1900:
-                rank0_print(f"⚠️ SHIRG token count {N} outside target range 1500-1900")
+            if total_tokens < 1500 or total_tokens > 1900:
+                rank0_print(f"⚠️ SHIRG token count {total_tokens} outside target range 1500-1900")
             else:
-                rank0_print(f"✅ SHIRG token count {N} within target range")
+                rank0_print(f"✅ SHIRG token count {total_tokens} within target range")
                 
             # Compare with baseline expectation
             baseline_tokens = 980  # LaViDa baseline: 5×196 after pooling
-            token_increase = N / baseline_tokens
-            rank0_print(f"   Token increase vs baseline: {token_increase:.2f}x ({N} vs {baseline_tokens})")
+            token_increase = total_tokens / baseline_tokens
+            rank0_print(f"   Token increase vs baseline: {token_increase:.2f}x ({total_tokens} vs {baseline_tokens})")
             
-            # Ensure gradient flow for LoRA training
-            final_tokens = self.ensure_gradient_flow(final_tokens, pixel_values[0] if isinstance(pixel_values, list) else pixel_values)
+            # Ensure gradient flow and dtype consistency for each view
+            processed_views = []
+            sample_image = pixel_values[0] if isinstance(pixel_values, list) else pixel_values
             
-            # Final dtype consistency check
-            if torch.cuda.is_available() and final_tokens.dtype != torch.bfloat16:
-                final_tokens = final_tokens.to(torch.bfloat16)
+            for view_idx, view_tokens in enumerate(multiview_output):
+                # Ensure gradient flow for LoRA training
+                view_tokens = self.ensure_gradient_flow(view_tokens, sample_image)
+                
+                # Final dtype consistency check
+                if torch.cuda.is_available() and view_tokens.dtype != torch.bfloat16:
+                    view_tokens = view_tokens.to(torch.bfloat16)
+                
+                processed_views.append(view_tokens)
             
-            # CRITICAL: Return as single "view" for LaViDa compatibility
-            # LaViDa will treat this as one large view instead of trying to split it
-            return final_tokens
+            # CRITICAL: Concatenate views to match LaViDa's expected format
+            # LaViDa's encode_images expects concatenated views that it will later split
+            concatenated_output = torch.cat(processed_views, dim=0)
+            
+            rank0_print(f"SHIRG-Fovea: Returning concatenated views with shape {concatenated_output.shape}")
+            rank0_print(f"   This will be split by LaViDa into {len(processed_views)} views")
+            
+            return concatenated_output
             
         except Exception as e:
             rank0_print(f"🚨 SHIRG forward failed: {e}")
