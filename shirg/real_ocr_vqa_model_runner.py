@@ -764,8 +764,14 @@ class LaViDaModelRunner:
                 # Get image sizes (required for LaViDa)
                 image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
                 
+                # LAVIDA-RETURN-FIX: 2025-07-29 - Handle LaViDa generate return format properly
+                # ISSUE: LaViDa generate() returns (cont, hist) only when verbose=True, just cont when verbose=False
+                # SOLUTION: Set verbose=True to get both cont and hist, or handle single return value correctly
+                # RESEARCH IMPACT: Enables proper LaViDa baseline inference for SHIRG comparison
+                # LAVIDA IMPACT: Maintains exact LaViDa generation behavior
+                
                 # Use LaViDa diffusion generation (same as original predict.py)
-                cont, hist = self.baseline_model.generate(
+                result = self.baseline_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
@@ -776,12 +782,18 @@ class LaViDaModelRunner:
                     step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
                     tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
                     prefix_lm=True,         # LaViDa prefix caching
-                    verbose=False,          # Reduce output noise
+                    verbose=True,           # FIXED: Set to True to get (cont, hist) tuple
                     schedule='shift'        # LaViDa diffusion schedule
                 )
                 
-                # Get the generated continuation (LaViDa returns cont, hist)
-                output_ids = cont
+                # Handle LaViDa return format - should now be (cont, hist) tuple
+                if isinstance(result, tuple) and len(result) == 2:
+                    cont, hist = result
+                    output_ids = cont
+                else:
+                    # Fallback if only single value returned
+                    output_ids = result
+                    hist = None
             
             # LAVIDA-DECODE-FIX: 2025-07-29 - Use exact LaViDa decoding from original predict.py
             # ISSUE: Current decoding doesn't match LaViDa output format
@@ -914,24 +926,36 @@ class LaViDaModelRunner:
                 
                 print(f"   🔍 SHIRG mode: {use_shirg}")
                 
+                # SHIRG-RETURN-FIX: 2025-07-29 - Handle LaViDa generate return format properly for SHIRG
+                # ISSUE: SHIRG model also uses LaViDa generate() which has same return format dependency
+                # SOLUTION: Set verbose=True to get both cont and hist, or handle single return value correctly
+                # RESEARCH IMPACT: Enables proper SHIRG inference for comparison with baseline
+                # SHIRG IMPACT: Maintains exact LaViDa generation behavior while using SHIRG tokens
+                
                 # Use identical LaViDa generation parameters as baseline
-                cont, hist = self.shirg_model.generate(
+                result = self.shirg_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
                     do_sample=False,
                     temperature=0.1,
-                    max_new_tokens=128,  # Same as baseline
+                    max_new_tokens=64,   # Same as baseline (was 128)
                     block_length=64,     # LaViDa diffusion block size
                     step_ratio=0.5,      # LaViDa diffusion steps
                     tokenizer=self.shirg_tokenizer,
                     prefix_lm=True,      # LaViDa prefix caching
-                    verbose=False,       # Reduce output noise
+                    verbose=True,        # FIXED: Set to True to get (cont, hist) tuple
                     schedule='shift'     # LaViDa diffusion schedule
                 )
                 
-                # Get the generated continuation
-                output_ids = cont
+                # Handle LaViDa return format - should now be (cont, hist) tuple
+                if isinstance(result, tuple) and len(result) == 2:
+                    cont, hist = result
+                    output_ids = cont
+                else:
+                    # Fallback if only single value returned
+                    output_ids = result
+                    hist = None
             
             # SHIRG-DECODE-FIX: 2025-07-29 - Use same LaViDa decoding as baseline
             # ISSUE: SHIRG must use identical decoding method as baseline for fair comparison
