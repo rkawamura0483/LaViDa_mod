@@ -10,9 +10,7 @@ import time
 import warnings
 from typing import Dict, List, Tuple, Optional, Any
 
-# Import the split components
-from real_ocr_vqa_model_runner import LaViDaModelRunner, rank0_print
-from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader, OCRVQAResultAnalyzer
+
 
 warnings.filterwarnings('ignore')
 
@@ -20,6 +18,10 @@ warnings.filterwarnings('ignore')
 sys.path.append('./shirg/')
 sys.path.append('./llava/')
 sys.path.append('./')
+
+# Import the split components
+from real_ocr_vqa_model_runner import LaViDaModelRunner, rank0_print
+from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader, OCRVQAResultAnalyzer
 
 class RealOCRVQAValidator:
     """Main validator orchestrating dataset loading, model inference, and result analysis"""
