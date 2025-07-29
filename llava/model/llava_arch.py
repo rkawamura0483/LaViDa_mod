@@ -143,7 +143,12 @@ import os
 DEBUG_PRINT_IMAGE_RES = os.environ.get("DEBUG_PRINT_IMAGE_RES", False)
 NOT_ALWASY_DO_2DPOOL = os.environ.get("NOT_ALWASY_DO_2DPOOL", False)
 ALWASY_DO_2DPOOL = not NOT_ALWASY_DO_2DPOOL
-# ALWASY_DO_2DPOOL = True
+# POOLING-FIX: 2025-07-29 - Force pooling for images to match expected LaViDa behavior
+# ISSUE: Pooling only happens for videos by default, not images
+# SOLUTION: Force ALWASY_DO_2DPOOL=True to enable pooling for all modalities
+# LAVIDA IMPACT: Enables token reduction from 729 to 196 per view as expected
+# SHIRG IMPACT: Provides proper baseline for SHIRG comparison
+ALWASY_DO_2DPOOL = True
 # breakpoint()
 
 def unpad_image(tensor, original_size):
