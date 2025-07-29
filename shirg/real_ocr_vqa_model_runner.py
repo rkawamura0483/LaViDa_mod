@@ -1010,55 +1010,123 @@ class LaViDaModelRunner:
             
             inference_time = time.time() - start_time
             
-            # BASELINE-DEBUG: 2025-07-29 - Enhanced vision tower analysis with debugging
-            # ISSUE: Vision features may not be properly extracted causing downstream errors
-            # SOLUTION: Add comprehensive vision tower validation and debugging
-            # LAVIDA IMPACT: Ensures LaViDa vision processing works correctly
-            # SHIRG IMPACT: Provides baseline reference for SHIRG comparison
+            # TOKEN-COUNT-DEBUG: 2025-07-29 - Comprehensive token tracking at each pipeline stage
+            # ISSUE: Need to track exact token counts through entire LaViDa pipeline for debugging
+            # SOLUTION: Add detailed token count logging at each transformation stage
+            # RESEARCH IMPACT: Enables precise diagnosis of token flow issues in baseline vs SHIRG
+            # LAVIDA IMPACT: Validates LaViDa's multi-stage token processing pipeline
+            
+            print(f"\n🔍 BASELINE TOKEN FLOW ANALYSIS:")
+            print(f"📊 Stage 1: Input Image Processing")
+            print(f"   📐 Image tensor shape: {image_tensor.shape}")
+            print(f"   📐 Image tensor dtype: {image_tensor.dtype}")
+            
+            # Check if this is multi-view anyres processing
+            if len(image_tensor.shape) == 5:  # [B, Views, C, H, W]
+                print(f"   📐 Multi-view detected: {image_tensor.shape[1]} views of {image_tensor.shape[2:]} each")
+            elif len(image_tensor.shape) == 4:  # [B, C, H, W] 
+                print(f"   📐 Single view detected: {image_tensor.shape}")
+            
             vision_info = {}
             if self.baseline_tower is not None:
                 try:
                     # Get vision features for analysis
                     with torch.no_grad():
-                        print(f"BASELINE-DEBUG: Image tensor shape: {image_tensor.shape}")
-                        print(f"BASELINE-DEBUG: Image tensor dtype: {image_tensor.dtype}")
+                        print(f"\n📊 Stage 2: Vision Tower Processing")
                         
                         vision_features = self.baseline_tower(image_tensor)
                         
-                        print(f"BASELINE-DEBUG: Vision features type: {type(vision_features)}")
+                        print(f"   🔍 Vision tower output type: {type(vision_features)}")
+                        print(f"   🔍 Vision tower output shape: {vision_features.shape if hasattr(vision_features, 'shape') else 'No shape'}")
+                        
+                        # Detailed vision tower analysis
                         if hasattr(vision_features, 'shape'):
-                            print(f"BASELINE-DEBUG: Image features shape: {vision_features.shape}")
+                            print(f"   📊 Raw vision features shape: {vision_features.shape}")
                             
-                            # LAVIDA-PAPER-FIX: Vision tower outputs raw tokens, pooler reduces them
-                            # Vision tower: 5 views × 729 tokens each = 3,645 total tokens (before pooling)
-                            # Pooler projector: 5 views × 196 tokens each = 980 total tokens (after pooling)
-                            
+                            # Analyze token structure
                             if len(vision_features.shape) == 3:  # Multi-view format [views, tokens_per_view, features]
                                 num_views = vision_features.shape[0]
                                 tokens_per_view = vision_features.shape[1] 
-                                expected_tokens_per_view = 729  # 27x27 from SigLIP (before pooling)
+                                feature_dim = vision_features.shape[2]
                                 total_tokens_before_pooling = num_views * tokens_per_view
-                                expected_total_before_pooling = num_views * expected_tokens_per_view
                                 
-                                print(f"BASELINE-DEBUG: Multi-view processing - {num_views} views × {tokens_per_view} tokens = {total_tokens_before_pooling} total")
-                                print(f"BASELINE-DEBUG: Expected: {num_views} views × {expected_tokens_per_view} tokens = {expected_total_before_pooling} total (before pooling)")
+                                print(f"   📊 Multi-view structure:")
+                                print(f"      📐 Number of views: {num_views}")
+                                print(f"      📐 Tokens per view: {tokens_per_view}")
+                                print(f"      📐 Feature dimension: {feature_dim}")
+                                print(f"      📐 Total tokens (before pooling): {total_tokens_before_pooling}")
                                 
-                                if total_tokens_before_pooling == expected_total_before_pooling:
-                                    print(f"✅ BASELINE-CORRECT: Vision tower multi-view output is correct")
-                                    print(f"   Next: Pooler projector should reduce to {num_views} × 196 = {num_views * 196} tokens")
+                                # Expected LaViDa values
+                                expected_tokens_per_view = 729  # 27×27 SigLIP patches
+                                expected_total = num_views * expected_tokens_per_view
+                                expected_after_pooling = num_views * 196  # 14×14 after 2×2 pooling
+                                
+                                print(f"   ✅ Expected LaViDa values:")
+                                print(f"      📐 Expected per view: {expected_tokens_per_view} tokens (27×27)")
+                                print(f"      📐 Expected total: {expected_total} tokens")
+                                print(f"      📐 Expected after pooling: {expected_after_pooling} tokens (14×14 per view)")
+                                
+                                # Validation
+                                if total_tokens_before_pooling == expected_total:
+                                    print(f"   ✅ BASELINE-CORRECT: Vision tower output matches LaViDa spec")
+                                    print(f"   🔄 Next stage: 2×2 pooling should reduce to {expected_after_pooling} tokens")
                                 else:
-                                    print(f"⚠️ BASELINE-ISSUE: Token count mismatch in multi-view processing")
-                            else:  # Single view format [batch, tokens, features]
-                                actual_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel()
-                                expected_single_view_tokens = 729
-                                print(f"BASELINE-DEBUG: Single view processing - {actual_tokens} tokens")
-                                print(f"BASELINE-DEBUG: Expected: {expected_single_view_tokens} tokens (before pooling)")
+                                    print(f"   ⚠️ BASELINE-WARNING: Token count {total_tokens_before_pooling} ≠ expected {expected_total}")
+                                    
+                            elif len(vision_features.shape) == 2:  # Flattened format [batch, total_tokens, features]
+                                batch_size = vision_features.shape[0] if vision_features.shape[0] > 1 else 1
+                                total_tokens = vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.shape[0]
+                                feature_dim = vision_features.shape[-1] if len(vision_features.shape) > 1 else 1
                                 
-                                if actual_tokens == expected_single_view_tokens:
-                                    print(f"✅ BASELINE-CORRECT: Vision tower single view output is correct")
-                                    print(f"   Next: Pooler projector should reduce to 196 tokens")
+                                print(f"   📊 Flattened structure:")
+                                print(f"      📐 Batch size: {batch_size}")
+                                print(f"      📐 Total tokens: {total_tokens}")
+                                print(f"      📐 Feature dimension: {feature_dim}")
+                                
+                                # Try to infer if this is pre or post pooling
+                                if total_tokens == 3645:
+                                    print(f"   🔍 Analysis: Appears to be PRE-pooling (5×729 = 3645)")
+                                elif total_tokens == 980:
+                                    print(f"   🔍 Analysis: Appears to be POST-pooling (5×196 = 980)")
                                 else:
-                                    print(f"⚠️ BASELINE-ISSUE: Single view token count mismatch")
+                                    print(f"   🔍 Analysis: Unexpected token count - not standard LaViDa")
+                        
+                        # Try to get projector/pooler output for comparison
+                        print(f"\n📊 Stage 3: MM Projector/Pooler Analysis")
+                        try:
+                            # Check if model has get_mm_projector
+                            if hasattr(self.baseline_model, 'get_mm_projector'):
+                                mm_projector = self.baseline_model.get_mm_projector()
+                                if mm_projector is not None:
+                                    print(f"   🔍 MM Projector type: {type(mm_projector).__name__}")
+                                    
+                                    # Try to run through projector to see final token count
+                                    try:
+                                        with torch.no_grad():
+                                            projected_features = mm_projector(vision_features)
+                                            print(f"   📐 Projected features shape: {projected_features.shape}")
+                                            
+                                            if len(projected_features.shape) >= 2:
+                                                final_tokens = projected_features.shape[-2] if len(projected_features.shape) > 2 else projected_features.shape[0]
+                                                print(f"   📐 Final token count to LM: {final_tokens}")
+                                                
+                                                # Validate against expectations
+                                                if final_tokens == 980:
+                                                    print(f"   ✅ BASELINE-PERFECT: Final tokens = 980 (correct LaViDa)")
+                                                elif final_tokens == 3645:
+                                                    print(f"   ⚠️ BASELINE-ISSUE: Final tokens = 3645 (pooling not applied!)")
+                                                else:
+                                                    print(f"   ❓ BASELINE-UNKNOWN: Final tokens = {final_tokens} (unexpected)")
+                                            
+                                    except Exception as proj_error:
+                                        print(f"   ⚠️ Could not run projector analysis: {proj_error}")
+                                else:
+                                    print(f"   ⚠️ MM Projector is None")
+                            else:
+                                print(f"   ⚠️ Model has no get_mm_projector method")
+                                
+                        except Exception as projector_error:
+                            print(f"   ⚠️ Projector analysis failed: {projector_error}")
                             
                             # Calculate actual tokens and expected for vision_info
                             if len(vision_features.shape) == 3:  # Multi-view
@@ -1086,8 +1154,19 @@ class LaViDaModelRunner:
                     traceback.print_exc()
                     vision_info = {'error': str(e)}
             else:
-                print(f"BASELINE-DEBUG: Vision tower is None")
+                print(f"\n📊 Stage 2: Vision Tower")
+                print(f"   ❌ BASELINE-ERROR: Vision tower is None")
                 vision_info = {'error': 'Vision tower not available'}
+            
+            # FINAL-BASELINE-SUMMARY: 2025-07-29 - Clear summary of baseline token flow
+            print(f"\n🎯 BASELINE SUMMARY:")
+            print(f"   📊 Model type: baseline LaViDa")
+            print(f"   📐 Expected flow: Image → 5 views → 3,645 tokens → pooling → 980 tokens → LM")
+            print(f"   📋 Pooling enabled: {os.environ.get('NOT_ALWASY_DO_2DPOOL', 'undefined') == '0'}")
+            if vision_info.get('expected_tokens_after_pooling'):
+                print(f"   📐 Final tokens to LM: {vision_info['expected_tokens_after_pooling']}")
+            print(f"   💬 Response length: {len(response)} characters")
+            print(f"   ⏱️ Inference time: {inference_time:.2f}s")
             
             return {
                 'response': response,
@@ -1268,27 +1347,157 @@ class LaViDaModelRunner:
             
             inference_time = time.time() - start_time
             
-            # Vision tower analysis with SHIRG information
+            # SHIRG-TOKEN-COUNT-DEBUG: 2025-07-29 - Comprehensive SHIRG token tracking
+            # ISSUE: Need to track exact token counts through SHIRG pipeline for comparison with baseline
+            # SOLUTION: Add detailed token count logging at each SHIRG transformation stage
+            # RESEARCH IMPACT: Enables precise diagnosis of SHIRG vs baseline token differences
+            # SHIRG IMPACT: Validates SHIRG's high-resolution token selection methodology
+            
+            print(f"\n🔍 SHIRG TOKEN FLOW ANALYSIS:")
+            print(f"📊 Stage 1: Input Image Processing")
+            print(f"   📐 Image tensor shape: {image_tensor.shape}")
+            print(f"   📐 Image tensor dtype: {image_tensor.dtype}")
+            
+            # Check SHIRG-specific processing
+            if len(image_tensor.shape) == 4:  # SHIRG single high-res view [B, C, H, W]
+                batch, channels, height, width = image_tensor.shape
+                print(f"   📐 SHIRG high-res detected: {batch}×{channels}×{height}×{width}")
+                expected_tokens = (height // 14) * (width // 14)  # SigLIP patch size 14
+                print(f"   📐 Expected SHIRG tokens: {expected_tokens} (from {height//14}×{width//14} patches)")
+            
             vision_info = {}
             if self.shirg_tower is not None:
                 try:
                     # Get vision features for analysis
                     with torch.no_grad():
-                        # Check if SHIRG mode is enabled
-                        if hasattr(self.shirg_tower, 'forward'):
+                        print(f"\n📊 Stage 2: SHIRG Vision Tower Processing")
+                        
+                        # Check if SHIRG mode is enabled and call appropriate method
+                        if hasattr(self.shirg_tower, 'forward') and use_shirg:
+                            print(f"   🔍 Using SHIRG mode (use_shirg=True)")
                             vision_features = self.shirg_tower(image_tensor, use_shirg=True)
                         else:
+                            print(f"   🔍 Using standard mode")
                             vision_features = self.shirg_tower(image_tensor)
                         
+                        print(f"   📊 SHIRG vision output type: {type(vision_features)}")
+                        print(f"   📊 SHIRG vision output shape: {vision_features.shape if hasattr(vision_features, 'shape') else 'No shape'}")
+                        
                         if hasattr(vision_features, 'shape'):
+                            # Detailed SHIRG analysis
+                            if len(vision_features.shape) == 3:  # [B, tokens, features]
+                                batch_size = vision_features.shape[0]
+                                total_tokens = vision_features.shape[1]
+                                feature_dim = vision_features.shape[2]
+                                
+                                print(f"   📊 SHIRG token structure:")
+                                print(f"      📐 Batch size: {batch_size}")
+                                print(f"      📐 Total tokens: {total_tokens}")
+                                print(f"      📐 Feature dimension: {feature_dim}")
+                                
+                                # SHIRG expected values
+                                if use_shirg:
+                                    # SHIRG methodology: 672×672 → 48×48 patches → selective reduction
+                                    expected_high_res = 2304  # 48×48 from 672×672 at patch size 14
+                                    expected_shirg_output = 1216  # 1152 selected + 64 scaffold per research
+                                    
+                                    print(f"   ✅ Expected SHIRG values:")
+                                    print(f"      📐 Input high-res: {expected_high_res} tokens (48×48 patches)")
+                                    print(f"      📐 SHIRG output: {expected_shirg_output} tokens (1152 selected + 64 scaffold)")
+                                    
+                                    if total_tokens == expected_shirg_output:
+                                        print(f"   ✅ SHIRG-PERFECT: Output = {total_tokens} tokens (matches research spec)")
+                                    elif total_tokens == expected_high_res:
+                                        print(f"   🔄 SHIRG-UNPROCESSED: Output = {total_tokens} (full high-res, selection not applied)")
+                                    elif total_tokens == 980:
+                                        print(f"   ⚠️ SHIRG-BASELINE: Output = {total_tokens} (same as baseline, SHIRG not working)")
+                                    else:
+                                        print(f"   ❓ SHIRG-UNKNOWN: Output = {total_tokens} tokens (unexpected count)")
+                                else:
+                                    print(f"   📋 Standard mode - no SHIRG expectations")
+                            
+                            # Try to get SHIRG selector details if available
+                            print(f"\n📊 Stage 3: SHIRG Selection Analysis")
+                            try:
+                                if hasattr(self.shirg_tower, 'shirg_selector') and use_shirg:
+                                    print(f"   🔍 SHIRG selector available")
+                                    # Could add more detailed selection analysis here
+                                elif use_shirg:
+                                    print(f"   ⚠️ SHIRG mode enabled but no selector found")
+                                else:
+                                    print(f"   📋 Standard mode - no SHIRG selection")
+                                    
+                            except Exception as selector_error:
+                                print(f"   ⚠️ SHIRG selector analysis error: {selector_error}")
+                            
+                            # Try to get projector output
+                            print(f"\n📊 Stage 4: SHIRG MM Projector Analysis")
+                            try:
+                                if hasattr(self.shirg_model, 'get_mm_projector'):
+                                    mm_projector = self.shirg_model.get_mm_projector()
+                                    if mm_projector is not None:
+                                        print(f"   🔍 SHIRG MM Projector type: {type(mm_projector).__name__}")
+                                        
+                                        try:
+                                            with torch.no_grad():
+                                                projected_features = mm_projector(vision_features)
+                                                print(f"   📐 SHIRG projected shape: {projected_features.shape}")
+                                                
+                                                if len(projected_features.shape) >= 2:
+                                                    final_tokens = projected_features.shape[-2]
+                                                    final_dim = projected_features.shape[-1]
+                                                    print(f"   📐 SHIRG final tokens to LM: {final_tokens}")
+                                                    print(f"   📐 SHIRG final feature dim: {final_dim}")
+                                                    
+                                                    # Compare with research expectations
+                                                    if final_tokens == 1216:
+                                                        print(f"   ✅ SHIRG-RESEARCH: Final = {final_tokens} (matches research spec)")
+                                                    elif final_tokens == 980:
+                                                        print(f"   🔄 SHIRG-BASELINE: Final = {final_tokens} (same as baseline)")
+                                                    else:
+                                                        print(f"   ❓ SHIRG-CUSTOM: Final = {final_tokens} (custom configuration)")
+                                                        
+                                        except Exception as proj_error:
+                                            print(f"   ⚠️ SHIRG projector test failed: {proj_error}")
+                                    else:
+                                        print(f"   ⚠️ SHIRG MM Projector is None")
+                                else:
+                                    print(f"   ⚠️ SHIRG model has no get_mm_projector method")
+                                    
+                            except Exception as projector_error:
+                                print(f"   ⚠️ SHIRG projector analysis failed: {projector_error}")
+                            
                             vision_info = {
                                 'feature_shape': list(vision_features.shape),
                                 'num_tokens': vision_features.shape[1] if len(vision_features.shape) > 1 else vision_features.numel(),
                                 'feature_dim': vision_features.shape[-1] if len(vision_features.shape) > 1 else 1,
-                                'shirg_enabled': use_shirg
+                                'shirg_enabled': use_shirg,
+                                'processing_stage': 'shirg_vision_tower_output'
                             }
+                        else:
+                            print(f"   ⚠️ SHIRG vision features have no shape attribute")
+                            vision_info = {'error': 'SHIRG vision features missing shape', 'shirg_enabled': use_shirg}
+                            
                 except Exception as e:
+                    print(f"   ❌ SHIRG vision tower analysis error: {e}")
                     vision_info = {'error': str(e), 'shirg_enabled': use_shirg}
+            else:
+                print(f"\n📊 Stage 2: SHIRG Vision Tower")
+                print(f"   ❌ SHIRG-ERROR: SHIRG tower is None")
+                vision_info = {'error': 'SHIRG tower not available', 'shirg_enabled': False}
+            
+            # FINAL-SHIRG-SUMMARY: 2025-07-29 - Clear summary of SHIRG token flow
+            print(f"\n🎯 SHIRG SUMMARY:")
+            print(f"   📊 Model type: SHIRG LaViDa")
+            print(f"   📐 Expected flow: Image → 672×672 → 2,304 tokens → SHIRG selection → 1,216 tokens → LM")
+            print(f"   📋 Pooling disabled: {os.environ.get('NOT_ALWASY_DO_2DPOOL', 'undefined') == '1'}")
+            print(f"   🔍 SHIRG enabled: {use_shirg if 'use_shirg' in locals() else 'unknown'}")
+            if vision_info.get('num_tokens'):
+                print(f"   📐 Actual tokens to LM: {vision_info['num_tokens']}")
+            if selection_metadata.get('input_tokens'):
+                print(f"   📐 Selection: {selection_metadata.get('input_tokens', '?')} → {vision_info.get('num_tokens', '?')} tokens")
+            print(f"   💬 Response length: {len(response)} characters")
+            print(f"   ⏱️ Inference time: {inference_time:.2f}s")
             
             return {
                 'response': response,
