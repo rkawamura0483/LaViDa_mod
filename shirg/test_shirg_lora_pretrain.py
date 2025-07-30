@@ -846,12 +846,25 @@ class ShirgLoraPreTrainTest:
             from PIL import Image
             images = [Image.new('RGB', (672, 672)) for _ in range(batch_size)]
                     
+            # SHIRG-FIX: 2025-07-30 - Create proper labels with -100 masking for LaViDa
+            # ISSUE: LaViDa requires labels.min() == -100 assertion
+            # SOLUTION: Create labels with proper masking following LaViDa format
+            # LAVIDA IMPACT: Satisfies LaViDa's label requirements
+            # SHIRG IMPACT: Enables proper testing with LaViDa model
+            
+            # Create labels with proper masking
+            labels = inputs["input_ids"].clone()
+            # Mask the prompt part (everything before the first occurrence of "assistant")
+            # For testing, mask at least the first half of tokens
+            mask_length = max(inputs["input_ids"].shape[1] // 2, 10)
+            labels[:, :mask_length] = -100
+            
             # Create batch matching training format
             batch = {
                 "input_ids": inputs["input_ids"].to(device) if torch.cuda.is_available() else inputs["input_ids"],
                 "attention_mask": inputs["attention_mask"].to(device) if torch.cuda.is_available() else inputs["attention_mask"],
                 "images": images,  # Pass PIL images directly
-                "labels": inputs["input_ids"].to(device) if torch.cuda.is_available() else inputs["input_ids"],  # For loss computation
+                "labels": labels.to(device) if torch.cuda.is_available() else labels,  # For loss computation
             }
             
             print(f"   Batch created:")

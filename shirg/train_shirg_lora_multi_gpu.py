@@ -114,23 +114,36 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
         # Call parent method
         super().setup_model()
         
+        # SHIRG-FIX: 2025-07-30 - Handle multi-GPU setup for 8 GPU training
+        # ISSUE: Need proper handling for distributed model with device_map
+        # SOLUTION: Check if model uses device_map and handle appropriately
+        # LAVIDA IMPACT: Supports both single and multi-GPU training modes
+        # SHIRG IMPACT: Enables 8 GPU distributed training
+        
         # Wrap model with DDP
         if dist.is_initialized():
             # Find local rank
             local_rank = int(os.environ.get('LOCAL_RANK', 0))
             
-            # Move model to local GPU
-            self.model = self.model.cuda(local_rank)
-            
-            # Wrap with DDP
-            self.model = DDP(
-                self.model,
-                device_ids=[local_rank],
-                output_device=local_rank,
-                find_unused_parameters=True,  # Required for LoRA
-            )
-            
-            print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")
+            # Check if model has device_map (model parallelism)
+            if hasattr(self.model, 'hf_device_map') and self.model.hf_device_map is not None:
+                # Model is already distributed across devices
+                print(f"✅ Model already distributed with device_map, skipping DDP wrapper")
+                print(f"   Device map preview: {list(self.model.hf_device_map.keys())[:5]}...")
+            else:
+                # Standard DDP setup for data parallelism
+                # Move model to local GPU
+                self.model = self.model.cuda(local_rank)
+                
+                # Wrap with DDP
+                self.model = DDP(
+                    self.model,
+                    device_ids=[local_rank],
+                    output_device=local_rank,
+                    find_unused_parameters=True,  # Required for LoRA
+                )
+                
+                print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")
     
     def save_checkpoint(self, *args, **kwargs):
         """Only save checkpoints from rank 0"""

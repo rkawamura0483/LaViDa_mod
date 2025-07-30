@@ -1526,6 +1526,14 @@ class LLaDAModelLM(PreTrainedModel):
             n_labels = logits.shape[-1]
             if ENFORCE_NUM_ITEMIN_BATCH:
                 assert num_items_in_batch is not None, "num_items_in_batch should be set in the environment variable"         
+            # SHIRG-FIX: 2025-07-30 - Ensure labels are on same device as logits for multi-GPU
+            # ISSUE: Multi-GPU training can place tensors on different devices
+            # SOLUTION: Move labels to same device as logits before computing loss
+            # LAVIDA IMPACT: Enables proper multi-GPU training
+            # SHIRG IMPACT: Fixes device mismatch error in 8-GPU training
+            if labels.device != logits.device:
+                labels = labels.to(logits.device)
+            
             if num_items_in_batch is None:
                 token_loss = F.cross_entropy(logits.flatten(0,1),labels.flatten())
             else:

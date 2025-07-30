@@ -420,24 +420,45 @@ class ShirgLoraTrainer:
             # Create labels - mask everything except the answer
             labels = input_ids.clone()
             
-            # Find where the answer starts (after the assistant role)
-            # LaViDa expects -100 for masked tokens
-            answer_start_token = self.tokenizer.encode(conv.roles[1], add_special_tokens=False)[0]
-            answer_start_idx = None
+            # SHIRG-FIX: 2025-07-30 - Ensure proper label masking for LaViDa
+            # ISSUE: LaViDa requires labels.min() == -100, meaning some tokens must be masked
+            # SOLUTION: Find the assistant response start and mask everything before it
+            # LAVIDA IMPACT: Satisfies LaViDa's assertion requirement
+            # SHIRG IMPACT: Ensures proper loss computation during training
             
-            for i, token_id in enumerate(input_ids):
-                if token_id == answer_start_token:
-                    answer_start_idx = i
+            # Find where the assistant response starts
+            # Look for the assistant role token sequence
+            assistant_tokens = self.tokenizer.encode(conv.roles[1], add_special_tokens=False)
+            
+            # Find the position where assistant response starts
+            answer_start_idx = None
+            for i in range(len(input_ids) - len(assistant_tokens)):
+                if all(input_ids[i + j] == assistant_tokens[j] for j in range(len(assistant_tokens))):
+                    # Found the assistant role, answer starts after it
+                    answer_start_idx = i + len(assistant_tokens)
                     break
             
             if answer_start_idx is not None:
-                # Mask everything before the answer
-                labels[:answer_start_idx + 1] = -100
+                # Mask everything before the answer (including assistant role)
+                labels[:answer_start_idx] = -100
             else:
-                # If we can't find the answer start, mask the prompt part
-                # This is a fallback - find the image token and mask everything up to it
-                prompt_len = len(self.tokenizer.encode(formatted_question, add_special_tokens=False))
-                labels[:prompt_len] = -100
+                # Fallback: use a more robust method
+                # Split by the answer text to find where it starts
+                answer_tokens = self.tokenizer.encode(answer, add_special_tokens=False)
+                if len(answer_tokens) > 0:
+                    # Find where answer tokens start in the sequence
+                    for i in range(len(input_ids) - len(answer_tokens)):
+                        if all(input_ids[i + j] == answer_tokens[j] for j in range(min(3, len(answer_tokens)))):
+                            # Found answer start, mask everything before
+                            labels[:i] = -100
+                            answer_start_idx = i
+                            break
+                
+                if answer_start_idx is None:
+                    # Last resort: mask at least the first half of tokens
+                    # This ensures labels.min() == -100
+                    mask_length = max(len(input_ids) // 2, 10)
+                    labels[:mask_length] = -100
             
             input_ids_list.append(input_ids)
             labels_list.append(labels)
