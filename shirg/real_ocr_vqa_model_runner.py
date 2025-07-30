@@ -1052,9 +1052,9 @@ class LaViDaModelRunner:
                 if file.endswith('.safetensors') or file.endswith('.bin'):
                     weight_files.append(file)
             
-            # Check for specific component weights
-            has_siglip_weights = any('vision_tower' in f or 'encoder' in f for f in weight_files)
-            has_projector_weights = any('mm_projector' in f or 'projector' in f for f in weight_files)
+            # Check for specific component weights in target modules
+            has_siglip_weights = any('vision_tower' in module or 'encoder' in module for module in target_modules)
+            has_projector_weights = any('mm_projector' in module or 'projector' in module for module in target_modules)
             
             return {
                 'path': checkpoint_path,
