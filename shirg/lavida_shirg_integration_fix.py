@@ -16,9 +16,7 @@ def _integrate_shirg(self):
             # Patch encode_images to use SHIRG with correct signature
             def patched_encode_images(self, images):
                 """Patched encode_images that applies SHIRG-Fovea token selection"""
-                
-                print(f"🔄 SHIRG-Fovea patched encode_images called with {type(images)} images")
-                
+                            
                 # SHIRG-FOVEA-FIX: Handle LaViDa's 5-view list format
                 wrapper = getattr(self, 'shirg_wrapper', None)
                 vision_tower = self.get_model().get_vision_tower()

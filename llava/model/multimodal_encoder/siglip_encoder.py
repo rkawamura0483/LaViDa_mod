@@ -383,16 +383,12 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SOLUTION: Add detailed logging of SHIRG state
         # RESEARCH IMPACT: Helps diagnose why SHIRG isn't being used
         # LAVIDA IMPACT: Identifies configuration issues
-        rank0_print(f"SHIRG-CONFIG-DEBUG: shirg_enabled={self.shirg_enabled}, use_shirg={use_shirg}, should_use_shirg={should_use_shirg}")
-        if hasattr(self.config, 'enable_shirg'):
-            rank0_print(f"SHIRG-CONFIG-DEBUG: config.enable_shirg={self.config.enable_shirg}")
         
         # Check if we have concatenated views from LaViDa's prepare_inputs_labels_for_multimodal
         is_concatenated_views = False
         if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] == 5:
             # This is likely 5 concatenated views from LaViDa
             is_concatenated_views = True
-            rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated view tensor: {images.shape}")
         
         # SHIRG-FIX: 2025-07-30 - Only process with SHIRG if properly enabled
         # ISSUE: Was attempting SHIRG processing even when disabled
@@ -881,10 +877,6 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # LAVIDA IMPACT: Maintains anyres structure while applying per-view Top-K selection
         
         # Verify we're receiving 2-view format
-        if isinstance(images, list):
-            rank0_print(f"SHIRG-FOVEA-DEBUG: Processing {len(images)} views from anyres splitter")
-        elif hasattr(images, 'shape'):
-            rank0_print(f"SHIRG-FOVEA-DEBUG: Single tensor input {images.shape} (expecting list of 2 views)")
         # SHIRG-FIX: 2025-07-28 - Remove exception masking to expose gradient issues
         # ISSUE: Try-catch block hides real errors preventing gradient flow debugging
         # SOLUTION: Remove masking and let actual errors surface for proper fixing

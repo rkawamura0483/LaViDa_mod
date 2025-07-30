@@ -425,10 +425,7 @@ class LaViDaSHIRGWrapper:
             if shirg_enabled:
                 # Patch encode_images to use SHIRG with correct signature
                 def patched_encode_images(self, images):
-                    """Patched encode_images that applies SHIRG-Fovea token selection"""
-                    
-                    print(f"🔄 SHIRG-Fovea patched encode_images called with {type(images)} images")
-                    
+                    """Patched encode_images that applies SHIRG-Fovea token selection"""                    
                     # SHIRG-FOVEA-FIX: 2025-07-29 - Handle LaViDa's 5-view list format
                     # ISSUE: New methodology requires processing list of 5 views
                     # SOLUTION: Pass list directly to SHIRG forward_with_shirg
