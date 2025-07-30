@@ -469,6 +469,37 @@ class SigLipShirgExtensions:
             edge_weight = params.get('edge_weight', 0.25)
             combined_scores = 0.4 * attn_scores + (0.35 - edge_weight) * sim_scores + edge_weight * edge_prior
             
+        elif method == 'edge_only':
+            # SHIRG-EDGE-ONLY: 2025-07-30 - Edge-dominant scoring without attention
+            # ISSUE: User wants to test edge detection at 0.8 weight without attention
+            # SOLUTION: Create new method that excludes attention component
+            # RESEARCH IMPACT: Tests if pure edge detection can drive token selection
+            edge_prior = self.compute_edge_prior(view_tokens, params)
+            edge_weight = params.get('edge_weight', 0.8)
+            sim_weight = 1.0 - edge_weight
+            combined_scores = sim_weight * sim_scores + edge_weight * edge_prior
+            rank0_print(f"   Edge-only method: edge={edge_weight:.2f}, similarity={sim_weight:.2f}")
+            
+        elif method == 'custom':
+            # SHIRG-CUSTOM: 2025-07-30 - Fully customizable scoring weights
+            # ISSUE: User wants fine control over scoring components
+            # SOLUTION: Allow custom weights for each component
+            # RESEARCH IMPACT: Enables exploration of different scoring strategies
+            attn_weight = params.get('attention_weight', 0.0)
+            sim_weight = params.get('similarity_weight', 0.2)
+            edge_weight = params.get('edge_weight', 0.8)
+            
+            # Normalize weights to sum to 1
+            total_weight = attn_weight + sim_weight + edge_weight
+            if total_weight > 0:
+                attn_weight /= total_weight
+                sim_weight /= total_weight
+                edge_weight /= total_weight
+            
+            edge_prior = self.compute_edge_prior(view_tokens, params)
+            combined_scores = attn_weight * attn_scores + sim_weight * sim_scores + edge_weight * edge_prior
+            rank0_print(f"   Custom method: attn={attn_weight:.2f}, sim={sim_weight:.2f}, edge={edge_weight:.2f}")
+            
         elif method == 'full':
             # Full enhancement with all components
             # 1. Entropy filter

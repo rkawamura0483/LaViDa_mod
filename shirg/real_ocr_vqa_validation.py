@@ -136,12 +136,16 @@ def main():
     
     parser = argparse.ArgumentParser(description='SHIRG OCR/VQA Validation')
     parser.add_argument('--method', type=str, default='base',
-                      choices=['base', 'entropy', 'edge', 'full', 'all'],
+                      choices=['base', 'entropy', 'edge', 'edge_only', 'custom', 'full', 'all'],
                       help='Token selection method to use')
     parser.add_argument('--entropy-threshold', type=float, default=0.12,
                       help='Entropy threshold for noise filtering')
     parser.add_argument('--edge-weight', type=float, default=0.25,
                       help='Weight for edge prior')
+    parser.add_argument('--attention-weight', type=float, default=0.0,
+                      help='Weight for attention scores (for custom method)')
+    parser.add_argument('--similarity-weight', type=float, default=0.2,
+                      help='Weight for text similarity scores (for custom method)')
     parser.add_argument('--radial-sigma', type=float, default=0.65,
                       help='Sigma for radial weighting')
     parser.add_argument('--merge-similar', action='store_true',
@@ -189,6 +193,14 @@ def main():
             params = {'entropy_threshold': args.entropy_threshold}
         elif args.method == 'edge':
             params = {'edge_weight': args.edge_weight}
+        elif args.method == 'edge_only':
+            params = {'edge_weight': args.edge_weight}
+        elif args.method == 'custom':
+            params = {
+                'attention_weight': args.attention_weight,
+                'similarity_weight': args.similarity_weight,
+                'edge_weight': args.edge_weight
+            }
         elif args.method == 'full':
             params = {
                 'entropy_threshold': args.entropy_threshold,
