@@ -50,6 +50,7 @@ class ShirgLoraPreTrainTest:
             ("LaViDa Model Loading", self.test_model_loading),
             ("SHIRG Integration", self.test_shirg_integration),
             ("LoRA Module Targeting", self.test_lora_targeting),
+            ("Vision Tower Test", self.test_vision_tower),
             ("Forward Pass", self.test_forward_pass),
             ("Gradient Flow", self.test_gradient_flow),
             ("Mixed Precision", self.test_mixed_precision),
@@ -381,49 +382,244 @@ class ShirgLoraPreTrainTest:
         
         return result
     
-    def test_forward_pass(self) -> Dict[str, Any]:
-        """Test forward pass with dummy data"""
+    def test_vision_tower(self) -> Dict[str, Any]:
+        """Test vision tower with SHIRG directly"""
         result = {"passed": True, "details": {}}
         
         try:
-            # Create dummy inputs
+            # Test loading vision tower directly
+            from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
+            
+            # Create config
+            class VisionConfig:
+                mm_vision_tower = "google/siglip-so400m-patch14-384"
+                enable_shirg = True
+                mm_vision_select_layer = -2
+                mm_vision_select_feature = "patch"
+                image_aspect_ratio = "pad"
+                
+            config = VisionConfig()
+            
+            print(f"   Loading SigLIP vision tower with SHIRG...")
+            vision_tower = SigLipVisionTower(config.mm_vision_tower, config=config, delay_load=False)
+            
+            if torch.cuda.is_available():
+                vision_tower = vision_tower.cuda()
+                if self.config.bf16:
+                    vision_tower = vision_tower.to(dtype=torch.bfloat16)
+                    
+            vision_tower.eval()
+            
+            # Test standard mode
             batch_size = 2
-            seq_len = 32
-            vocab_size = 32000
+            print(f"\n   Testing standard mode (384×384):")
+            standard_images = torch.randn(batch_size, 3, 384, 384)
+            if torch.cuda.is_available():
+                standard_images = standard_images.cuda()
+                if self.config.bf16:
+                    standard_images = standard_images.to(dtype=torch.bfloat16)
+                    
+            with torch.no_grad():
+                standard_features = vision_tower(standard_images, use_shirg=False)
+                
+            print(f"   Output shape: {standard_features.shape}")
+            expected_shape = (batch_size, 729, 1152)
+            if standard_features.shape != expected_shape:
+                result["passed"] = False
+                result["error"] = f"Shape mismatch: expected {expected_shape}, got {standard_features.shape}"
+            else:
+                print(f"   ✅ Standard mode working correctly")
+                
+            # Test SHIRG mode
+            print(f"\n   Testing SHIRG mode (672×672):")
+            shirg_images = torch.randn(batch_size, 3, 672, 672)
+            if torch.cuda.is_available():
+                shirg_images = shirg_images.cuda()
+                if self.config.bf16:
+                    shirg_images = shirg_images.to(dtype=torch.bfloat16)
+                    
+            with torch.no_grad():
+                shirg_features = vision_tower(shirg_images, use_shirg=True)
+                
+            print(f"   Output shape: {shirg_features.shape}")
+            expected_shape = (batch_size, 1216, 1152)
+            if shirg_features.shape != expected_shape:
+                result["passed"] = False
+                result["error"] = f"SHIRG shape mismatch: expected {expected_shape}, got {shirg_features.shape}"
+            else:
+                print(f"   ✅ SHIRG mode working correctly")
+                
+            # Test token selection stats
+            if hasattr(vision_tower, 'last_selection_stats'):
+                stats = vision_tower.last_selection_stats
+                print(f"\n   SHIRG selection stats:")
+                print(f"   - Method: {stats.get('method', 'unknown')}")
+                print(f"   - Tokens selected: {stats.get('selected_tokens', 0)}")
+                print(f"   - Selection time: {stats.get('selection_time_ms', 0):.2f}ms")
+                
+            result["details"]["standard_shape"] = list(standard_features.shape)
+            result["details"]["shirg_shape"] = list(shirg_features.shape)
             
-            # Dummy input tensors
-            input_ids = torch.randint(0, vocab_size, (batch_size, seq_len))
-            attention_mask = torch.ones_like(input_ids)
+        except Exception as e:
+            result["passed"] = False
+            result["error"] = str(e)
+            print(f"   ❌ Vision tower test failed: {str(e)}")
             
-            # Dummy image tensors (5 views as per LaViDa)
-            image_size = self.config.image_size
-            images = [torch.randn(batch_size, 3, image_size, image_size) for _ in range(5)]
+        return result
+    
+    def test_forward_pass(self) -> Dict[str, Any]:
+        """Test forward pass with actual LaViDa-SHIRG model (matching training code)"""
+        result = {"passed": True, "details": {}}
+        
+        try:
+            from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper, LAVIDA_AVAILABLE
+            from peft import LoraConfig, get_peft_model, TaskType
             
-            result["details"]["batch_size"] = batch_size
-            result["details"]["seq_len"] = seq_len
-            result["details"]["num_views"] = len(images)
-            result["details"]["image_size"] = image_size
+            if not LAVIDA_AVAILABLE:
+                print(f"   ⚠️ Skipping full model test - LaViDa not available")
+                result["details"]["skipped"] = True
+                return result
+                
+            # Setup model exactly as in training
+            print(f"   Loading LaViDa-SHIRG model...")
+            wrapper = LaViDaSHIRGWrapper(
+                model_path="KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers",
+                shirg_config={
+                    'target_tokens': 980,
+                    'alpha': 0.3,  # Enable SHIRG
+                    'debug': False,
+                },
+                selection_method=self.config.shirg_method,
+                selection_params={
+                    'entropy_threshold': self.config.shirg_entropy_threshold,
+                    'edge_weight': self.config.shirg_edge_weight,
+                    'radial_sigma': self.config.shirg_radial_sigma,
+                    'merge_similar': self.config.shirg_merge_similar,
+                    'merge_threshold': self.config.shirg_merge_threshold,
+                },
+            )
             
-            print(f"   Batch size: {batch_size}")
-            print(f"   Sequence length: {seq_len}")
-            print(f"   Image views: {len(images)}")
-            print(f"   Image size: {image_size}×{image_size}")
+            # Load model
+            wrapper.load_model()
+            model = wrapper.model
+            tokenizer = wrapper.tokenizer
+            
+            # Ensure vision tower has SHIRG enabled
+            vision_tower = model.get_model().get_vision_tower()
+            if hasattr(vision_tower, 'config'):
+                vision_tower.config.enable_shirg = True
+                vision_tower.config.shirg_selection_method = self.config.shirg_method
+                
+            # Apply LoRA
+            lora_config = self.config.to_peft_config()
+            model = get_peft_model(model, lora_config)
+            model.print_trainable_parameters()
             
             # Move to GPU if available
             if torch.cuda.is_available():
-                input_ids = input_ids.cuda()
-                attention_mask = attention_mask.cuda()
-                images = [img.cuda() for img in images]
-                print(f"   ✅ Moved tensors to GPU")
+                model = model.cuda()
+                if self.config.bf16:
+                    model = model.to(dtype=torch.bfloat16)
+                elif self.config.fp16:
+                    model = model.to(dtype=torch.float16)
+                    
+            # Create test batch (matching training data format)
+            batch_size = 2
+            seq_len = 256  # Typical LaViDa sequence length
             
-            # Check tensor shapes
-            print(f"   Input shape: {input_ids.shape}")
-            print(f"   Image shape: {images[0].shape}")
+            # Create dummy text inputs
+            dummy_texts = [
+                "<image>\nWhat text is shown in this image?",
+                "<image>\nRead the text in this document."
+            ]
+            
+            # Tokenize
+            inputs = tokenizer(
+                dummy_texts,
+                padding=True,
+                truncation=True,
+                max_length=seq_len,
+                return_tensors="pt"
+            )
+            
+            # Create dummy images (LaViDa expects list of PIL images or tensors)
+            from PIL import Image
+            images = [Image.new('RGB', (672, 672)) for _ in range(batch_size)]
+            
+            # Process images through model's processor
+            from llava.mm_utils import process_images
+            image_processor = model.get_model().get_vision_tower().image_processor
+            images_tensor = process_images(images, image_processor, model.config)
+            
+            if torch.cuda.is_available():
+                images_tensor = images_tensor.cuda()
+                if self.config.bf16:
+                    images_tensor = images_tensor.to(dtype=torch.bfloat16)
+                elif self.config.fp16:
+                    images_tensor = images_tensor.to(dtype=torch.float16)
+                    
+            # Create batch matching training format
+            batch = {
+                "input_ids": inputs["input_ids"].cuda() if torch.cuda.is_available() else inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"].cuda() if torch.cuda.is_available() else inputs["attention_mask"],
+                "images": images_tensor,
+                "labels": inputs["input_ids"].cuda() if torch.cuda.is_available() else inputs["input_ids"],  # For loss computation
+            }
+            
+            print(f"   Batch created:")
+            print(f"   - Input shape: {batch['input_ids'].shape}")
+            print(f"   - Image shape: {batch['images'].shape}")
+            print(f"   - Device: {batch['input_ids'].device}")
+            
+            # Test forward pass
+            print(f"\n   Testing forward pass...")
+            model.eval()
+            with torch.no_grad():
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    images=batch["images"],
+                    labels=batch["labels"],
+                )
+                
+            print(f"   ✅ Forward pass successful")
+            print(f"   Loss: {outputs.loss.item():.4f}")
+            
+            # Test with gradient computation
+            print(f"\n   Testing backward pass...")
+            model.train()
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                images=batch["images"],
+                labels=batch["labels"],
+            )
+            loss = outputs.loss
+            loss.backward()
+            
+            # Check if LoRA parameters have gradients
+            lora_grads = []
+            for name, param in model.named_parameters():
+                if "lora" in name and param.requires_grad and param.grad is not None:
+                    lora_grads.append(name)
+                    
+            print(f"   ✅ Backward pass successful")
+            print(f"   LoRA parameters with gradients: {len(lora_grads)}")
+            
+            if torch.cuda.is_available():
+                mem_allocated = torch.cuda.memory_allocated() / 1e9
+                print(f"\n   GPU memory allocated: {mem_allocated:.2f}GB")
+                
+            result["details"]["loss"] = outputs.loss.item()
+            result["details"]["lora_params_with_grad"] = len(lora_grads)
+            result["details"]["memory_gb"] = mem_allocated if torch.cuda.is_available() else 0
             
         except Exception as e:
             result["passed"] = False
             result["error"] = str(e)
             print(f"   ❌ Forward pass test failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return result
     
