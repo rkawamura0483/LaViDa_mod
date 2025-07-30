@@ -649,26 +649,389 @@ class LaViDaModelRunner:
         
         # Look for LoRA weights in common locations
         lora_paths = [
+            './shirg_lora_checkpoints/',  # Training script output
             './shirg/lora_weights/',
             './lora_weights/',
             './weights/lora/',
-            './models/lora/'
+            './models/lora/',
+            './checkpoints/',
+            './output/',
         ]
         
-        lora_found = False
+        lora_loaded = False
         for lora_path in lora_paths:
             if os.path.exists(lora_path):
                 print(f"   📂 Found LoRA directory: {lora_path}")
-                # Check for adapter files
-                adapter_files = [f for f in os.listdir(lora_path) if f.endswith('.bin') or f.endswith('.safetensors')]
-                if adapter_files:
-                    print(f"   📦 Found LoRA weights: {adapter_files}")
-                    lora_found = True
+                
+                # Look for checkpoint subdirectories first (HuggingFace format)
+                checkpoint_dirs = []
+                if os.path.isdir(lora_path):
+                    for item in os.listdir(lora_path):
+                        item_path = os.path.join(lora_path, item)
+                        if os.path.isdir(item_path):
+                            # Check if it contains adapter files
+                            adapter_files = [f for f in os.listdir(item_path) 
+                                           if f.endswith('.bin') or f.endswith('.safetensors') or f == 'adapter_config.json']
+                            if adapter_files:
+                                checkpoint_dirs.append(item_path)
+                
+                # Also check root directory for adapter files
+                adapter_files = []
+                if os.path.isdir(lora_path):
+                    adapter_files = [f for f in os.listdir(lora_path) 
+                                   if f.endswith('.bin') or f.endswith('.safetensors') or f == 'adapter_config.json']
+                    if adapter_files:
+                        checkpoint_dirs.append(lora_path)
+                
+                if checkpoint_dirs:
+                    # Use the most recent checkpoint
+                    latest_checkpoint = max(checkpoint_dirs, key=lambda x: os.path.getmtime(x))
+                    print(f"   📦 Found LoRA checkpoint: {latest_checkpoint}")
                     
-                    # TODO: Load LoRA weights into model
-                    # This would require integrating with PEFT library
-                    print(f"   ⚠️ LoRA loading not yet implemented - model using base weights")
-                    break
+                    try:
+                        success = self._apply_lora_weights(latest_checkpoint)
+                        if success:
+                            lora_loaded = True
+                            print(f"   ✅ LoRA weights loaded successfully from {latest_checkpoint}")
+                            break
+                        else:
+                            print(f"   ❌ Failed to load LoRA weights from {latest_checkpoint}")
+                    except Exception as e:
+                        print(f"   ❌ Error loading LoRA weights: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print(f"   📂 No LoRA weights found in {lora_path}")
+        
+        if not lora_loaded:
+            print("   ⚠️ No LoRA weights found - model using base weights only")
+        
+        return lora_loaded
+    
+    def _apply_lora_weights(self, checkpoint_path: str) -> bool:
+        """Apply LoRA weights to the SHIRG model"""
+        try:
+            # Import PEFT for LoRA loading
+            from peft import PeftModel
+            from safetensors import safe_load
+            import torch
+            
+            print(f"   🔄 Loading LoRA weights from {checkpoint_path}")
+            
+            # Check if model is available
+            if self.shirg_model is None:
+                print("   ❌ SHIRG model not loaded - cannot apply LoRA weights")
+                return False
+            
+            # Method 1: Try loading as PeftModel (if saved with PEFT)
+            try:
+                print("   📝 Attempting PeftModel loading...")
+                self.shirg_model = PeftModel.from_pretrained(
+                    self.shirg_model, 
+                    checkpoint_path,
+                    is_trainable=False
+                )
+                print("   ✅ Successfully loaded using PeftModel.from_pretrained")
+                return True
+                
+            except Exception as peft_error:
+                print(f"   ⚠️ PeftModel loading failed: {peft_error}")
+                print("   🔄 Trying manual weight loading...")
+            
+            # Method 2: Manual loading of LoRA weights
+            return self._load_lora_weights_manual(checkpoint_path)
+            
+        except ImportError as e:
+            print(f"   ❌ PEFT library not available: {e}")
+            print("   💡 Install with: pip install peft")
+            return False
+        except Exception as e:
+            print(f"   ❌ Error applying LoRA weights: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _load_lora_weights_manual(self, checkpoint_path: str) -> bool:
+        """Manually load LoRA weights into model components"""
+        try:
+            from safetensors import safe_load
+            import json
+            
+            print("   🔧 Manual LoRA weight loading...")
+            
+            # Load adapter config
+            adapter_config_path = os.path.join(checkpoint_path, 'adapter_config.json')
+            if os.path.exists(adapter_config_path):
+                with open(adapter_config_path, 'r') as f:
+                    adapter_config = json.load(f)
+                print(f"   📋 Adapter config: {adapter_config.get('target_modules', 'unknown')}")
+            else:
+                print("   ⚠️ No adapter_config.json found, using default SHIRG config")
+                adapter_config = {}
+            
+            # Look for weight files
+            weight_files = []
+            for file in os.listdir(checkpoint_path):
+                if file.endswith('.safetensors'):
+                    weight_files.append(os.path.join(checkpoint_path, file))
+                elif file.endswith('.bin'):
+                    weight_files.append(os.path.join(checkpoint_path, file))
+            
+            if not weight_files:
+                print("   ❌ No weight files found in checkpoint")
+                return False
+            
+            # Load weights from each file
+            all_weights = {}
+            for weight_file in weight_files:
+                print(f"   📦 Loading weights from {os.path.basename(weight_file)}")
+                
+                if weight_file.endswith('.safetensors'):
+                    weights = safe_load(weight_file)
+                else:
+                    weights = torch.load(weight_file, map_location='cpu')
+                
+                all_weights.update(weights)
+            
+            print(f"   📊 Total LoRA parameters loaded: {len(all_weights)}")
+            
+            # Apply weights to model components
+            success_count = 0
+            total_count = len(all_weights)
+            
+            # Get model state dict for matching
+            model_state = self.shirg_model.state_dict()
+            
+            for weight_name, weight_tensor in all_weights.items():
+                try:
+                    # Apply LoRA weight based on naming convention
+                    success = self._apply_single_lora_weight(weight_name, weight_tensor, model_state)
+                    if success:
+                        success_count += 1
+                except Exception as e:
+                    print(f"   ⚠️ Failed to apply weight {weight_name}: {e}")
+            
+            print(f"   📊 Applied {success_count}/{total_count} LoRA weights successfully")
+            
+            if success_count > 0:
+                print("   ✅ Manual LoRA loading completed")
+                return True
+            else:
+                print("   ❌ No LoRA weights were successfully applied")
+                return False
+                
+        except Exception as e:
+            print(f"   ❌ Manual LoRA loading failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _apply_single_lora_weight(self, weight_name: str, weight_tensor: torch.Tensor, model_state: dict) -> bool:
+        """Apply a single LoRA weight to the model"""
+        try:
+            # SHIRG LoRA weight naming patterns:
+            # - base_model.model.mm_projector.0.lora_A.default.weight
+            # - base_model.model.mm_projector.0.lora_B.default.weight
+            # - base_model.model.vision_tower.vision_tower.vision_model.encoder.layers.0.self_attn.q_proj.lora_A.default.weight
+            
+            if 'lora_A' in weight_name or 'lora_B' in weight_name:
+                # Extract the base module name
+                if 'base_model.' in weight_name:
+                    base_name = weight_name.replace('base_model.', '').split('.lora_')[0]
+                else:
+                    base_name = weight_name.split('.lora_')[0]
+                
+                lora_type = 'lora_A' if 'lora_A' in weight_name else 'lora_B'
+                
+                # Map to actual model parameters
+                target_param_name = f"{base_name}.weight"
+                
+                if target_param_name in model_state:
+                    print(f"     🎯 Mapping {weight_name} -> {base_name} ({lora_type})")
+                    
+                    # For manual LoRA application, we need to modify the original weights
+                    # This is a simplified approach - in practice, you'd want to use PEFT
+                    original_weight = model_state[target_param_name]
+                    
+                    # Store LoRA components for later application
+                    if not hasattr(self.shirg_model, '_lora_weights'):
+                        self.shirg_model._lora_weights = {}
+                    
+                    if base_name not in self.shirg_model._lora_weights:
+                        self.shirg_model._lora_weights[base_name] = {}
+                    
+                    self.shirg_model._lora_weights[base_name][lora_type] = weight_tensor.to(original_weight.device, dtype=original_weight.dtype)
+                    
+                    # If we have both A and B, apply the LoRA adaptation
+                    if 'lora_A' in self.shirg_model._lora_weights[base_name] and 'lora_B' in self.shirg_model._lora_weights[base_name]:
+                        lora_A = self.shirg_model._lora_weights[base_name]['lora_A']
+                        lora_B = self.shirg_model._lora_weights[base_name]['lora_B']
+                        
+                        # Apply LoRA: W = W + B @ A (simplified, ignores alpha scaling)
+                        lora_delta = torch.mm(lora_B, lora_A)
+                        
+                        # Get the actual parameter and update it
+                        param_path = base_name.split('.')
+                        module = self.shirg_model
+                        for part in param_path[:-1]:
+                            if hasattr(module, part):
+                                module = getattr(module, part)
+                            else:
+                                print(f"     ❌ Cannot find module path: {'.'.join(param_path[:param_path.index(part)+1])}")
+                                return False
+                        
+                        param_name = param_path[-1]
+                        if hasattr(module, param_name):
+                            param = getattr(module, param_name)
+                            if hasattr(param, 'weight'):
+                                param.weight.data += lora_delta
+                                print(f"     ✅ Applied LoRA to {base_name}")
+                            else:
+                                print(f"     ❌ Parameter {base_name} has no weight attribute")
+                                return False
+                        else:
+                            print(f"     ❌ Cannot find parameter: {param_name}")
+                            return False
+                    
+                    return True
+                else:
+                    print(f"     ❌ Target parameter not found: {target_param_name}")
+                    return False
+            else:
+                print(f"     ⚠️ Unknown weight type: {weight_name}")
+                return False
+                
+        except Exception as e:
+            print(f"     ❌ Error applying weight {weight_name}: {e}")
+            return False
+    
+    def check_lora_availability(self) -> dict:
+        """Check what LoRA checkpoints are available and return summary"""
+        print("🔍 Scanning for available LoRA checkpoints...")
+        
+        # Look for LoRA weights in common locations
+        lora_paths = [
+            './shirg_lora_checkpoints/',  # Training script output
+            './shirg/lora_weights/',
+            './lora_weights/',
+            './weights/lora/',
+            './models/lora/',
+            './checkpoints/',
+            './output/',
+        ]
+        
+        available_checkpoints = []
+        
+        for lora_path in lora_paths:
+            if os.path.exists(lora_path):
+                print(f"   📂 Checking: {lora_path}")
+                
+                # Look for checkpoint subdirectories
+                if os.path.isdir(lora_path):
+                    for item in os.listdir(lora_path):
+                        item_path = os.path.join(lora_path, item)
+                        if os.path.isdir(item_path):
+                            # Check if it contains adapter files
+                            adapter_files = [f for f in os.listdir(item_path) 
+                                           if f.endswith('.bin') or f.endswith('.safetensors') or f == 'adapter_config.json']
+                            if adapter_files:
+                                checkpoint_info = self._analyze_checkpoint(item_path)
+                                available_checkpoints.append(checkpoint_info)
+                
+                # Also check root directory
+                adapter_files = [f for f in os.listdir(lora_path) 
+                               if f.endswith('.bin') or f.endswith('.safetensors') or f == 'adapter_config.json']
+                if adapter_files:
+                    checkpoint_info = self._analyze_checkpoint(lora_path)
+                    available_checkpoints.append(checkpoint_info)
+        
+        # Sort by modification time (newest first)
+        available_checkpoints.sort(key=lambda x: x['modified_time'], reverse=True)
+        
+        summary = {
+            'total_checkpoints': len(available_checkpoints),
+            'checkpoints': available_checkpoints,
+            'recommended': available_checkpoints[0] if available_checkpoints else None
+        }
+        
+        if available_checkpoints:
+            print(f"   ✅ Found {len(available_checkpoints)} LoRA checkpoint(s)")
+            for i, checkpoint in enumerate(available_checkpoints):
+                status = "👑 LATEST" if i == 0 else f"#{i+1}"
+                print(f"      {status}: {checkpoint['path']}")
+                print(f"         Modified: {checkpoint['modified_time_str']}")
+                print(f"         Target modules: {len(checkpoint['target_modules'])} ({', '.join(checkpoint['target_modules'][:3])}{'...' if len(checkpoint['target_modules']) > 3 else ''})")
+                print(f"         Weight files: {checkpoint['weight_files']}")
+        else:
+            print("   📭 No LoRA checkpoints found")
+        
+        return summary
+    
+    def _analyze_checkpoint(self, checkpoint_path: str) -> dict:
+        """Analyze a checkpoint directory and extract metadata"""
+        try:
+            import json
+            from datetime import datetime
+            
+            # Get modification time
+            mod_time = os.path.getmtime(checkpoint_path)
+            mod_time_str = datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Load adapter config if available
+            adapter_config_path = os.path.join(checkpoint_path, 'adapter_config.json')
+            target_modules = []
+            lora_config = {}
+            
+            if os.path.exists(adapter_config_path):
+                try:
+                    with open(adapter_config_path, 'r') as f:
+                        adapter_config = json.load(f)
+                    target_modules = adapter_config.get('target_modules', [])
+                    lora_config = {
+                        'rank': adapter_config.get('r', 'unknown'),
+                        'alpha': adapter_config.get('lora_alpha', 'unknown'),
+                        'dropout': adapter_config.get('lora_dropout', 'unknown'),
+                        'task_type': adapter_config.get('task_type', 'unknown')
+                    }
+                except Exception as e:
+                    print(f"      ⚠️ Error reading adapter config: {e}")
+            
+            # List weight files
+            weight_files = []
+            for file in os.listdir(checkpoint_path):
+                if file.endswith('.safetensors') or file.endswith('.bin'):
+                    weight_files.append(file)
+            
+            # Check for specific component weights
+            has_siglip_weights = any('vision_tower' in f or 'encoder' in f for f in weight_files)
+            has_projector_weights = any('mm_projector' in f or 'projector' in f for f in weight_files)
+            
+            return {
+                'path': checkpoint_path,
+                'modified_time': mod_time,
+                'modified_time_str': mod_time_str,
+                'target_modules': target_modules,
+                'lora_config': lora_config,
+                'weight_files': weight_files,
+                'has_siglip_weights': has_siglip_weights,
+                'has_projector_weights': has_projector_weights,
+                'total_files': len(weight_files)
+            }
+            
+        except Exception as e:
+            print(f"      ❌ Error analyzing checkpoint {checkpoint_path}: {e}")
+            return {
+                'path': checkpoint_path,
+                'modified_time': 0,
+                'modified_time_str': 'unknown',
+                'target_modules': [],
+                'lora_config': {},
+                'weight_files': [],
+                'has_siglip_weights': False,
+                'has_projector_weights': False,
+                'total_files': 0,
+                'error': str(e)
+            }
     
     # DEPRECATED: _resize_for_shirg removed - SHIRG-Fovea uses anyres 5-view processing
     

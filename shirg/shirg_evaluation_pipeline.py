@@ -933,6 +933,24 @@ def run_multi_config_evaluation(dataset_samples: List[Dict],
     print(f"\n🚀 Starting SHIRG Multi-Configuration Evaluation")
     print(f"   Configurations: {list(configs.keys())}")
     print(f"   Total samples: {len(dataset_samples)}")
+    
+    # Check for available LoRA checkpoints before starting evaluation
+    print("\n🔍 Checking for LoRA checkpoints...")
+    temp_runner = LaViDaModelRunner()  # Temporary runner for checkpoint checking
+    lora_summary = temp_runner.check_lora_availability()
+    
+    if lora_summary['total_checkpoints'] > 0:
+        print(f"\n✅ Found {lora_summary['total_checkpoints']} LoRA checkpoint(s) - will be loaded for SHIRG evaluations")
+        recommended = lora_summary['recommended']
+        if recommended:
+            print(f"   👑 Latest checkpoint: {recommended['path']}")
+            print(f"      Target modules: {len(recommended['target_modules'])} components")
+            print(f"      SigLIP weights: {'✅' if recommended['has_siglip_weights'] else '❌'}")
+            print(f"      Projector weights: {'✅' if recommended['has_projector_weights'] else '❌'}")
+    else:
+        print("\n⚠️ No LoRA checkpoints found - SHIRG models will use base weights only")
+        print("   Consider training SHIRG LoRA weights first for optimal performance")
+    
     print("=" * 60)
     
     all_results = []
