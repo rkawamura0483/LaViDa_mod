@@ -251,6 +251,47 @@ def train_in_colab(
     print("🚀 Setting up model...")
     try:
         trainer.setup_model()
+        
+        # SHIRG-FIX: 2025-07-30 - Apply selective gradient flow for Colab
+        # ISSUE: PEFT LoRA needs gradient flow through base modules
+        # SOLUTION: Enable selective gradient flow and memory optimizations
+        # LAVIDA IMPACT: Base modules allow gradient flow but stay frozen
+        # SHIRG IMPACT: Enables LoRA training in memory-constrained Colab
+        try:
+            from shirg.fix_lora_gradients_selective import (
+                apply_selective_gradient_flow,
+                verify_selective_gradient_flow,
+                apply_memory_optimizations,
+                fix_trainer_optimizer
+            )
+            
+            print("🔧 Applying selective gradient flow fix...")
+            results = apply_selective_gradient_flow(trainer.model, debug=True)
+            
+            if results['success']:
+                print(f"✅ Selective gradient flow enabled")
+                
+                # Fix the trainer's optimizer to use only LoRA params
+                fix_trainer_optimizer(trainer, debug=True)
+                
+                # Apply memory optimizations for Colab
+                apply_memory_optimizations(trainer.model, config.__dict__)
+                
+                # Verify the setup
+                verify_results = verify_selective_gradient_flow(
+                    trainer.model, 
+                    trainer.optimizer,
+                    debug=True
+                )
+                
+                if not verify_results['setup_correct']:
+                    print("⚠️ Warning: Gradient flow setup may have issues")
+            else:
+                print("⚠️ Selective gradient flow fix failed")
+                
+        except ImportError:
+            print("⚠️ Selective gradient fix not available, using default setup")
+        
         num_training_steps = len(trainer.train_dataloader) * config.num_train_epochs
         trainer.setup_optimizer_scheduler(num_training_steps)
     except RuntimeError as e:

@@ -138,23 +138,64 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
         # Call parent method (which includes the LoRA gradient fix)
         super().setup_model()
         
-        # SHIRG-FIX: 2025-07-30 - Apply enhanced gradient fix for multi-GPU
-        # ISSUE: Device mismatches more common in multi-GPU setups
-        # SOLUTION: Ensure comprehensive device and gradient fixes
-        # LAVIDA IMPACT: Consistent device placement across GPUs
-        # SHIRG IMPACT: Enables proper gradient flow in distributed training
+        # SHIRG-FIX: 2025-07-30 - Override optimizer to use only LoRA parameters
+        # ISSUE: Parent optimizer may include base parameters with grad=True
+        # SOLUTION: Recreate optimizer with only LoRA parameters
+        # LAVIDA IMPACT: Only LoRA weights are updated during training
+        # SHIRG IMPACT: Enables selective gradient flow pattern
+        if hasattr(self, 'optimizer') and self.optimizer is not None:
+            from shirg.fix_lora_gradients_selective import get_lora_parameters_only
+            
+            # Get only LoRA parameters
+            lora_params = get_lora_parameters_only(self.model)
+            
+            rank0_print(f"🔧 Recreating optimizer with {len(lora_params)} LoRA parameters only")
+            
+            # Get current optimizer settings
+            old_optimizer = self.optimizer
+            lr = old_optimizer.param_groups[0]['lr']
+            betas = old_optimizer.param_groups[0].get('betas', (0.9, 0.999))
+            weight_decay = old_optimizer.param_groups[0].get('weight_decay', 0.0)
+            
+            # Create new optimizer with only LoRA params
+            self.optimizer = torch.optim.AdamW(
+                lora_params,
+                lr=lr,
+                betas=betas,
+                weight_decay=weight_decay
+            )
+            
+            rank0_print(f"✅ Optimizer recreated with only LoRA parameters")
+        
+        # SHIRG-FIX: 2025-07-30 - Apply selective gradient flow for multi-GPU
+        # ISSUE: PEFT LoRA requires gradient flow through base modules
+        # SOLUTION: Enable requires_grad on base modules but only optimize LoRA params
+        # LAVIDA IMPACT: Base modules stay frozen but allow gradient flow
+        # SHIRG IMPACT: Enables proper LoRA gradient computation
         try:
-            from shirg.fix_lora_gradients_enhanced import apply_comprehensive_fix
+            from shirg.fix_lora_gradients_selective import (
+                apply_selective_gradient_flow,
+                get_lora_parameters_only,
+                verify_selective_gradient_flow,
+                apply_memory_optimizations
+            )
             
-            # Apply comprehensive fix before DDP wrapping
-            local_rank = int(os.environ.get('LOCAL_RANK', 0))
-            device_str = f"cuda:{local_rank}"
+            # Apply selective gradient flow fix
+            rank0_print(f"🔧 Applying selective gradient flow fix...")
+            results = apply_selective_gradient_flow(self.model, debug=True)
             
-            rank0_print(f"🔧 Applying comprehensive LoRA fix for GPU {local_rank}...")
-            apply_comprehensive_fix(self, force_device=device_str)
+            if results['success']:
+                rank0_print(f"✅ Selective gradient flow enabled")
+                rank0_print(f"   Base params with grad=True: {results['base_params_enabled']}")
+                rank0_print(f"   LoRA params found: {results['lora_params_found']}")
+            else:
+                rank0_print(f"⚠️ Selective gradient flow fix failed")
+            
+            # Apply memory optimizations for multi-GPU
+            apply_memory_optimizations(self.model, self.config.__dict__)
             
         except ImportError:
-            rank0_print("⚠️ Enhanced gradient fix not available")
+            rank0_print("⚠️ Selective gradient fix not available")
         
         # SHIRG-FIX: 2025-07-30 - Handle multi-GPU setup for 8 GPU training
         # ISSUE: Need proper handling for distributed model with device_map
