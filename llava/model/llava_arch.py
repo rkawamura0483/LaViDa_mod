@@ -377,9 +377,25 @@ class LlavaMetaForCausalLM(ABC):
             modalities = [modalities]
         
         # import pdb; pdb.set_trace()
-        if type(images) is list or images.ndim == 5:
+        # SHIRG-FIX: 2025-07-30 - Handle PIL Images in list
+        # ISSUE: PIL Images don't have ndim attribute, causing AttributeError
+        # SOLUTION: Check if item is PIL Image before accessing ndim
+        # LAVIDA IMPACT: Maintains compatibility with both tensor and PIL Image inputs
+        # SHIRG IMPACT: Allows proper SHIRG 2-view processing with PIL Images
+        if type(images) is list or (hasattr(images, 'ndim') and images.ndim == 5):
             if type(images) is list:
-                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
+                from PIL import Image as PILImage
+                processed_images = []
+                for x in images:
+                    if isinstance(x, PILImage.Image):
+                        # PIL Images pass through - will be processed later
+                        processed_images.append(x)
+                    elif hasattr(x, 'ndim'):
+                        # Tensor handling
+                        processed_images.append(x.unsqueeze(0) if x.ndim == 3 else x)
+                    else:
+                        processed_images.append(x)
+                images = processed_images
 
             video_idx_in_batch = []
             for _ in range(len(modalities)):
@@ -388,11 +404,48 @@ class LlavaMetaForCausalLM(ABC):
 
             images_list = []
             for image in images:
-                if image.ndim == 4:
+                # SHIRG-FIX: Handle PIL Images which don't have ndim
+                if isinstance(image, PILImage.Image):
+                    # PIL Images will be processed by encode_images
                     images_list.append(image)
+                elif hasattr(image, 'ndim'):
+                    if image.ndim == 4:
+                        images_list.append(image)
+                    else:
+                        images_list.append(image.unsqueeze(0))
                 else:
-                    images_list.append(image.unsqueeze(0))
+                    images_list.append(image)
 
+            # SHIRG-FIX: 2025-07-30 - Handle mixed PIL and tensor images
+            # ISSUE: Can't concatenate PIL Images with torch.cat
+            # SOLUTION: Process PIL Images first, then concatenate tensors
+            # LAVIDA IMPACT: Maintains compatibility with both input types
+            # SHIRG IMPACT: Allows SHIRG to pass PIL Images through pipeline
+            
+            # Check if we have PIL Images that need processing
+            has_pil_images = any(isinstance(img, PILImage.Image) for img in images_list)
+            
+            if has_pil_images:
+                # Process PIL Images through process_images
+                from llava.mm_utils import process_images
+                image_processor = self.get_model().get_vision_tower().image_processor
+                model_cfg = self.config
+                
+                processed_list = []
+                for img in images_list:
+                    if isinstance(img, PILImage.Image):
+                        # Process single PIL image
+                        processed = process_images([img], image_processor, model_cfg)
+                        if isinstance(processed, list):
+                            processed_list.extend(processed)
+                        else:
+                            processed_list.append(processed)
+                    else:
+                        # Already a tensor
+                        processed_list.append(img)
+                images_list = processed_list
+            
+            # Now all should be tensors - concatenate
             concat_images = torch.cat([image for image in images_list], dim=0)
             split_sizes = [image.shape[0] for image in images_list]
             encoded_image_features = self.encode_images(concat_images)

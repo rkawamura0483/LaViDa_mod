@@ -39,6 +39,7 @@ from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 from shirg.shirg_token_dropout import ShirgTokenDropout, ShirgDropoutScheduler
 from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
 from shirg.dataset_loaders import create_data_loaders, MixedVQADataset
+from llava.train.llava_trainer import rank0_print
 
 # Import HuggingFace components
 from transformers import (
@@ -138,8 +139,18 @@ class ShirgLoraTrainer:
         self.model = self.wrapper.model
         self.tokenizer = self.wrapper.tokenizer
         
-        # Ensure vision tower has SHIRG enabled
+        # SHIRG-FIX: 2025-07-30 - Ensure vision tower has SHIRG enabled
+        # ISSUE: SHIRG config not being propagated correctly to vision tower
+        # SOLUTION: Set shirg_enabled directly on vision tower instance
+        # LAVIDA IMPACT: None - only affects SHIRG mode
+        # SHIRG IMPACT: Ensures SHIRG is properly enabled during training
         vision_tower = self.model.get_model().get_vision_tower()
+        
+        # Set SHIRG enabled flag directly on vision tower
+        vision_tower.shirg_enabled = True
+        rank0_print(f"SHIRG-TRAINING: Enabled SHIRG on vision tower (was {getattr(vision_tower, 'shirg_enabled', False)})")
+        
+        # Also update config if it exists
         if hasattr(vision_tower, 'config'):
             vision_tower.config.enable_shirg = True
             vision_tower.config.shirg_selection_method = self.config.shirg_method
@@ -150,6 +161,13 @@ class ShirgLoraTrainer:
                 'merge_similar': self.config.shirg_merge_similar,
                 'merge_threshold': self.config.shirg_merge_threshold,
             }
+        
+        # Also update vision_tower_cfg if it exists
+        if hasattr(vision_tower, 'vision_tower_cfg'):
+            if isinstance(vision_tower.vision_tower_cfg, dict):
+                vision_tower.vision_tower_cfg['enable_shirg'] = True
+            else:
+                vision_tower.vision_tower_cfg.enable_shirg = True
         
         # Debug: Find actual module paths in the model
         print("🔍 Discovering model structure for LoRA targeting...")
@@ -327,10 +345,22 @@ class ShirgLoraTrainer:
         answers = [item["answer"] for item in batch]
         ids = [item["id"] for item in batch]
         
+        # SHIRG-FIX: 2025-07-30 - Ensure SHIRG mode is enabled for image processing
+        # ISSUE: process_images needs to use SHIRG 2-view mode during training
+        # SOLUTION: Ensure model config has SHIRG settings before processing
+        # LAVIDA IMPACT: None - only affects SHIRG training
+        # SHIRG IMPACT: Enables correct 2-view processing (1×384² + 1×448²)
+        
+        # Ensure SHIRG is enabled in model config for process_images
+        if hasattr(self.model, 'config'):
+            self.model.config.enable_shirg = True
+            self.model.config.shirg_3view_mode = True  # Enable 2-view mode
+        
         # Process images
         try:
             from llava.mm_utils import process_images
             image_tensors = process_images(images, self.wrapper.image_processor, self.model.config)
+            rank0_print(f"SHIRG-COLLATE: Processed {len(images)} images, result shape: {image_tensors.shape if hasattr(image_tensors, 'shape') else 'list'}")
         except Exception as e:
             # Fallback if LaViDa processing fails
             print(f"⚠️ LaViDa image processing failed: {e}")

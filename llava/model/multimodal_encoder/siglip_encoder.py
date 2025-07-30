@@ -389,7 +389,13 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             is_concatenated_views = True
             rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated view tensor: {images.shape}")
         
-        if should_use_shirg and is_concatenated_views:
+        # SHIRG-FIX: 2025-07-30 - Only process with SHIRG if properly enabled
+        # ISSUE: Was attempting SHIRG processing even when disabled
+        # SOLUTION: Check both should_use_shirg AND self.shirg_enabled
+        # LAVIDA IMPACT: Ensures proper fallback to standard processing
+        # SHIRG IMPACT: Prevents incorrect processing when SHIRG is disabled
+        
+        if should_use_shirg and self.shirg_enabled and is_concatenated_views:
             # SHIRG-5VIEW-OUTPUT-FIX: 2025-07-29 - Return 5 separate views for LaViDa's split logic
             # ISSUE: SHIRG returns concatenated tokens but LaViDa expects to split by views
             # SOLUTION: Process with SHIRG but return as 5 separate tensors stacked along batch dim
@@ -707,12 +713,49 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 if original_requires_grad and not patch.requires_grad:
                     patch = patch.requires_grad_(True)
             
+            # SHIRG-FIX: 2025-07-30 - Add bounds checking for CUDA indexing
+            # ISSUE: CUDA indexing error when processing patches
+            # SOLUTION: Validate patch dimensions before processing
+            # LAVIDA IMPACT: Prevents crashes on malformed inputs
+            # SHIRG IMPACT: Ensures stable processing of multi-view inputs
+            
+            # Validate patch shape before processing
+            if len(patch.shape) != 4:
+                rank0_print(f"❌ Invalid patch shape: {patch.shape}, expected [B, C, H, W]")
+                raise ValueError(f"Invalid patch shape: {patch.shape}")
+            
+            batch_size, channels, height, width = patch.shape
+            if channels != 3:
+                rank0_print(f"❌ Invalid channels: {channels}, expected 3")
+                raise ValueError(f"Invalid channels: {channels}")
+            
+            if height != 384 or width != 384:
+                rank0_print(f"⚠️ Non-standard patch size: {height}x{width}, expected 384x384")
+            
             # Process through vision tower
-            patch_forward_out = self.vision_tower(
-                patch, 
-                output_hidden_states=True
-            )
-            patch_feature = patch_forward_out.hidden_states[-1]
+            try:
+                patch_forward_out = self.vision_tower(
+                    patch, 
+                    output_hidden_states=True
+                )
+                patch_feature = patch_forward_out.hidden_states[-1]
+            except RuntimeError as e:
+                if "srcIndex < srcSelectDimSize" in str(e):
+                    rank0_print(f"❌ CUDA indexing error on patch {i+1}: {patch.shape}")
+                    rank0_print(f"   Error: {e}")
+                    # Try to recover by resizing patch
+                    if height != 384 or width != 384:
+                        rank0_print(f"   Attempting to resize patch from {height}x{width} to 384x384")
+                        import torch.nn.functional as F
+                        patch = F.interpolate(patch, size=(384, 384), mode='bilinear', align_corners=False)
+                        # Retry processing
+                        patch_forward_out = self.vision_tower(
+                            patch, 
+                            output_hidden_states=True
+                        )
+                        patch_feature = patch_forward_out.hidden_states[-1]
+                    else:
+                        raise
             
             # Validate patch token count (should be 729 per patch)
             # NOTE: SigLIP encoder produces 729 tokens per view, pooler projector reduces to 196 per view

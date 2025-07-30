@@ -689,11 +689,35 @@ class ShirgLoraPreTrainTest:
             model = wrapper.model
             tokenizer = wrapper.tokenizer
             
+            # SHIRG-FIX: 2025-07-30 - Ensure all SHIRG configurations are properly set
+            # ISSUE: SHIRG config not fully propagated during testing
+            # SOLUTION: Set SHIRG config on all relevant components
+            # LAVIDA IMPACT: None - only affects SHIRG mode
+            # SHIRG IMPACT: Ensures proper 2-view processing during tests
+            
+            # Ensure model config has SHIRG enabled
+            if hasattr(model, 'config'):
+                model.config.enable_shirg = True
+                model.config.shirg_3view_mode = True  # Enable 2-view mode
+                
             # Ensure vision tower has SHIRG enabled
             vision_tower = model.get_model().get_vision_tower()
-            if hasattr(vision_tower, 'config'):
-                vision_tower.config.enable_shirg = True
-                vision_tower.config.shirg_selection_method = self.config.shirg_method
+            if vision_tower:
+                # Set directly on vision tower instance
+                vision_tower.shirg_enabled = True
+                
+                if hasattr(vision_tower, 'config'):
+                    vision_tower.config.enable_shirg = True
+                    vision_tower.config.shirg_selection_method = self.config.shirg_method
+                    vision_tower.config.shirg_3view_mode = True
+                    
+                if hasattr(vision_tower, 'vision_tower_cfg'):
+                    if isinstance(vision_tower.vision_tower_cfg, dict):
+                        vision_tower.vision_tower_cfg['enable_shirg'] = True
+                        vision_tower.vision_tower_cfg['shirg_3view_mode'] = True
+                    else:
+                        vision_tower.vision_tower_cfg.enable_shirg = True
+                        vision_tower.vision_tower_cfg.shirg_3view_mode = True
                 
             # Debug: Print model structure to find correct module paths
             print(f"\n   Debugging model structure:")
