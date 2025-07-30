@@ -434,7 +434,7 @@ class SigLipShirgExtensions:
             K: Number of tokens to keep (724 for 70.7% keep rate)
             text_embeddings: Optional text embeddings for similarity scoring
             return_indices: If True, also return the selected indices for visualization
-            method: Selection method ('base', 'entropy', 'edge', 'full')
+            method: Selection method ('base', 'entropy', 'edge', 'full', 'random')
             params: Dict with method-specific parameters:
                 - entropy_threshold: τ for noise filtering (default: 0.12)
                 - edge_weight: Weight for edge prior (default: 0.25)
@@ -475,7 +475,18 @@ class SigLipShirgExtensions:
         )
         
         # Apply method-specific scoring
-        if method == 'base':
+        if method == 'random':
+            # SHIRG-FIX: 2025-07-30 - Add random token selection method
+            # ISSUE: Need baseline comparison to show algorithmic selection is meaningful
+            # SOLUTION: Implement truly random token selection with same K budget
+            # RESEARCH IMPACT: Provides baseline to demonstrate SHIRG methods beat random
+            # LAVIDA IMPACT: None - maintains same token count
+            
+            # Generate random scores for each token
+            combined_scores = torch.rand(B, N, device=view_tokens.device)
+            rank0_print(f"   Random selection: selecting {K} tokens randomly from {N} total")
+            
+        elif method == 'base':
             combined_scores = 0.7 * attn_scores + 0.3 * sim_scores
             
         elif method == 'entropy':

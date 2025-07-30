@@ -133,6 +133,12 @@ class SHIRGEvaluationPipeline:
                     "merge_threshold": 0.9
                 },
                 "description": "SHIRG-Full: All enhancements with token merging (θ=0.9)"
+            },
+            "shirg_random": {
+                "use_shirg": True,
+                "selection_method": "random",
+                "selection_params": {},
+                "description": "SHIRG-Random: Random token selection baseline (980 tokens)"
             }
         }
     
@@ -805,12 +811,12 @@ def create_test_configs(methods: List[str] = None) -> Dict:
     Create a subset of test configurations for quick evaluation
     
     Args:
-        methods: List of methods to test. If None, tests ['base', 'entropy', 'edge', 'full']
+        methods: List of methods to test. If None, tests ['base', 'entropy', 'edge', 'full', 'random']
     
     Returns:
         Dictionary of test configurations
     """
-    methods = methods or ['base', 'entropy', 'edge', 'full']
+    methods = methods or ['base', 'entropy', 'edge', 'full', 'random']
     
     test_configs = {
         "baseline": {
@@ -856,6 +862,14 @@ def create_test_configs(methods: List[str] = None) -> Dict:
                 "merge_similar": False
             },
             "description": "SHIRG-Full: All enhancements"
+        }
+    
+    if 'random' in methods:
+        test_configs["shirg_random"] = {
+            "use_shirg": True,
+            "selection_method": "random",
+            "selection_params": {},
+            "description": "SHIRG-Random: Random token selection baseline"
         }
     
     return test_configs
@@ -980,7 +994,7 @@ def main():
     parser.add_argument('--baseline-only', action='store_true',
                       help='Run only the baseline configuration')
     parser.add_argument('--method', type=str, default=None,
-                      choices=['base', 'entropy', 'edge', 'full'],
+                      choices=['base', 'entropy', 'edge', 'full', 'random'],
                       help='Custom selection method (overrides config)')
     parser.add_argument('--entropy-threshold', type=float, default=0.12,
                       help='Entropy threshold for noise filtering')
