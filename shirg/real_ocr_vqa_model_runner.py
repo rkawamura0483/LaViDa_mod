@@ -698,6 +698,7 @@ class LaViDaModelRunner:
         # Look for LoRA weights in common locations
         lora_paths = [
             './shirg_lora_checkpoints/',  # Training script output
+            './shirg_lora_checkpoints_8gpu/',  # Multi-GPU training output
             './shirg/lora_weights/',
             './lora_weights/',
             './weights/lora/',
@@ -960,6 +961,7 @@ class LaViDaModelRunner:
         # Look for LoRA weights in common locations
         lora_paths = [
             './shirg_lora_checkpoints/',  # Training script output
+            './shirg_lora_checkpoints_8gpu/',  # Multi-GPU training output
             './shirg/lora_weights/',
             './lora_weights/',
             './weights/lora/',
