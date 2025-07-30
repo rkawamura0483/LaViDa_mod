@@ -94,7 +94,7 @@ echo "================================================"
 MODEL_PATH="KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
 OUTPUT_DIR="./shirg_lora_checkpoints_8gpu"
 SELECTION_METHOD="full"  # Options: base, entropy, edge, full
-TOTAL_BATCH_SIZE=64    # Total batch size across all GPUs (increased for real data)
+TOTAL_BATCH_SIZE=256    # Total batch size across all GPUs (increased for real data)
 LEARNING_RATE=1.8e-5
 NUM_EPOCHS=3
 GRADIENT_ACCUMULATION=1

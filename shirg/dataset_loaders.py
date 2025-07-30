@@ -83,16 +83,12 @@ class ChartQADataset(Dataset):
                 
             except Exception as e:
                 print(f"❌ Failed to load ChartQA from HuggingFace: {e}")
-                print("   Creating synthetic data for testing...")
-                # Create synthetic data
-                num_samples = 1000 if split == "train" else 200
-                for i in range(num_samples):
-                    self.data.append({
-                        'question': f"What is the value of the {i}th bar?",
-                        'answer': f"{np.random.randint(10, 100)}",
-                        'image': None,
-                        'question_id': f"chartqa_synthetic_{i}"
-                    })
+                # SHIRG-FIX: [2025-07-30] - NO SYNTHETIC DATA
+                # ISSUE: Removed synthetic data generation 
+                # SOLUTION: Use only real ChartQA data
+                # LAVIDA IMPACT: None
+                # SHIRG IMPACT: Training uses only real data
+                self.data = []
     
     def __len__(self):
         return len(self.data)
@@ -246,47 +242,37 @@ class DocVQADataset(Dataset):
                 except Exception as e:
                     print(f"❌ Error loading local DocVQA: {e}")
         
-        # If no local data, handle appropriately
+        # If no local data, try loading from HuggingFace
         if not self.data:
-            # SHIRG-FIX: [2025-07-30] - Handle DocVQA split mapping
-            # ISSUE: lmms-lab/DocVQA only has validation and test splits, no train
-            # SOLUTION: For training, use TextVQA as alternative or skip DocVQA
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: Training uses alternative datasets
-            if split == "train":
-                print("⚠️ DocVQA train split: Creating synthetic data")
-                num_samples = 1000
-                for i in range(num_samples):
-                    self.data.append({
-                        'question': f"What is written in section {i % 10 + 1}?",
-                        'answers': [f"Content {i}"],
-                        'image': None,
-                        'question_id': f"docvqa_synthetic_{i}"
-                    })
-            else:
-                print(f"❌ DocVQA {split}: No data found")
-                self.data = []
-        
-        # Limit samples if requested
-        if max_samples and len(self.data) > max_samples:
-            self.data = self.data[:max_samples]
-            print(f"   Limited to {max_samples} samples")
-            # Load DocVQA for validation/test only
-            dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=self.split, cache_dir=cache_dir)
-            self.data = dataset
-            
-            # Limit samples if requested
-            if max_samples and len(self.data) > max_samples:
-                indices = np.random.choice(len(self.data), max_samples, replace=False)
-                self.data = self.data.select(indices)
+            try:
+                # SHIRG-FIX: [2025-07-30] - NO SYNTHETIC DATA - load real DocVQA only
+                # ISSUE: Removed all synthetic data generation
+                # SOLUTION: Load from HuggingFace lmms-lab/DocVQA 
+                # LAVIDA IMPACT: None
+                # SHIRG IMPACT: Uses only real DocVQA data
                 
-            print(f"✅ Loaded DocVQA {split} split: {len(self.data)} samples")
-            
-        except Exception as e:
-            print(f"❌ Failed to load DocVQA from HuggingFace: {e}")
-            print("   Trying alternative source...")
-            # Alternative: Load from local files if available
-            self.data = []
+                # Map split names for HuggingFace dataset
+                hf_split = split
+                if split == "validation":
+                    hf_split = "val"  # Check if this mapping is needed
+                    
+                print(f"📥 Loading DocVQA {split} split from HuggingFace...")
+                dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=hf_split, cache_dir=cache_dir)
+                self.data = dataset
+                
+                # Limit samples if requested
+                if max_samples and len(self.data) > max_samples:
+                    indices = np.random.choice(len(self.data), max_samples, replace=False)
+                    self.data = self.data.select(indices)
+                    
+                print(f"✅ Loaded DocVQA {split} split: {len(self.data)} samples")
+                
+            except Exception as e:
+                print(f"❌ Failed to load DocVQA from HuggingFace: {e}")
+                # For training split, DocVQA might not have train data
+                if split == "train":
+                    print("   Note: DocVQA may not have a train split. Use validation data or other datasets for training.")
+                self.data = []
     
     def __len__(self):
         return len(self.data)
@@ -911,6 +897,113 @@ class InfoVQADataset(Dataset):
         }
 
 
+class MathVistaDataset(Dataset):
+    """MathVista dataset loader for mathematical reasoning and diagram understanding"""
+    
+    def __init__(
+        self,
+        split: str = "train",
+        max_samples: Optional[int] = None,
+        image_size: int = 672,
+        cache_dir: str = "./data/mathvista",
+        data_dir: Optional[str] = None,
+    ):
+        """
+        Initialize MathVista dataset
+        
+        Args:
+            split: Dataset split ('train', 'validation', 'test')
+            max_samples: Maximum number of samples to load
+            image_size: Target image size
+            cache_dir: Directory to cache dataset
+        """
+        self.split = split
+        self.image_size = image_size
+        self.cache_dir = cache_dir
+        self.data = []
+        
+        # SHIRG-FIX: [2025-07-30] - Load MathVista dataset
+        # ISSUE: Adding MathVista for mathematical reasoning
+        # SOLUTION: Load from HuggingFace AI4Math/MathVista
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Adds mathematical reasoning dataset
+        
+        try:
+            print(f"📐 Loading MathVista {split} split from HuggingFace...")
+            
+            # Map split names for HuggingFace dataset
+            hf_split = split
+            if split == "validation":
+                hf_split = "testmini"  # MathVista uses testmini for validation
+            elif split == "test":
+                hf_split = "test"
+                
+            # Load the dataset
+            dataset = load_dataset("AI4Math/MathVista", split=hf_split, cache_dir=cache_dir)
+            self.data = dataset
+            
+            # Limit samples if requested
+            if max_samples and len(self.data) > max_samples:
+                indices = np.random.choice(len(self.data), max_samples, replace=False)
+                self.data = self.data.select(indices)
+                
+            print(f"✅ Loaded MathVista {split} split: {len(self.data)} samples")
+            
+        except Exception as e:
+            print(f"❌ Failed to load MathVista from HuggingFace: {e}")
+            self.data = []
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # MathVista format
+        image = item.get('image')
+        if image is None:
+            # Create placeholder if no image
+            image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+        else:
+            try:
+                if not isinstance(image, Image.Image):
+                    image = Image.fromarray(np.array(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+        
+        # Resize to target size
+        image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+        
+        # Pad to square
+        if image.size != (self.image_size, self.image_size):
+            new_image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+            paste_x = (self.image_size - image.width) // 2
+            paste_y = (self.image_size - image.height) // 2
+            new_image.paste(image, (paste_x, paste_y))
+            image = new_image
+        
+        # Get question and answer
+        question = item.get('question', 'What is shown in this mathematical diagram?')
+        answer = item.get('answer', '')
+        
+        # MathVista also has additional fields like 'question_type', 'answer_type', etc.
+        metadata = {
+            'question_type': item.get('question_type', 'unknown'),
+            'answer_type': item.get('answer_type', 'unknown'),
+            'precision': item.get('precision', 1.0),
+            'metadata': item.get('metadata', {})
+        }
+        
+        return {
+            'image': image,
+            'question': str(question),
+            'answer': str(answer),
+            'id': f"mathvista_{idx}",
+            'dataset': 'mathvista',
+            'metadata': metadata
+        }
+
+
 class MixedVQADataset(Dataset):
     """Mixed dataset combining ChartQA, DocVQA, and VQA v2 with weighted sampling"""
     
@@ -947,13 +1040,14 @@ class MixedVQADataset(Dataset):
             # Max batch size = 2 per GPU (35GB available / 17GB per sample)
             # Throughput: ~2.5 samples/sec across 8 GPUs = ~72K samples in 8 hours
             
-            # Conservative 100K samples for reliable 8-hour completion
+            # Conservative 120K samples for reliable 8-hour completion
             dataset_configs = {
-                "chartqa": {"weight": 0.2, "max_samples": 20000},    # Charts (high priority)
-                "textvqa": {"weight": 0.2, "max_samples": 20000},    # Natural scene text
-                "ocrvqa": {"weight": 0.2, "max_samples": 25000},     # OCR-focused
-                "infovqa": {"weight": 0.2, "max_samples": 10000},    # Full InfoVQA dataset
-                "vqa_v2": {"weight": 0.2, "max_samples": 25000},     # General VQA
+                "chartqa": {"weight": 0.15, "max_samples": 18000},    # Charts (high priority)
+                "textvqa": {"weight": 0.15, "max_samples": 18000},    # Natural scene text
+                "ocrvqa": {"weight": 0.15, "max_samples": 18000},     # OCR-focused
+                "infovqa": {"weight": 0.15, "max_samples": 18000},    # Full InfoVQA dataset
+                "mathvista": {"weight": 0.20, "max_samples": 24000},  # Mathematical reasoning
+                "vqa_v2": {"weight": 0.20, "max_samples": 24000},     # General VQA
             }
             
             total_samples = sum(cfg["max_samples"] for cfg in dataset_configs.values())
@@ -977,9 +1071,11 @@ class MixedVQADataset(Dataset):
         elif dataset_configs is None:
             # For validation/test, include all datasets
             dataset_configs = {
-                "chartqa": {"weight": 0.3, "max_samples": 10000},
-                "docvqa": {"weight": 0.3, "max_samples": 10000},
-                "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+                "chartqa": {"weight": 0.2, "max_samples": 1000},
+                "docvqa": {"weight": 0.2, "max_samples": 1000},
+                "mathvista": {"weight": 0.2, "max_samples": 1000},
+                "textvqa": {"weight": 0.2, "max_samples": 1000},
+                "vqa_v2": {"weight": 0.2, "max_samples": 1000},
             }
     
         self.datasets = {}
@@ -995,6 +1091,7 @@ class MixedVQADataset(Dataset):
                 "textvqa": TextVQADataset,
                 "ocrvqa": OCRVQADataset,    # Book cover OCR
                 "infovqa": InfoVQADataset,   # Infographic understanding
+                "mathvista": MathVistaDataset, # Mathematical reasoning
             }.get(name)
             
             if dataset_class:
