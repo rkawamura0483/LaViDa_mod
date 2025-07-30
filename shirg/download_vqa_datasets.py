@@ -139,20 +139,48 @@ class VQADatasetDownloader:
     
     def download_chartqa(self) -> Dict[str, int]:
         """Download ChartQA dataset"""
-        print("\n📊 Downloading ChartQA dataset from HuggingFace...")
+        print("\n📊 ChartQA dataset...")
         dataset_dir = self.base_dir / "chartqa"
         dataset_dir.mkdir(exist_ok=True)
+        
+        # Check if already downloaded
+        counts = {}
+        all_exist = True
+        for split in ["train", "val", "test"]:
+            json_path = dataset_dir / "ChartQA Dataset" / split / f"{split}_augmented.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                    counts[split] = len(data)
+                    print(f"✅ ChartQA {split} already exists: {counts[split]} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            return counts
+        
+        print("   Downloading missing splits from HuggingFace...")
         
         try:
             from datasets import load_dataset
             
             # Download from HuggingFace
             for split in ["train", "val", "test"]:
+                split_dir = dataset_dir / "ChartQA Dataset" / split
+                json_path = split_dir / f"{split}_augmented.json"
+                
+                # Skip if already exists
+                if json_path.exists():
+                    continue
+                    
                 print(f"📥 Downloading ChartQA {split} split...")
                 dataset = load_dataset("ahmed-masry/ChartQA", split=split)
                 
                 # Save to local format
-                split_dir = dataset_dir / "ChartQA Dataset" / split
                 split_dir.mkdir(parents=True, exist_ok=True)
                 
                 # Convert to ChartQA format
@@ -166,16 +194,13 @@ class VQADatasetDownloader:
                     })
                 
                 # Save JSON
-                json_path = split_dir / f"{split}_augmented.json"
                 with open(json_path, 'w') as f:
                     json.dump(data, f, indent=2)
                 
+                counts[split] = len(data)
                 print(f"✅ ChartQA {split}: {len(data)} samples")
-                
-                # Note: Images would need to be saved separately
-                # For now, we'll handle missing images in the loader
             
-            return {"train": 18317, "val": 1250, "test": 2500}
+            return counts
             
         except Exception as e:
             print(f"❌ Error downloading ChartQA from HuggingFace: {e}")
@@ -184,25 +209,46 @@ class VQADatasetDownloader:
     
     def download_docvqa(self) -> Dict[str, int]:
         """Download DocVQA dataset"""
-        print("\n📄 Downloading DocVQA dataset from HuggingFace...")
+        print("\n📄 DocVQA dataset...")
         dataset_dir = self.base_dir / "docvqa"
         dataset_dir.mkdir(exist_ok=True)
+        
+        # Check if already downloaded
+        counts = {"train": 0}  # DocVQA has no train split
+        all_exist = True
+        split_mapping = {"val": "validation", "test": "test"}
+        
+        for local_split in split_mapping.keys():
+            json_path = dataset_dir / local_split / f"{local_split}_v1.0.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        json_data = json.load(f)
+                    counts[local_split] = len(json_data.get("data", []))
+                    print(f"✅ DocVQA {local_split} already exists: {counts[local_split]} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            print("ℹ️ Note: DocVQA doesn't have a train split. Use other datasets for training.")
+            return counts
+        
+        print("   Downloading missing splits from HuggingFace...")
         
         try:
             from datasets import load_dataset
             
-            counts = {}
-            
-            # SHIRG-FIX: [2025-07-30] - DocVQA only has validation and test splits
-            # ISSUE: DocVQA doesn't have a train split
-            # SOLUTION: Use validation split for training, or skip DocVQA for training
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: DocVQA will only be used for validation/test
-            
             # DocVQA only has validation and test splits
-            split_mapping = {"val": "validation", "test": "test"}
-            
             for local_split, hf_split in split_mapping.items():
+                json_path = dataset_dir / local_split / f"{local_split}_v1.0.json"
+                
+                # Skip if already exists
+                if json_path.exists():
+                    continue
+                
                 try:
                     print(f"📥 Downloading DocVQA {local_split} split...")
                     dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=hf_split)
@@ -224,7 +270,6 @@ class VQADatasetDownloader:
                     
                     # Save JSON in DocVQA format
                     json_data = {"data": data_items}
-                    json_path = split_dir / f"{local_split}_v1.0.json"
                     with open(json_path, 'w') as f:
                         json.dump(json_data, f, indent=2)
                     
@@ -235,9 +280,7 @@ class VQADatasetDownloader:
                     print(f"⚠️ Could not download DocVQA {local_split}: {e}")
             
             # Note about missing train split
-            if not counts.get("train"):
-                print("ℹ️ Note: DocVQA doesn't have a train split. Use other datasets for training.")
-                counts["train"] = 0
+            print("ℹ️ Note: DocVQA doesn't have a train split. Use other datasets for training.")
             
             return counts
             
@@ -248,17 +291,47 @@ class VQADatasetDownloader:
     
     def download_vqa_v2(self) -> Dict[str, int]:
         """Download VQA v2 dataset"""
-        print("\n🖼️ Downloading VQA v2 dataset...")
+        print("\n🖼️ VQA v2 dataset...")
         dataset_dir = self.base_dir / "vqa_v2"
         dataset_dir.mkdir(exist_ok=True)
         
+        # Check if already downloaded
         counts = {}
+        all_exist = True
+        for split in ["train", "val"]:
+            questions_path = dataset_dir / f"v2_mscoco_{split}2014_questions.json"
+            annotations_path = dataset_dir / f"v2_mscoco_{split}2014_annotations.json"
+            
+            if questions_path.exists() and annotations_path.exists():
+                try:
+                    with open(questions_path, 'r') as f:
+                        data = json.load(f)
+                    counts[split] = len(data['questions'])
+                    print(f"✅ VQA v2 {split} already exists: {counts[split]} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            print("ℹ️ VQA v2 images not included (13GB+ each). Use COCO dataset if needed.")
+            return counts
+        
+        print("   Downloading missing files...")
         
         # Download questions and annotations
         for split in ["train", "val"]:
+            questions_path = dataset_dir / f"v2_mscoco_{split}2014_questions.json"
+            annotations_path = dataset_dir / f"v2_mscoco_{split}2014_annotations.json"
+            
+            # Skip if both files exist
+            if questions_path.exists() and annotations_path.exists():
+                continue
+            
             # Questions
             questions_zip = dataset_dir / f"v2_Questions_{split.title()}_mscoco.zip"
-            if not questions_zip.exists():
+            if not questions_zip.exists() and not questions_path.exists():
                 if not self.download_file(
                     self.datasets["vqa_v2"][f"{split}_questions"],
                     questions_zip,
@@ -268,7 +341,7 @@ class VQADatasetDownloader:
             
             # Annotations
             annotations_zip = dataset_dir / f"v2_Annotations_{split.title()}_mscoco.zip"
-            if not annotations_zip.exists():
+            if not annotations_zip.exists() and not annotations_path.exists():
                 if not self.download_file(
                     self.datasets["vqa_v2"][f"{split}_annotations"],
                     annotations_zip,
@@ -276,14 +349,15 @@ class VQADatasetDownloader:
                 ):
                     continue
             
-            # Extract
-            if not (dataset_dir / f"v2_mscoco_{split}2014_questions.json").exists():
+            # Extract if needed
+            if not questions_path.exists() or not annotations_path.exists():
                 print(f"📦 Extracting VQA v2 {split} data...")
-                self.extract_archive(questions_zip, dataset_dir)
-                self.extract_archive(annotations_zip, dataset_dir)
+                if questions_zip.exists():
+                    self.extract_archive(questions_zip, dataset_dir)
+                if annotations_zip.exists():
+                    self.extract_archive(annotations_zip, dataset_dir)
             
             # Count samples
-            questions_path = dataset_dir / f"v2_mscoco_{split}2014_questions.json"
             if questions_path.exists():
                 with open(questions_path, 'r') as f:
                     data = json.load(f)
@@ -297,11 +371,32 @@ class VQADatasetDownloader:
     
     def download_textvqa(self) -> Dict[str, int]:
         """Download TextVQA dataset"""
-        print("\n📝 Downloading TextVQA dataset...")
+        print("\n📝 TextVQA dataset...")
         dataset_dir = self.base_dir / "textvqa"
         dataset_dir.mkdir(exist_ok=True)
         
+        # Check if already downloaded
         counts = {}
+        all_exist = True
+        for split in ["train", "val"]:
+            json_path = dataset_dir / f"TextVQA_0.5.1_{split}.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                    counts[split] = len(data['data'])
+                    print(f"✅ TextVQA {split} already exists: {counts[split]} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            print("ℹ️ TextVQA uses COCO images. Download separately if needed.")
+            return counts
+        
+        print("   Downloading missing files...")
         
         # Download JSON files
         for split in ["train", "val"]:
@@ -328,9 +423,32 @@ class VQADatasetDownloader:
     
     def download_ocrvqa(self) -> Dict[str, int]:
         """Download OCR-VQA dataset"""
-        print("\n🔤 Downloading OCR-VQA dataset from HuggingFace...")
+        print("\n🔤 OCR-VQA dataset...")
         dataset_dir = self.base_dir / "ocrvqa"
         dataset_dir.mkdir(exist_ok=True)
+        
+        # Check if already downloaded
+        train_path = dataset_dir / "train.json"
+        val_path = dataset_dir / "val.json"
+        
+        if train_path.exists() and val_path.exists():
+            try:
+                with open(train_path, 'r') as f:
+                    train_data = json.load(f)
+                with open(val_path, 'r') as f:
+                    val_data = json.load(f)
+                counts = {
+                    "train": len(train_data),
+                    "val": len(val_data)
+                }
+                print(f"✅ OCR-VQA train already exists: {counts['train']} samples")
+                print(f"✅ OCR-VQA val already exists: {counts['val']} samples")
+                print("   Skipping download - all splits already exist")
+                return counts
+            except:
+                pass
+        
+        print("   Downloading from HuggingFace...")
         
         try:
             from datasets import load_dataset
@@ -422,11 +540,31 @@ class VQADatasetDownloader:
     
     def download_infovqa(self) -> Dict[str, int]:
         """Download InfoVQA dataset"""
-        print("\n📊 Downloading InfoVQA dataset...")
+        print("\n📊 InfoVQA dataset...")
         dataset_dir = self.base_dir / "infovqa"
         dataset_dir.mkdir(exist_ok=True)
         
+        # Check if already downloaded
         counts = {}
+        all_exist = True
+        for split in ["train", "val"]:
+            json_path = dataset_dir / f"infographicsVQA_{split}_v1.0.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                    counts[split] = len(data['data']) if 'data' in data else len(data)
+                    print(f"✅ InfoVQA {split} already exists: {counts[split]} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            return counts
+        
+        print("   Downloading missing files...")
         
         # Download JSON files
         for split in ["train", "val"]:
@@ -450,18 +588,46 @@ class VQADatasetDownloader:
     
     def download_mathvista(self) -> Dict[str, int]:
         """Download MathVista dataset"""
-        print("\n📐 Downloading MathVista dataset from HuggingFace...")
+        print("\n📐 MathVista dataset...")
         dataset_dir = self.base_dir / "mathvista"
         dataset_dir.mkdir(exist_ok=True)
+        
+        # Check if already downloaded
+        counts = {}
+        all_exist = True
+        splits = ["train", "testmini", "test"]
+        
+        for split in splits:
+            json_path = dataset_dir / f"{split}.json"
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                    count_key = "val" if split == "testmini" else split
+                    counts[count_key] = len(data)
+                    print(f"✅ MathVista {split} already exists: {len(data)} samples")
+                except:
+                    all_exist = False
+            else:
+                all_exist = False
+        
+        if all_exist:
+            print("   Skipping download - all splits already exist")
+            return counts
+        
+        print("   Downloading missing splits from HuggingFace...")
         
         try:
             from datasets import load_dataset
             
-            counts = {}
-            
             # Download each split
-            splits = ["train", "testmini", "test"]
             for split in splits:
+                json_path = dataset_dir / f"{split}.json"
+                
+                # Skip if already exists
+                if json_path.exists():
+                    continue
+                    
                 try:
                     print(f"📥 Downloading MathVista {split} split...")
                     dataset = load_dataset("AI4Math/MathVista", split=split)
@@ -481,7 +647,6 @@ class VQADatasetDownloader:
                         })
                     
                     # Save JSON
-                    json_path = dataset_dir / f"{split}.json"
                     with open(json_path, 'w') as f:
                         json.dump(split_data, f, indent=2)
                     
