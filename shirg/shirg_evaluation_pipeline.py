@@ -276,6 +276,11 @@ class SHIRGEvaluationPipeline:
                 else:
                     dataset_type = dataset_name
                 
+                # Additional normalization for dataset type
+                # Handle variations like "InfographicVQA" -> "InfoVQA"
+                if dataset_type == "InfographicVQA":
+                    dataset_type = "InfoVQA"
+                
                 # Evaluate using dataset-specific metrics
                 eval_scores = self.evaluate_single_sample(prediction, ground_truth, dataset_type)
                 
