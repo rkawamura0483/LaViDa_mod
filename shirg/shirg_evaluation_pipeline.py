@@ -221,6 +221,7 @@ class SHIRGEvaluationPipeline:
                     # Format question for LaViDa
                     formatted_question = f"USER: <image>\n{question}\nASSISTANT:"
                     input_ids = tokenizer(formatted_question, return_tensors="pt")["input_ids"]
+                    # Note: input_ids will be moved to correct device in the inference methods
                 else:
                     print(f"⚠️ No tokenizer available for sample {idx}")
                     continue
@@ -532,12 +533,15 @@ def run_multi_config_evaluation(dataset_samples: List[Dict],
         return pd.DataFrame()
 
 
-def integrate_with_existing_evaluation():
+def integrate_with_existing_evaluation(samples_per_dataset=10):
     """
     Integration function to use with your existing real_ocr_vqa_validation.py
     
     Updated to work with the new SHIRG-Fovea architecture where selection
     method and params are set at model initialization time.
+    
+    Args:
+        samples_per_dataset: Number of samples to load from each dataset (default: 10)
     """
     from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader
     
@@ -545,7 +549,7 @@ def integrate_with_existing_evaluation():
     dataset_loader = OCRVQADatasetLoader()
     
     # Load dataset samples
-    samples_dict = dataset_loader.get_real_ocr_vqa_samples()
+    samples_dict = dataset_loader.get_real_ocr_vqa_samples(samples_per_dataset=samples_per_dataset)
     
     if not samples_dict:
         print("❌ No dataset samples loaded")
@@ -582,13 +586,15 @@ def main():
                       help='Similarity threshold for token merging')
     parser.add_argument('--samples', type=int, default=None,
                       help='Number of samples to evaluate (default: all)')
+    parser.add_argument('--samples-per-dataset', type=int, default=10,
+                      help='Number of samples to load from each dataset (default: 10)')
     
     args = parser.parse_args()
     
     # Load dataset
     from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader
     dataset_loader = OCRVQADatasetLoader()
-    samples_dict = dataset_loader.get_real_ocr_vqa_samples()
+    samples_dict = dataset_loader.get_real_ocr_vqa_samples(samples_per_dataset=args.samples_per_dataset)
     
     if not samples_dict:
         print("❌ No dataset samples loaded")
@@ -632,7 +638,7 @@ def main():
     
     elif args.config == 'all':
         # Run all predefined configurations
-        results_df = integrate_with_existing_evaluation()
+        results_df = integrate_with_existing_evaluation(samples_per_dataset=args.samples_per_dataset)
     
     else:
         # Run specific configuration

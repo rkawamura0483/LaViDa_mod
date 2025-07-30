@@ -56,8 +56,12 @@ class OCRVQADatasetLoader:
     def __init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    def get_real_ocr_vqa_samples(self):
-        """Get real OCR/VQA images from HuggingFace datasets using proper API"""
+    def get_real_ocr_vqa_samples(self, samples_per_dataset=10):
+        """Get real OCR/VQA images from HuggingFace datasets using proper API
+        
+        Args:
+            samples_per_dataset: Number of samples to load from each dataset (default: 10)
+        """
         
         ocr_vqa_samples = {}
         
@@ -83,7 +87,7 @@ class OCRVQADatasetLoader:
                     "name": "HuggingFaceM4/ChartQA",
                     "config": "default",
                     "split": "test",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "ChartQA",
                     "challenge": "Chart question answering"
                 },
@@ -91,7 +95,7 @@ class OCRVQADatasetLoader:
                     "name": "lmms-lab/DocVQA", 
                     "config": "DocVQA",
                     "split": "validation",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "DocVQA",
                     "challenge": "Document question answering"
                 },
@@ -99,7 +103,7 @@ class OCRVQADatasetLoader:
                     "name": "howard-hou/OCR-VQA",
                     "config": None,
                     "split": "validation", 
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "OCR-VQA",
                     "challenge": "OCR-based VQA"
                 },
@@ -107,7 +111,7 @@ class OCRVQADatasetLoader:
                     "name": "AI4Math/MathVista",
                     "config": "default",
                     "split": "testmini",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "MathVista",
                     "challenge": "Mathematical reasoning in visual contexts"
                 },
@@ -115,7 +119,7 @@ class OCRVQADatasetLoader:
                     "name": "facebook/textvqa",
                     "config": None,
                     "split": "validation",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "TextVQA",
                     "challenge": "Text-based visual question answering"
                 },
@@ -123,7 +127,7 @@ class OCRVQADatasetLoader:
                     "name": "lmms-lab/DocVQA",
                     "config": "InfographicVQA",
                     "split": "validation",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "InfoVQA",
                     "challenge": "Infographic question answering"
                 },
@@ -131,7 +135,7 @@ class OCRVQADatasetLoader:
                     "name": "AI4Math/MathVerse",
                     "config": "testmini",
                     "split": "testmini",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "MathVerse",
                     "challenge": "Multi-modal mathematical reasoning"
                 },
@@ -139,7 +143,7 @@ class OCRVQADatasetLoader:
                     "name": "lmms-lab/VQAv2",
                     "config": None,
                     "split": "validation",
-                    "samples": 10,
+                    "samples": samples_per_dataset,
                     "type": "VQAv2",
                     "challenge": "General visual question answering"
                 }

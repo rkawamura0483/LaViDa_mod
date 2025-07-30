@@ -937,6 +937,9 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
+            # Ensure input_ids is on the correct device
+            if input_ids is not None:
+                input_ids = input_ids.to(self.device)
             # Prepare image
             if TORCHVISION_AVAILABLE:
                 # BASELINE-IMAGE-VALIDATION-FIX: 2025-07-29 - Add same validation as SHIRG for consistency
@@ -1094,6 +1097,9 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
+            # Ensure input_ids is on the correct device
+            if input_ids is not None:
+                input_ids = input_ids.to(self.device)
             # SHIRG-Fovea: Process with anyres 5-view format
             # Anyres splitter creates appropriate views for SHIRG-Fovea processing
             # 1 global view (384×384) + 4 peripheral views (512×512)
