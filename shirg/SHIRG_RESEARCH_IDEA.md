@@ -10,7 +10,7 @@ We keep a single 384² global view (256 tokens) to give scene context, and add *
 
 ### 1.1 LaViDa's Core Architecture and Constraints
 
-**LaViDa** combines a SigLIP vision encoder with an 8B-parameter diffusion language model (LLaDA) that uses bidirectional attention and complementary masking. The key innovation is **prefix KV-cache reuse**: visual and text tokens are cached once at step 0 and reused across all 12-30 diffusion steps, enabling ~1.9× speedup over autoregressive VLMs.
+**LaViDa** combines a SigLIP vision encoder with an 8B-parameter diffusion language model (LLaDA) that uses bidirectional attention and complementary masking. The key innovation is **prefix KV-cache reuse**: visual and text tokens are cached once at step 0 and reused across all 0-30 diffusion steps, enabling ~1.9× speedup over autoregressive VLMs.
 
 **Critical Constraint**: The prefix cache requires **token immutability** - any change to visual tokens after step 0 invalidates the entire cache, destroying the speed advantage.
 

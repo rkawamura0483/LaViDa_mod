@@ -91,6 +91,7 @@ class ShirgLoraTrainer:
         model_path: str = "KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers",
         output_dir: str = "./shirg_lora_checkpoints",
         use_wandb: bool = True,
+        data_dir: Optional[str] = None,
     ):
         """
         Initialize trainer
@@ -105,6 +106,7 @@ class ShirgLoraTrainer:
         self.model_path = model_path
         self.output_dir = output_dir
         self.use_wandb = use_wandb
+        self.data_dir = data_dir
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -488,6 +490,40 @@ class ShirgLoraTrainer:
         """Prepare training and validation datasets"""
         print("📊 Preparing datasets...")
         
+        # Check if we should use real datasets
+        if self.data_dir and os.path.exists(self.data_dir):
+            print(f"🔍 Using real datasets from: {self.data_dir}")
+            from shirg.real_dataset_loader import RealVQADataset
+            
+            # Create real dataset loaders
+            self.train_dataset = RealVQADataset(
+                data_dir=self.data_dir,
+                split="train",
+                image_size=self.config.image_size,
+            )
+            
+            self.val_dataset = RealVQADataset(
+                data_dir=self.data_dir,
+                split="val",
+                image_size=self.config.image_size,
+                max_samples_per_dataset=1000,  # Smaller validation
+            )
+            
+            if len(self.train_dataset) == 0:
+                print("❌ No real training data found! Falling back to synthetic data...")
+                # Fall back to synthetic data
+                dataset_configs = {
+                    "chartqa": {"weight": 0.3, "max_samples": 10000},
+                    "docvqa": {"weight": 0.3, "max_samples": 10000},
+                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+                }
+            else:
+                print(f"✅ Training samples: {len(self.train_dataset)}")
+                print(f"✅ Validation samples: {len(self.val_dataset)}")
+                return len(self.train_dataset)
+        
+        # If we get here, use synthetic data
+        print("⚠️ Using synthetic data...")
         # Dataset configuration from research
         dataset_configs = {
             "chartqa": {"weight": 0.3, "max_samples": 10000},
@@ -501,6 +537,7 @@ class ShirgLoraTrainer:
             dataset_configs=dataset_configs,
             image_size=self.config.image_size,
             cache_dir=os.path.join(self.output_dir, "data_cache"),
+            data_dir=self.data_dir,  # Pass real data directory
         )
         
         # Validation dataset with fewer samples
@@ -511,6 +548,7 @@ class ShirgLoraTrainer:
             dataset_configs=val_configs,
             image_size=self.config.image_size,
             cache_dir=os.path.join(self.output_dir, "data_cache"),
+            data_dir=self.data_dir,  # Pass real data directory
         )
         
         print(f"✅ Training samples: {len(self.train_dataset)}")

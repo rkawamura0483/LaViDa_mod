@@ -53,7 +53,10 @@ from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 class MultiGPUShirgTrainer(ShirgLoraTrainer):
     """Extended trainer for multi-GPU training on Lambda Cloud"""
     
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, data_dir=None, **kwargs):
+        # Store data directory
+        self.data_dir = data_dir
+        
         # Initialize distributed training
         self.setup_distributed()
         
@@ -337,6 +340,8 @@ def main():
                        help="Disable Weights & Biases logging")
     parser.add_argument("--num-workers", type=int, default=4,
                        help="Number of dataloader workers per GPU")
+    parser.add_argument("--data-dir", type=str, default="./data/vqa_datasets",
+                       help="Directory containing downloaded VQA datasets")
     
     args = parser.parse_args()
     
@@ -376,6 +381,7 @@ def main():
         model_path=args.model_path,
         output_dir=args.output_dir,
         use_wandb=not args.no_wandb,
+        data_dir=args.data_dir,
     )
     
     try:
