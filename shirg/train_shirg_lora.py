@@ -599,6 +599,8 @@ def main():
                        help="Disable Weights & Biases logging")
     parser.add_argument("--resume-from", type=str, default=None,
                        help="Resume from checkpoint")
+    parser.add_argument("--save-samples-interval", type=int, default=None,
+                       help="Save checkpoint every N samples (e.g., 5000)")
     
     args = parser.parse_args()
     
@@ -608,6 +610,7 @@ def main():
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_epochs=args.num_epochs,
+        save_samples_interval=args.save_samples_interval,
     )
     
     # Create trainer

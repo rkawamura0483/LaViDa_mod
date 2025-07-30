@@ -63,6 +63,7 @@ class ShirgLoraConfig:
     # Save settings
     save_steps: int = 500
     save_total_limit: int = 3
+    save_samples_interval: Optional[int] = None  # Save checkpoint every N samples (e.g., 5000)
     
     # Logging
     logging_steps: int = 10
@@ -266,6 +267,7 @@ def create_lora_training_config(
     batch_size: Optional[int] = None,
     learning_rate: Optional[float] = None,
     num_epochs: Optional[int] = None,
+    save_samples_interval: Optional[int] = None,
 ) -> ShirgLoraConfig:
     """
     Create LoRA training configuration
@@ -291,6 +293,8 @@ def create_lora_training_config(
         config.learning_rate = learning_rate
     if num_epochs is not None:
         config.num_train_epochs = num_epochs
+    if save_samples_interval is not None:
+        config.save_samples_interval = save_samples_interval
     
     # Validate and print warnings
     warnings = config.validate_config()

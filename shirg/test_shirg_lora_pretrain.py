@@ -436,23 +436,38 @@ class ShirgLoraPreTrainTest:
                 print(f"   ✅ Standard mode working correctly")
                 
             # Test SHIRG mode
+            # SHIRG-FIX: 2025-07-30 - Updated to match SHIRG-Fovea architecture
+            # ISSUE: Test expected old 1216 tokens but SHIRG-Fovea produces 980 tokens
+            # SOLUTION: Update expected shape to 980 tokens and handle batch processing correctly
+            # LAVIDA IMPACT: None - just test correction
+            # SHIRG IMPACT: Ensures tests validate the correct SHIRG-Fovea behavior
             print(f"\n   Testing SHIRG mode (672×672):")
-            shirg_images = torch.randn(batch_size, 3, 672, 672)
-            if torch.cuda.is_available():
-                shirg_images = shirg_images.cuda()
-                if self.config.bf16:
-                    shirg_images = shirg_images.to(dtype=torch.bfloat16)
-                    
-            with torch.no_grad():
-                shirg_features = vision_tower(shirg_images, use_shirg=True)
+            
+            # Process each image in batch separately to match evaluation pipeline behavior
+            shirg_features_list = []
+            for i in range(batch_size):
+                shirg_image = torch.randn(1, 3, 672, 672)  # Single image
+                if torch.cuda.is_available():
+                    shirg_image = shirg_image.cuda()
+                    if self.config.bf16:
+                        shirg_image = shirg_image.to(dtype=torch.bfloat16)
+                        
+                with torch.no_grad():
+                    # Process single image
+                    features = vision_tower(shirg_image, use_shirg=True)
+                    shirg_features_list.append(features)
+            
+            # Stack batch results
+            shirg_features = torch.cat(shirg_features_list, dim=0)
                 
             print(f"   Output shape: {shirg_features.shape}")
-            expected_shape = (batch_size, 1216, 1152)
+            # SHIRG-Fovea produces 980 tokens (256 global + 724 foveal)
+            expected_shape = (batch_size, 980, 1152)
             if shirg_features.shape != expected_shape:
                 result["passed"] = False
                 result["error"] = f"SHIRG shape mismatch: expected {expected_shape}, got {shirg_features.shape}"
             else:
-                print(f"   ✅ SHIRG mode working correctly")
+                print(f"   ✅ SHIRG mode working correctly (980 tokens)")
                 
             # Test token selection stats
             if hasattr(vision_tower, 'last_selection_stats'):
@@ -541,22 +556,37 @@ class ShirgLoraPreTrainTest:
                 return result
                 
             # Test SHIRG mode (672x672)
+            # SHIRG-FIX: 2025-07-30 - Updated to match SHIRG-Fovea architecture
+            # ISSUE: Test expected old 1216 tokens but SHIRG-Fovea produces 980 tokens
+            # SOLUTION: Update expected shape to 980 tokens and handle batch processing correctly
+            # LAVIDA IMPACT: None - just test correction
+            # SHIRG IMPACT: Ensures tests validate the correct SHIRG-Fovea behavior
             print(f"\n   Testing SHIRG mode (672×672):")
-            shirg_images = torch.randn(batch_size, 3, 672, 672)
-            if torch.cuda.is_available():
-                shirg_images = shirg_images.cuda()
-                if self.config.bf16:
-                    shirg_images = shirg_images.to(dtype=torch.bfloat16)
-                elif self.config.fp16:
-                    shirg_images = shirg_images.to(dtype=torch.float16)
-                    
-            with torch.no_grad():
-                shirg_features = vision_tower(shirg_images, use_shirg=True)
+            
+            # Process each image in batch separately to match evaluation pipeline behavior
+            shirg_features_list = []
+            for i in range(batch_size):
+                shirg_image = torch.randn(1, 3, 672, 672)  # Single image
+                if torch.cuda.is_available():
+                    shirg_image = shirg_image.cuda()
+                    if self.config.bf16:
+                        shirg_image = shirg_image.to(dtype=torch.bfloat16)
+                    elif self.config.fp16:
+                        shirg_image = shirg_image.to(dtype=torch.float16)
+                        
+                with torch.no_grad():
+                    # Process single image
+                    features = vision_tower(shirg_image, use_shirg=True)
+                    shirg_features_list.append(features)
+            
+            # Stack batch results
+            shirg_features = torch.cat(shirg_features_list, dim=0)
                 
             print(f"   Output shape: {shirg_features.shape}")
-            print(f"   Expected: [{batch_size}, 1216, 1152]")
+            # SHIRG-Fovea produces 980 tokens (256 global + 724 foveal)
+            print(f"   Expected: [{batch_size}, 980, 1152]")
             
-            if shirg_features.shape != (batch_size, 1216, 1152):
+            if shirg_features.shape != (batch_size, 980, 1152):
                 result["passed"] = False
                 result["error"] = f"SHIRG mode shape mismatch: {shirg_features.shape}"
                 return result
