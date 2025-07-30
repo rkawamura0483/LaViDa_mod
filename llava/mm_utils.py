@@ -359,14 +359,33 @@ def process_shirg_2view_image(image, image_processor):
     if foveal_view.size != (foveal_size, foveal_size):
         foveal_view = foveal_view.resize((foveal_size, foveal_size), Image.LANCZOS)
     
-    # Step 3: Process all views through image processor
-    views = [global_view, foveal_view]
+    # Step 3: Process views with appropriate sizes
+    # SHIRG-FIX: 2025-07-30 - Preserve 448x448 size for foveal view
+    # ISSUE: Default image processor resizes everything to 384x384, losing foveal resolution
+    # SOLUTION: Create temporary processor with 448x448 size for foveal view only
+    # RESEARCH IMPACT: Ensures SHIRG gets 1024 tokens from 448² foveal view (784 after selection)
+    # LAVIDA IMPACT: Preserves all trained preprocessing except resize dimension
+    
     processed_views = []
     
-    for view in views:
-        # Process each view
-        processed = image_processor.preprocess(view, return_tensors="pt")["pixel_values"][0]
-        processed_views.append(processed)
+    # Process global view with standard 384x384 processor
+    processed_global = image_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
+    processed_views.append(processed_global)
+    
+    # Process foveal view with 448x448 size
+    # Create a temporary processor with 448x448 size but identical preprocessing
+    from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
+    foveal_processor = SigLipImageProcessor(
+        image_mean=image_processor.image_mean,
+        image_std=image_processor.image_std,
+        size=(448, 448),  # Only change: use 448x448 instead of 384x384
+        crop_size={"height": 448, "width": 448},
+        resample=image_processor.resample,
+        rescale_factor=image_processor.rescale_factor,
+        data_format=image_processor.data_format
+    )
+    processed_foveal = foveal_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
+    processed_views.append(processed_foveal)
     
     # Stack into single tensor [2, C, H, W]
     return torch.stack(processed_views, dim=0)
