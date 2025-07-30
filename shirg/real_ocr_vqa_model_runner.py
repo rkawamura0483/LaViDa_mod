@@ -1476,7 +1476,7 @@ class LaViDaModelRunner:
                             fallback_metadata = {
                                 'method': 'SHIRG_FALLBACK',
                                 'input_tokens': total_tokens,
-                                'global_tokens': 196,
+                                'global_tokens': 256,
                                 'peripheral_views': 4,
                                 'peripheral_tokens_per_view': 409,
                                 'input_resolution': '5-view anyres',
@@ -1523,7 +1523,7 @@ class LaViDaModelRunner:
                 'error': f'Selection metadata extraction failed: {str(e)}',
                 'method': 'ERROR_FALLBACK',
                 'input_tokens': 2304,  # Assume SHIRG resolution
-                'global_tokens': 196,
+                'global_tokens': 256,
                 'peripheral_views': 4,
                 'peripheral_tokens_per_view': 409,
                 'selected_indices': list(range(0, 2304, 2)),  # Mock selection

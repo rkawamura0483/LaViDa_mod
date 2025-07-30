@@ -2,7 +2,7 @@
 
 ## Abstract
 
-We keep a single 384² global view (≈196 pooled tokens) to give scene context, and add **one 448² foveal view** (center region for large images, full image resized for smaller ones), with tokens pruned to 784 (≈ 23% reduction) for the same 784-token peripheral budget. **SHIRG-Fovea** achieves **≤1.20× baseline latency** with exactly 980 tokens (baseline-identical) through biologically-inspired foveated processing that respects the empirical accuracy cliff at >50% static pruning found in prior work ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)). Our method preserves LaViDa's cache compatibility through per-view static selection with minimal LoRA adaptation.
+We keep a single 384² global view (256 tokens) to give scene context, and add **one 448² foveal view** (center region for large images, full image resized for smaller ones), with tokens pruned to 724 (≈ 29% reduction) for the same 724-token peripheral budget. **SHIRG-Fovea** achieves **≤1.20× baseline latency** with exactly 980 tokens (baseline-identical) through biologically-inspired foveated processing that respects the empirical accuracy cliff at >50% static pruning found in prior work ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)). Our method preserves LaViDa's cache compatibility through per-view static selection with minimal LoRA adaptation.
 
 ---
 
@@ -36,7 +36,7 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 
 | # views | crop size | raw M | κ        | kept / view | peripheral total |
 | ------- | --------- | ----- | -------- | ----------- | ---------------- |
-| **1**   | **448²**  | 1024  | **0.766** | **784**     | **784**          |
+| **1**   | **448²**  | 1024  | **0.707** | **724**     | **724**          |
 
 ---
 
@@ -91,15 +91,15 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 ### 3.1 Quick Maths Sanity Check
 
 ```
-G = 196                           # global tokens (fixed)
+G = 256                           # global tokens (direct from 384²)
 M = (448 / 14)² = 32² = 1024      # raw tokens per 448² foveal view (14-patch SigLIP)
 N = 1                              # number of foveal views
-κ = 0.766                          # keep ratio ≈ 76.6%
-R = N · M · κ = 1 · 1024 · 0.766 ≈ 784
-B = G + R = 196 + 784 = 980        # ← final budget (requirement met)
+κ = 0.707                          # keep ratio ≈ 70.7%
+R = N · M · κ = 1 · 1024 · 0.707 ≈ 724
+B = G + R = 256 + 724 = 980        # ← final budget (requirement met)
 ```
 
-*(Note: κ = 784 / 1024)*
+*(Note: κ = 724 / 1024)*
 
 ### 3.2 Optimal SHIRG Pipeline Integration
 
@@ -107,11 +107,11 @@ B = G + R = 196 + 784 = 980        # ← final budget (requirement met)
 
 ```
 ╭── any-res splitter ──╮
-│ Global 384² view  │──SigLIP──▶ [196,D] (no drop)
+│ Global 384² view  │──SigLIP──▶ [256,D] (no drop)
 │ 1 × 448² view     │──SigLIP──▶ [1024,D]
-│                   │          ↓ Top-784 (76.6%)
-│                   │          [784,D]
-│ Concatenate ─────────────────▶ [196+784 = 980,D]
+│                   │          ↓ Top-724 (70.7%)
+│                   │          [724,D]
+│ Concatenate ─────────────────▶ [256+724 = 980,D]
 │ mm_projector (LoRA) ─────────▶ cache 980 tokens
 ╰──────────────────────────────╯
 ```
@@ -125,11 +125,11 @@ B = G + R = 196 + 784 = 980        # ← final budget (requirement met)
 
 | # | Stage                           | Operation                                                                                               |
 | - | ------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 1 | **SigLIP encoding**             | 1 global → 196 tok (2 × 2 pool); 1 hi-res 448² → 1024 tokens                                          |
+| 1 | **SigLIP encoding**             | 1 global → 256 tokens; 1 hi-res 448² → 1024 tokens                                          |
 | 2 | **Per-view ranking**            | Compute composite score `0.7 · attn + 0.3 · sim` within the single foveal view              |
-| 3 | **Static Top-K keep-rate**      | `K = ⌈0.766·1024⌉ = 784`                                    |
+| 3 | **Static Top-K keep-rate**      | `K = ⌈0.707·1024⌉ = 724`                                    |
 | 4 | ~~**Light dedup across overlaps**~~ | ~~Not needed with single view~~ |
-| 5 | **Concat**                      | `[global196 ∥ foveal784]`                                                                       |
+| 5 | **Concat**                      | `[global256 ∥ foveal724]`                                                                       |
 | 6 | **Project & cache**             | Same LoRA projector; LM sees fixed 980 tokens                                                        |
 
 *Justification*:
@@ -219,20 +219,19 @@ def topk_per_view_v2(tokens, k, kept):
 
 ### 4.1 Integration with LaViDa Pipeline
 
-**extract_multiview_tokens**: generate `global_view` (centre, 384²) **with stride-2 pooling** to 196 tokens.
+**extract_multiview_tokens**: generate `global_view` (centre, 384²) to 256 tokens.
 
 ```python
 def extract_multiview_tokens(self, pixel_values):
-    # Global view: 384² → 196 tokens (2x2 pooled)
-    global_features = self.vision_model(pixel_values[0])  # [B, 729, D]
-    global_pooled = F.avg_pool2d(global_features.view(B, 27, 27, D), 2, 2)  # [B, 196, D]
+    # Global view: 384² → 256 tokens (direct)
+    global_features = self.vision_model(pixel_values[0])  # [B, 256, D]
     
     # 1 foveal view: 448² → 1024 tokens
     foveal_features = []
     features = self.vision_model(pixel_values[1])  # [B, 1024, D] from 448²
     foveal_features.append(features)
     
-    return global_pooled, foveal_features
+    return global_features, foveal_features
 ```
 
 Create **`topk_per_view()`** helper:
@@ -244,7 +243,7 @@ def topk_per_view(tokens, k):
     return tokens.gather(1, idx[..., None].expand(-1,-1,tokens.size(-1)))
 
 # For 448² foveal view:
-K = 784        # 76.6% of 1024
+K = 724        # 70.7% of 1024
 selected_foveal = self.topk_per_view(view_tokens, K)
 ```
 
@@ -266,17 +265,17 @@ def forward_with_shirg(self, images, text_features):
     # Extract global + 1 foveal view
     global_tokens, foveal_tokens = self.vision_tower.extract_multiview_tokens(images)
     
-    # Top-K selection (keep 784 tokens)
-    keep_ratio = 0.766  # ≈ 76.6%
-    K = int(keep_ratio * 1024)  # 784 tokens
+    # Top-K selection (keep 724 tokens)
+    keep_ratio = 0.707  # ≈ 70.7%
+    K = int(keep_ratio * 1024)  # 724 tokens
     
     # Single view selection
     view_tokens = foveal_tokens[0]
     selected_foveal = self.topk_per_view(view_tokens, K)
     
-    # Concatenate: [global196 || foveal784]
+    # Concatenate: [global256 || foveal724]
     final_tokens = torch.cat([global_tokens, selected_foveal], dim=1)
-    # Shape: [B, 196 + 784, D] = [B, 980, D]
+    # Shape: [B, 256 + 724, D] = [B, 980, D]
     
     # Project through LoRA-adapted mm_projector
     projected = self.mm_projector(final_tokens)
