@@ -1117,16 +1117,23 @@ class LaViDaModelRunner:
                 print(f"      - image_aspect_ratio: {getattr(self.shirg_model.config, 'image_aspect_ratio', 'NOT SET')}")
                 
                 image_tensor = process_images([validated_image], self.shirg_image_processor, self.shirg_model.config)
-                if isinstance(image_tensor, list):
-                    image_tensor = image_tensor[0]
                 
-                # Convert to proper format for LaViDa
-                if isinstance(image_tensor, torch.Tensor):
+                # SHIRG-FIX: 2025-07-30 - Preserve list of views for SHIRG 2-view processing
+                # ISSUE: Was extracting only first tensor from list, losing foveal view
+                # SOLUTION: Keep list format when SHIRG returns multiple views
+                # RESEARCH IMPACT: Preserves both 384² global and 448² foveal views for SHIRG
+                # LAVIDA IMPACT: Standard LaViDa still works with single tensor or stacked tensors
+                
+                # Convert to proper format for LaViDa/SHIRG
+                if isinstance(image_tensor, list):
+                    # SHIRG multi-view: convert each tensor in list
+                    image_tensor = [t.to(dtype=torch.bfloat16, device=self.device) for t in image_tensor]
+                    print(f"   📐 SHIRG image tensors: {len(image_tensor)} views with shapes {[t.shape for t in image_tensor]}")
+                elif isinstance(image_tensor, torch.Tensor):
                     image_tensor = image_tensor.to(dtype=torch.bfloat16, device=self.device)
+                    print(f"   📐 SHIRG image tensor: {image_tensor.shape}")
                 else:
                     raise ValueError(f"Unexpected image tensor type: {type(image_tensor)}")
-                
-                print(f"   📐 SHIRG image tensor: {image_tensor.shape}")
             else:
                 # Fallback: manual processing for SHIRG requirements
                 # SHIRG-FALLBACK-VALIDATION-FIX: 2025-07-29 - Add validation for fallback path too
