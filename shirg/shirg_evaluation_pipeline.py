@@ -694,27 +694,27 @@ class SHIRGEvaluationPipeline:
                         datasets_with_data.append(dataset_name)
                     print(dataset_df.to_string(index=False))
                         
-                        # Find best configuration for this dataset (if anls exists)
-                        anls_col = dataset_metrics[dataset_name].get('anls')
-                        if anls_col and anls_col in summary_df.columns:
-                            valid_rows = summary_df[summary_df[anls_col].notna()]
-                            if not valid_rows.empty:
-                                # Only show best if ANLS > 0
-                                best_idx = valid_rows[anls_col].idxmax()
-                                best_config = summary_df.loc[best_idx]
-                                if best_config[anls_col] > 0:
-                                    print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
-                                    
-                                    # Calculate improvement over baseline for this dataset
-                                    baseline_df = summary_df[summary_df['config_name'] == 'baseline']
-                                    if not baseline_df.empty and anls_col in baseline_df.columns:
-                                        baseline_val = baseline_df.iloc[0][anls_col]
-                                        if pd.notna(baseline_val) and baseline_val > 0:
-                                            for _, row in valid_rows.iterrows():
-                                                if row['config_name'] != 'baseline' and row[anls_col] > 0:
-                                                    improvement = (row[anls_col] - baseline_val) / baseline_val * 100
-                                                    print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
-            
+                    # Find best configuration for this dataset (if anls exists)
+                    anls_col = dataset_metrics[dataset_name].get('anls')
+                    if anls_col and anls_col in summary_df.columns:
+                        valid_rows = summary_df[summary_df[anls_col].notna()]
+                        if not valid_rows.empty:
+                            # Only show best if ANLS > 0
+                            best_idx = valid_rows[anls_col].idxmax()
+                            best_config = summary_df.loc[best_idx]
+                            if best_config[anls_col] > 0:
+                                print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
+                                
+                                # Calculate improvement over baseline for this dataset
+                                baseline_df = summary_df[summary_df['config_name'] == 'baseline']
+                                if not baseline_df.empty and anls_col in baseline_df.columns:
+                                    baseline_val = baseline_df.iloc[0][anls_col]
+                                    if pd.notna(baseline_val) and baseline_val > 0:
+                                        for _, row in valid_rows.iterrows():
+                                            if row['config_name'] != 'baseline' and row[anls_col] > 0:
+                                                improvement = (row[anls_col] - baseline_val) / baseline_val * 100
+                                                print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
+        
             # Print summary of datasets
             if datasets_with_data:
                 print(f"\n📊 Evaluated {len(datasets_with_data)} datasets with valid data: {', '.join(datasets_with_data)}")
