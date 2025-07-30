@@ -332,8 +332,14 @@ def process_shirg_2view_image(image, image_processor):
     # RESEARCH IMPACT: Implements SHIRG-Fovea single foveal view architecture
     # LAVIDA IMPACT: Provides alternative preprocessing path for SHIRG mode
     
-    # Step 1: Create global view - resize to 384x384
-    global_view = image.resize((384, 384), Image.LANCZOS)
+    # SHIRG-CONCAT-FIX: 2025-07-30 - Resize both views to same size for LaViDa compatibility
+    # ISSUE: LaViDa's generate() tries to concatenate images, which fails with different sizes
+    # SOLUTION: Process both views at 448x448, vision tower will handle token selection
+    # RESEARCH IMPACT: SHIRG will distinguish views by content, not size
+    # LAVIDA IMPACT: Prevents RuntimeError in prepare_inputs_labels_for_multimodal
+    
+    # Step 1: Create global view - resize entire image to 448x448
+    global_view = image.resize((448, 448), Image.LANCZOS)
     
     # Step 2: Create one foveal view from center crop
     # Get image dimensions
@@ -360,37 +366,37 @@ def process_shirg_2view_image(image, image_processor):
         foveal_view = foveal_view.resize((foveal_size, foveal_size), Image.LANCZOS)
     
     # Step 3: Process views with appropriate sizes
-    # SHIRG-FIX: 2025-07-30 - Preserve 448x448 size for foveal view
-    # ISSUE: Default image processor resizes everything to 384x384, losing foveal resolution
-    # SOLUTION: Create temporary processor with 448x448 size for foveal view only
-    # RESEARCH IMPACT: Ensures SHIRG gets 1024 tokens from 448² foveal view (784 after selection)
-    # LAVIDA IMPACT: Preserves all trained preprocessing except resize dimension
+    # SHIRG-FIX: 2025-07-30 - Process both views at 448x448 for LaViDa concatenation compatibility
+    # ISSUE: Different sized tensors (384x384 vs 448x448) cannot be concatenated in LaViDa pipeline
+    # SOLUTION: Process both views at 448x448, SHIRG vision tower will handle token differences
+    # RESEARCH IMPACT: SHIRG distinguishes views by content (global vs foveal) not size
+    # LAVIDA IMPACT: Prevents concatenation error in prepare_inputs_labels_for_multimodal
     
     processed_views = []
     
-    # Process global view with standard 384x384 processor
-    processed_global = image_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
-    processed_views.append(processed_global)
-    
-    # Process foveal view with 448x448 size to get 1024 tokens (32x32 patches)
-    # Create a temporary processor with 448x448 size but identical preprocessing
+    # Create a temporary processor with 448x448 size for both views
     from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
-    foveal_processor = SigLipImageProcessor(
+    shirg_processor = SigLipImageProcessor(
         image_mean=image_processor.image_mean,
         image_std=image_processor.image_std,
-        size=(448, 448),  # Different resolution for foveal view
+        size=(448, 448),  # Same resolution for both views
         crop_size={"height": 448, "width": 448},
         resample=image_processor.resample,
         rescale_factor=image_processor.rescale_factor,
         data_format=image_processor.data_format
     )
-    processed_foveal = foveal_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
+    
+    # Process both views at 448x448
+    processed_global = shirg_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
+    processed_views.append(processed_global)
+    
+    processed_foveal = shirg_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_foveal)
     
-    # SHIRG-FIX: 2025-07-30 - Handle different resolution views correctly
-    # ISSUE: Cannot stack tensors with different spatial dimensions [3,384,384] vs [3,448,448]
-    # SOLUTION: Check if views have same shape, only stack if they do (following LaViDa pattern)
-    # RESEARCH IMPACT: Preserves SHIRG's different resolution processing (384² global, 448² foveal)
+    # SHIRG-FIX: 2025-07-30 - Stack same-sized views for LaViDa compatibility
+    # ISSUE: LaViDa requires all images to have same dimensions for concatenation
+    # SOLUTION: Both views are now 448x448, so they can be safely stacked
+    # RESEARCH IMPACT: SHIRG processes both at higher resolution, improving token count
     # LAVIDA IMPACT: Follows standard LaViDa pattern for handling multi-resolution inputs
     
     # Only stack if all views have the same shape (following LaViDa's anyres pattern)

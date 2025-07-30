@@ -77,33 +77,34 @@ class SigLipShirgExtensions:
             global_pooled, foveal_features = self.extract_multiview_tokens(pixel_values)
             
             rank0_print(f"SHIRG-Fovea: Extracted multiview tokens")
-            rank0_print(f"   Global: {global_pooled.shape} (pooled from 384²)")
+            rank0_print(f"   Global: {global_pooled.shape} (pooled from 448²)")
             rank0_print(f"   Foveal: {len(foveal_features)} view × {foveal_features[0].shape if foveal_features else 'None'}")
             
             # Step 2: Per-view Top-K selection on foveal view
-            # Fixed 76.6% keep rate for single foveal view as per research
-            # SHIRG-1FOVEAL-K: 2025-07-30 - Use 76.6% keep rate for single foveal view
-            # ISSUE: Single foveal view needs higher keep rate to maintain 980 total tokens
-            # SOLUTION: Calculate K as 76.6% of actual token count (784 from 1024)
-            # RESEARCH IMPACT: Implements new single foveal view architecture
-            # LAVIDA IMPACT: Maintains exactly 980 tokens for cache compatibility
+            # Adjusted keep rate to maintain ~980 total tokens with new global pooling
+            # SHIRG-448-K-FIX: 2025-07-30 - Adjust K for 64 global + 916 foveal = 980 total
+            # ISSUE: With 64 global tokens, need 916 foveal tokens for 980 total
+            # SOLUTION: Select 916 tokens from 1024 (89.5% keep rate)
+            # RESEARCH IMPACT: Maintains SHIRG concept with adjusted token distribution
+            # LAVIDA IMPACT: Achieves exactly 980 tokens for cache compatibility
             
             selected_foveal = []
             for i, view_tokens in enumerate(foveal_features):
-                # Adapt K to actual token count (76.6% selection rate)
+                # Adapt K to maintain 980 total tokens
                 actual_tokens = view_tokens.shape[1]
                 if actual_tokens == 1024:  # 448² with patch_size=14 → 32×32
-                    K = 784  # Exactly 76.6% of 1024
+                    K = 916  # 64 global + 916 foveal = 980 total
                 else:
-                    # Fallback: maintain 76.6% ratio for other resolutions
-                    K = int(actual_tokens * 0.766)
+                    # Fallback: maintain proportional selection
+                    # Target: 980 total - 64 global = 916 foveal
+                    K = min(actual_tokens, 916)
                 
                 selected = self.topk_per_view(view_tokens, K, text_embeddings)
                 selected_foveal.append(selected)
                 rank0_print(f"   Foveal view: selected {selected.shape[1]} tokens from {actual_tokens} total ({K/actual_tokens*100:.1f}%)")
             
             # Step 3: Concatenate all tokens
-            # Global (196) + Foveal (784) = 980 tokens total
+            # Global (64) + Foveal (916) = 980 tokens total
             all_views = [global_pooled] + selected_foveal
             
             # Ensure gradient flow and dtype consistency
@@ -133,20 +134,20 @@ class SigLipShirgExtensions:
             rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
             rank0_print(f"   Foveal tokens per view: {processed_views[1].shape[1]}")
             
-            # SHIRG-1FOVEAL-VALIDATION: 2025-07-30 - Validate token count for single foveal view
-            # ISSUE: Token count validation needs to reflect new single foveal architecture
-            # SOLUTION: Validate for 196 global + 784 foveal = 980 tokens
-            # RESEARCH IMPACT: Ensures correct implementation of single foveal view
+            # SHIRG-448-VALIDATION: 2025-07-30 - Validate token count with 448² processing
+            # ISSUE: Token count validation updated for 448² both views
+            # SOLUTION: Validate for 64 global + 916 foveal = 980 tokens
+            # RESEARCH IMPACT: Ensures correct implementation with same-size views
             # LAVIDA IMPACT: Maintains exactly 980 tokens for cache compatibility
             
-            global_tokens = processed_views[0].shape[1]  # Always 196
+            global_tokens = processed_views[0].shape[1]  # Should be 64
             foveal_tokens = processed_views[1].shape[1]
             expected_total = global_tokens + foveal_tokens
             
-            if foveal_tokens == 784:  # 76.6% of 1024 (448²)
-                rank0_print(f"   Expected with 448² foveal: 196 + 784 = 980 tokens")
+            if global_tokens == 64 and foveal_tokens == 916:
+                rank0_print(f"   Expected with 448² both views: 64 + 916 = 980 tokens")
             else:
-                rank0_print(f"   Adaptive token count: 196 + {foveal_tokens} = {expected_total} tokens")
+                rank0_print(f"   Adaptive token count: {global_tokens} + {foveal_tokens} = {expected_total} tokens")
             
             if total_tokens == 980:
                 rank0_print(f"✅ SHIRG token count matches target: {total_tokens}")
@@ -170,15 +171,15 @@ class SigLipShirgExtensions:
         SHIRG-Fovea: Extract tokens from 2-view format
         
         Processes:
-        - View 0: Global 384² → 729 tokens → 2×2 pool → 196 tokens
+        - View 0: Global 448² → 1024 tokens → 4×4 pool → 64 tokens
         - View 1: Foveal 448² → 1024 tokens (no pooling)
         
         Args:
             pixel_values: List of 2 image tensors:
-                         [384×384 global, 448×448 foveal]
+                         [448×448 global, 448×448 foveal]
             
         Returns:
-            global_pooled: [B, 196, D] pooled global context tokens
+            global_pooled: [B, 64, D] pooled global context tokens
             foveal_features: List of 1 tensor [B, 1024, D]
         """
         start_time = time.time()
@@ -193,8 +194,8 @@ class SigLipShirgExtensions:
         # Get model dtype
         tower_dtype = next(self.vision_tower.parameters()).dtype
         
-        # Process global view: 384² → 729 tokens → 2×2 pool → 196 tokens
-        global_view = pixel_values[0]  # First view is global 384²
+        # Process global view: 448² → 1024 tokens → 4×4 pool → 64 tokens
+        global_view = pixel_values[0]  # First view is global 448²
         
         # Ensure proper device and dtype
         if global_view.dtype != tower_dtype:
@@ -206,40 +207,37 @@ class SigLipShirgExtensions:
         
         # Process through vision tower
         image_forward_outs = self.vision_tower(global_view, output_hidden_states=True)
-        global_features = image_forward_outs.hidden_states[-1]  # [B, 729, D] for 384²
+        global_features = image_forward_outs.hidden_states[-1]  # [B, 1024, D] for 448²
         
-        # Apply 2×2 average pooling to get 196 tokens
+        # SHIRG-448-POOL-FIX: 2025-07-30 - Handle 448² global view with stronger pooling
+        # ISSUE: Both views are now 448² for LaViDa compatibility
+        # SOLUTION: Apply 4×4 pooling to global view to get coarse context tokens
+        # RESEARCH IMPACT: Adjusts token counts to maintain 980 total (64 global + 916 foveal)
+        # LAVIDA IMPACT: Prevents concatenation errors while preserving SHIRG concept
+        
         B, N, D = global_features.shape
-        if N == 729:  # 27×27 patches from 384²
-            # Reshape to spatial: [B, 27, 27, D]
-            spatial_features = global_features.view(B, 27, 27, D)
-            # Apply 2×2 pooling with proper padding to get 14×14 = 196
+        if N == 1024:  # 32×32 patches from 448²
+            # Reshape to spatial: [B, 32, 32, D]
+            spatial_features = global_features.view(B, 32, 32, D)
+            # Apply 4×4 pooling to get 8×8 = 64 tokens
             pooled_spatial = F.avg_pool2d(
-                spatial_features.permute(0, 3, 1, 2),  # [B, D, 27, 27]
-                kernel_size=2,
-                stride=2,
-                padding=1  # Padding to handle odd dimension
-            ).permute(0, 2, 3, 1)  # [B, 14, 14, D]
+                spatial_features.permute(0, 3, 1, 2),  # [B, D, 32, 32]
+                kernel_size=4,
+                stride=4
+            ).permute(0, 2, 3, 1)  # [B, 8, 8, D]
             
-            # Ensure we have exactly 196 tokens
-            if pooled_spatial.shape[1] * pooled_spatial.shape[2] != 196:
-                # Use adaptive pooling as fallback
-                pooled_spatial = F.adaptive_avg_pool2d(
-                    spatial_features.permute(0, 3, 1, 2),
-                    output_size=(14, 14)
-                ).permute(0, 2, 3, 1)
-            
-            global_pooled = pooled_spatial.reshape(B, 196, D)
+            global_pooled = pooled_spatial.reshape(B, 64, D)
+            rank0_print(f"   SHIRG-Fovea: Global view 448² → {N} tokens → 4×4 pool → {global_pooled.shape[1]} tokens")
         else:
-            rank0_print(f"⚠️ SHIRG-Fovea: Expected 729 tokens from global view, got {N}. Using adaptive pooling.")
+            rank0_print(f"⚠️ SHIRG-Fovea: Expected 1024 tokens from global view, got {N}. Using adaptive pooling.")
             # Use adaptive pooling as fallback
             grid_size = int(math.sqrt(N))
             spatial_features = global_features.view(B, grid_size, grid_size, D)
             pooled_spatial = F.adaptive_avg_pool2d(
                 spatial_features.permute(0, 3, 1, 2),
-                output_size=(14, 14)
+                output_size=(8, 8)  # Target 64 tokens
             ).permute(0, 2, 3, 1)
-            global_pooled = pooled_spatial.reshape(B, 196, D)
+            global_pooled = pooled_spatial.reshape(B, 64, D)
         
         # Process 1 foveal view: 448² → 1024 tokens (no pooling)
         foveal_features = []
