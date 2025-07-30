@@ -562,23 +562,23 @@ class TextVQADataset(Dataset):
         if not self.data:
             try:
                 # SHIRG-FIX: [2025-07-30] - Add TextVQA as DocVQA alternative
-            # ISSUE: Need text-heavy dataset for training since DocVQA lacks train split
-            # SOLUTION: Use lmms-lab/textvqa which has proper train split
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: Provides text-reading samples for training
-            dataset = load_dataset("lmms-lab/textvqa", split=self.split, cache_dir=cache_dir)
-            self.data = dataset
-            
-            # Limit samples if requested
-            if max_samples and len(self.data) > max_samples:
-                indices = np.random.choice(len(self.data), max_samples, replace=False)
-                self.data = self.data.select(indices)
+                # ISSUE: Need text-heavy dataset for training since DocVQA lacks train split
+                # SOLUTION: Use lmms-lab/textvqa which has proper train split
+                # LAVIDA IMPACT: None
+                # SHIRG IMPACT: Provides text-reading samples for training
+                dataset = load_dataset("lmms-lab/textvqa", split=self.split, cache_dir=cache_dir)
+                self.data = dataset
                 
-            print(f"✅ Loaded TextVQA {split} split: {len(self.data)} samples")
-            
-        except Exception as e:
-            print(f"❌ Failed to load TextVQA: {e}")
-            self.data = []
+                # Limit samples if requested
+                if max_samples and len(self.data) > max_samples:
+                    indices = np.random.choice(len(self.data), max_samples, replace=False)
+                    self.data = self.data.select(indices)
+                    
+                print(f"✅ Loaded TextVQA {split} split: {len(self.data)} samples")
+                
+            except Exception as e:
+                print(f"❌ Failed to load TextVQA: {e}")
+                self.data = []
     
     def __len__(self):
         return len(self.data)
