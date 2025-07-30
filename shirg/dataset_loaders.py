@@ -715,24 +715,25 @@ class OCRVQADataset(Dataset):
                 # LAVIDA IMPACT: None
                 # SHIRG IMPACT: Provides book cover OCR samples (1M QA pairs)
                 dataset = load_dataset("howard-hou/OCR-VQA", split=self.split, cache_dir=cache_dir)
-            self.data = dataset
-            
-            # Limit samples if requested
-            if max_samples and len(self.data) > max_samples:
-                indices = np.random.choice(len(self.data), max_samples, replace=False)
-                self.data = self.data.select(indices)
+                self.data = dataset
                 
-            print(f"✅ Loaded OCR-VQA {split} split: {len(self.data)} samples")
-            
-        except Exception as e:
-            print(f"❌ Failed to load OCR-VQA: {e}")
-            self.data = []
-        
-                # SHIRG-FIX: [2025-07-30] - Flatten OCR-VQA multiple Q&A pairs
-                # ISSUE: OCR-VQA has multiple questions per image (5 Q&A pairs)
-                # SOLUTION: Flatten to individual Q&A samples at init time
-                # LAVIDA IMPACT: None
-                # SHIRG IMPACT: Increases effective dataset size by 5x
+                # Limit samples if requested
+                if max_samples and len(self.data) > max_samples:
+                    indices = np.random.choice(len(self.data), max_samples, replace=False)
+                    self.data = self.data.select(indices)
+                    
+                print(f"✅ Loaded OCR-VQA {split} split: {len(self.data)} samples")
+                
+            except Exception as e:
+                print(f"❌ Failed to load OCR-VQA: {e}")
+                self.data = []
+                
+            # SHIRG-FIX: [2025-07-30] - Flatten OCR-VQA multiple Q&A pairs
+            # ISSUE: OCR-VQA has multiple questions per image (5 Q&A pairs)
+            # SOLUTION: Flatten to individual Q&A samples at init time
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: Increases effective dataset size by 5x
+            if self.data and not self.flattened_data:
                 self.flattened_data = []
                 for item in self.data:
                     questions = item.get('questions', [])
