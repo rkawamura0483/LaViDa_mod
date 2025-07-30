@@ -193,6 +193,16 @@ class ShirgLoraTrainer:
         if hasattr(vision_tower, 'vision_tower_cfg'):
             if isinstance(vision_tower.vision_tower_cfg, dict):
                 vision_tower.vision_tower_cfg['enable_shirg'] = True
+        
+        # SHIRG-FIX: 2025-07-30 - Enable SHIRG 2-view mode in model config
+        # ISSUE: LaViDa creates 5 views by default, but SHIRG-Fovea expects 2 views
+        # SOLUTION: Set shirg_3view_mode=True in model config to trigger 2-view preprocessing
+        # LAVIDA IMPACT: Changes image preprocessing from 5 views to 2 views
+        # SHIRG IMPACT: Fixes "expects 2 views, got 5 views" error during training
+        if hasattr(self.model, 'config'):
+            self.model.config.enable_shirg = True
+            self.model.config.shirg_3view_mode = True  # Enable 2-view mode
+            rank0_print("SHIRG-TRAINING: Enabled SHIRG 2-view mode in model config")
             else:
                 vision_tower.vision_tower_cfg.enable_shirg = True
         
