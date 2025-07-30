@@ -1,7 +1,33 @@
 #!/usr/bin/env python3
 """
-SHIRG Evaluation Pipeline
-Extends the existing real_ocr_vqa_validation to support proper evaluation metrics
+SHIRG-Fovea Evaluation Pipeline
+
+This evaluation pipeline is updated to work with the new SHIRG-Fovea architecture
+that uses 2-view processing (1 global + 1 foveal) and produces exactly 980 tokens.
+
+Key Updates:
+1. Supports new selection methods: 'base', 'entropy', 'edge', 'full'
+2. Properly handles model initialization with selection_method and selection_params
+3. Ensures exactly 980 tokens for LaViDa compatibility
+4. Tests multiple configurations with proper GPU memory management
+
+Usage Examples:
+--------------
+# Run all predefined configurations
+python shirg_evaluation_pipeline.py --config all
+
+# Run specific configuration
+python shirg_evaluation_pipeline.py --config shirg_base
+
+# Run custom method with parameters
+python shirg_evaluation_pipeline.py --method full --entropy-threshold 0.10 --edge-weight 0.3 --merge-similar
+
+# Quick test with limited samples
+python shirg_evaluation_pipeline.py --config shirg_edge --samples 10
+
+# In Python script
+from shirg_evaluation_pipeline import integrate_with_existing_evaluation
+results = integrate_with_existing_evaluation()
 """
 
 import os
@@ -26,8 +52,8 @@ from lmms_eval.tasks._task_utils.vqa_eval_metric import EvalAIAnswerProcessor
 
 class SHIRGEvaluationPipeline:
     """
-    Evaluation pipeline for SHIRG that:
-    1. Uses your existing inference code
+    Evaluation pipeline for SHIRG-Fovea that:
+    1. Uses the new selection methods (base, entropy, edge, full)
     2. Applies proper evaluation metrics from lmms-eval
     3. Tests multiple configurations automatically
     """
@@ -37,52 +63,74 @@ class SHIRGEvaluationPipeline:
         self.results_dir = Path("/content/shirg_evaluation_results")
         self.results_dir.mkdir(exist_ok=True)
         
-        # Define parameter configurations to test
+        # Define parameter configurations to test with new SHIRG-Fovea methods
         self.parameter_configs = {
             "baseline": {
                 "use_shirg": False,
-                "description": "Baseline LaViDa (384x384, 729 tokens)"
+                "selection_method": None,
+                "selection_params": None,
+                "description": "Baseline LaViDa (5-view anyres, 980 tokens with pooling)"
             },
-            "shirg_40_attn_sim": {
+            "shirg_base": {
                 "use_shirg": True,
-                "keep_ratio": 0.40,
-                "score_type": "attention_similarity",
-                "score_weights": [0.7, 0.3],  # attention, similarity
-                "description": "SHIRG 40% keep, 0.7*attn + 0.3*sim"
+                "selection_method": "base",
+                "selection_params": {},
+                "description": "SHIRG-Base: 0.7*attention + 0.3*similarity (980 tokens)"
             },
-            "shirg_45_attn_sim": {
+            "shirg_entropy": {
                 "use_shirg": True,
-                "keep_ratio": 0.45,
-                "score_type": "attention_similarity", 
-                "score_weights": [0.7, 0.3],
-                "description": "SHIRG 45% keep, 0.7*attn + 0.3*sim"
+                "selection_method": "entropy",
+                "selection_params": {
+                    "entropy_threshold": 0.12
+                },
+                "description": "SHIRG-Entropy: Base + noise filtering (τ=0.12)"
             },
-            "shirg_50_attn_sim": {
+            "shirg_entropy_aggressive": {
                 "use_shirg": True,
-                "keep_ratio": 0.50,
-                "score_type": "attention_similarity",
-                "score_weights": [0.7, 0.3],
-                "description": "SHIRG 50% keep, 0.7*attn + 0.3*sim"
+                "selection_method": "entropy",
+                "selection_params": {
+                    "entropy_threshold": 0.10
+                },
+                "description": "SHIRG-Entropy: More aggressive filtering (τ=0.10)"
             },
-            "shirg_45_attn_only": {
+            "shirg_edge": {
                 "use_shirg": True,
-                "keep_ratio": 0.45,
-                "score_type": "attention",
-                "description": "SHIRG 45% keep, attention only"
+                "selection_method": "edge",
+                "selection_params": {
+                    "edge_weight": 0.25
+                },
+                "description": "SHIRG-Edge: Base + edge/text priors (weight=0.25)"
             },
-            "shirg_45_balanced": {
+            "shirg_edge_strong": {
                 "use_shirg": True,
-                "keep_ratio": 0.45,
-                "score_type": "attention_similarity",
-                "score_weights": [0.5, 0.5],
-                "description": "SHIRG 45% keep, 0.5*attn + 0.5*sim"
+                "selection_method": "edge",
+                "selection_params": {
+                    "edge_weight": 0.30
+                },
+                "description": "SHIRG-Edge: Stronger edge preference (weight=0.30)"
             },
-            "shirg_45_distance": {
+            "shirg_full": {
                 "use_shirg": True,
-                "keep_ratio": 0.45,
-                "score_type": "attention_similarity_distance",
-                "score_weights": [0.5, 0.3, 0.2],  # attention, similarity, distance
-                "description": "SHIRG 45% keep with distance-aware scoring"
+                "selection_method": "full",
+                "selection_params": {
+                    "entropy_threshold": 0.12,
+                    "edge_weight": 0.25,
+                    "radial_sigma": 0.65,
+                    "merge_similar": False
+                },
+                "description": "SHIRG-Full: All enhancements without merging"
+            },
+            "shirg_full_merge": {
+                "use_shirg": True,
+                "selection_method": "full",
+                "selection_params": {
+                    "entropy_threshold": 0.12,
+                    "edge_weight": 0.25,
+                    "radial_sigma": 0.65,
+                    "merge_similar": True,
+                    "merge_threshold": 0.9
+                },
+                "description": "SHIRG-Full: All enhancements with token merging (θ=0.9)"
             }
         }
     
@@ -146,46 +194,88 @@ class SHIRGEvaluationPipeline:
         print(f"\n🔧 Evaluating configuration: {config_name}")
         print(f"   {config['description']}")
         
-        # Set SHIRG configuration
-        if model_runner.shirg_model:
-            vision_tower = model_runner.shirg_model.get_vision_tower()
-            if hasattr(vision_tower, 'set_shirg_config'):
-                vision_tower.set_shirg_config(config)
+        # Note: With the new architecture, selection method and params are set
+        # when initializing the model runner, not dynamically per configuration
+        # For proper evaluation, we would need to reinitialize the model runner
+        # with different selection parameters for each configuration
         
         results = []
         start_time = time.time()
         
         for idx, sample in enumerate(dataset_samples):
-            # Run inference
-            if config.get('use_shirg', False):
-                output = model_runner._run_shirg_inference(
-                    sample['image_path'],
-                    sample['question'],
-                    sample.get('dataset_name', 'unknown')
+            try:
+                # Extract image path and question from sample format
+                if isinstance(sample.get('image_path'), str):
+                    image_path = sample['image_path']
+                else:
+                    # Handle potential URL or PIL image
+                    image_path = sample.get('image', sample.get('image_path'))
+                
+                question = sample.get('question', '')
+                
+                # Prepare input for model runner's inference methods
+                # Model runner expects (image, input_ids, question, sample_id)
+                # We need to tokenize the question first
+                tokenizer = model_runner.shirg_tokenizer if config.get('use_shirg', False) else model_runner.baseline_tokenizer
+                if tokenizer:
+                    # Format question for LaViDa
+                    formatted_question = f"USER: <image>\n{question}\nASSISTANT:"
+                    input_ids = tokenizer(formatted_question, return_tensors="pt")["input_ids"]
+                else:
+                    print(f"⚠️ No tokenizer available for sample {idx}")
+                    continue
+                
+                # Run inference based on configuration
+                if config.get('use_shirg', False):
+                    output = model_runner._run_shirg_inference(
+                        image_path,
+                        input_ids,
+                        question,
+                        sample_id=f"{config_name}_sample_{idx}"
+                    )
+                else:
+                    output = model_runner._run_baseline_inference(
+                        image_path,
+                        input_ids,
+                        question,
+                        sample_id=f"{config_name}_sample_{idx}"
+                    )
+                
+                # Extract prediction text
+                prediction = output.get('text', '') if isinstance(output, dict) else str(output)
+                
+                # Evaluate
+                eval_scores = self.evaluate_single_sample(
+                    prediction,
+                    sample.get('answers', [sample.get('answer', '')])
                 )
-            else:
-                output = model_runner._run_baseline_inference(
-                    sample['image_path'],
-                    sample['question'],
-                    sample.get('dataset_name', 'unknown')
-                )
-            
-            # Evaluate
-            eval_scores = self.evaluate_single_sample(
-                output['text'],
-                sample.get('answers', [sample.get('answer', '')])
-            )
-            
-            # Store result
-            result = {
-                'config': config_name,
-                'sample_id': sample.get('question_id', idx),
-                'dataset': sample.get('dataset_name', 'unknown'),
-                'prediction': output['text'],
-                'ground_truth': sample.get('answers', [sample.get('answer', '')]),
-                **eval_scores
-            }
-            results.append(result)
+                
+                # Store result
+                result = {
+                    'config': config_name,
+                    'sample_id': sample.get('question_id', idx),
+                    'dataset': sample.get('dataset_name', 'unknown'),
+                    'prediction': prediction,
+                    'ground_truth': sample.get('answers', [sample.get('answer', '')]),
+                    **eval_scores
+                }
+                results.append(result)
+                
+            except Exception as e:
+                print(f"   ⚠️ Error processing sample {idx}: {e}")
+                # Add failed result
+                result = {
+                    'config': config_name,
+                    'sample_id': sample.get('question_id', idx),
+                    'dataset': sample.get('dataset_name', 'unknown'),
+                    'prediction': '',
+                    'ground_truth': sample.get('answers', [sample.get('answer', '')]),
+                    'anls': 0.0,
+                    'exact_match': 0.0,
+                    'token_f1': 0.0,
+                    'error': str(e)
+                }
+                results.append(result)
             
             # Progress update
             if (idx + 1) % 10 == 0:
@@ -221,36 +311,14 @@ class SHIRGEvaluationPipeline:
     
     def run_full_evaluation(self, 
                           dataset_samples: List[Dict],
-                          model_runner,
                           configs: Optional[Dict] = None) -> pd.DataFrame:
-        """Run evaluation across all configurations"""
+        """
+        Run evaluation across all configurations
         
-        configs = configs or self.parameter_configs
-        
-        print(f"\n🚀 Starting SHIRG Parameter Evaluation")
-        print(f"   Configurations: {list(configs.keys())}")
-        print(f"   Total samples: {len(dataset_samples)}")
-        print("=" * 60)
-        
-        all_results = []
-        
-        for config_name, config in configs.items():
-            result = self.run_configuration_evaluation(
-                config_name, config, dataset_samples, model_runner
-            )
-            all_results.append(result)
-            
-            # Print intermediate results
-            self._print_config_summary(result)
-        
-        # Create summary dataframe
-        summary_df = pd.DataFrame(all_results)
-        
-        # Save and display final results
-        self._save_summary_results(summary_df)
-        self._print_final_summary(summary_df)
-        
-        return summary_df
+        This method now delegates to run_multi_config_evaluation which handles
+        proper model initialization for each configuration.
+        """
+        return run_multi_config_evaluation(dataset_samples, configs)
     
     def _save_detailed_results(self, config_name: str, results: List[Dict], aggregated: Dict):
         """Save detailed results for a configuration"""
@@ -325,29 +393,256 @@ class SHIRGEvaluationPipeline:
         print("\n" + "=" * 80)
 
 
+def create_test_configs(methods: List[str] = None) -> Dict:
+    """
+    Create a subset of test configurations for quick evaluation
+    
+    Args:
+        methods: List of methods to test. If None, tests ['base', 'entropy', 'edge', 'full']
+    
+    Returns:
+        Dictionary of test configurations
+    """
+    methods = methods or ['base', 'entropy', 'edge', 'full']
+    
+    test_configs = {
+        "baseline": {
+            "use_shirg": False,
+            "selection_method": None,
+            "selection_params": None,
+            "description": "Baseline LaViDa (980 tokens)"
+        }
+    }
+    
+    if 'base' in methods:
+        test_configs["shirg_base"] = {
+            "use_shirg": True,
+            "selection_method": "base",
+            "selection_params": {},
+            "description": "SHIRG-Base: Original method"
+        }
+    
+    if 'entropy' in methods:
+        test_configs["shirg_entropy"] = {
+            "use_shirg": True,
+            "selection_method": "entropy",
+            "selection_params": {"entropy_threshold": 0.12},
+            "description": "SHIRG-Entropy: With noise filtering"
+        }
+    
+    if 'edge' in methods:
+        test_configs["shirg_edge"] = {
+            "use_shirg": True,
+            "selection_method": "edge",
+            "selection_params": {"edge_weight": 0.25},
+            "description": "SHIRG-Edge: With edge/text priors"
+        }
+    
+    if 'full' in methods:
+        test_configs["shirg_full"] = {
+            "use_shirg": True,
+            "selection_method": "full",
+            "selection_params": {
+                "entropy_threshold": 0.12,
+                "edge_weight": 0.25,
+                "radial_sigma": 0.65,
+                "merge_similar": False
+            },
+            "description": "SHIRG-Full: All enhancements"
+        }
+    
+    return test_configs
+
+
+def run_multi_config_evaluation(dataset_samples: List[Dict], 
+                               configs: Optional[Dict] = None) -> pd.DataFrame:
+    """
+    Run evaluation across multiple SHIRG configurations with proper model initialization
+    
+    This function properly handles the new architecture where selection method
+    and params must be set when initializing the model runner.
+    """
+    from real_ocr_vqa_model_runner import LaViDaModelRunner
+    
+    pipeline = SHIRGEvaluationPipeline()
+    configs = configs or pipeline.parameter_configs
+    
+    print(f"\n🚀 Starting SHIRG Multi-Configuration Evaluation")
+    print(f"   Configurations: {list(configs.keys())}")
+    print(f"   Total samples: {len(dataset_samples)}")
+    print("=" * 60)
+    
+    all_results = []
+    
+    # Run baseline first (no SHIRG)
+    if 'baseline' in configs:
+        print("\n📊 Running BASELINE configuration...")
+        baseline_runner = LaViDaModelRunner()
+        
+        # Load baseline model
+        if baseline_runner._load_baseline_model():
+            result = pipeline.run_configuration_evaluation(
+                'baseline', configs['baseline'], dataset_samples, baseline_runner
+            )
+            all_results.append(result)
+            pipeline._print_config_summary(result)
+            
+            # Unload baseline model
+            baseline_runner._unload_baseline_model()
+        else:
+            print("❌ Failed to load baseline model")
+    
+    # Run each SHIRG configuration
+    for config_name, config in configs.items():
+        if config_name == 'baseline' or not config.get('use_shirg', False):
+            continue
+            
+        print(f"\n📊 Running {config_name} configuration...")
+        
+        # Initialize model runner with specific selection method and params
+        shirg_runner = LaViDaModelRunner(
+            selection_method=config.get('selection_method', 'base'),
+            selection_params=config.get('selection_params', {})
+        )
+        
+        # Load SHIRG model
+        if shirg_runner._load_shirg_model():
+            result = pipeline.run_configuration_evaluation(
+                config_name, config, dataset_samples, shirg_runner
+            )
+            all_results.append(result)
+            pipeline._print_config_summary(result)
+            
+            # Unload SHIRG model
+            shirg_runner._unload_shirg_model()
+        else:
+            print(f"❌ Failed to load SHIRG model for {config_name}")
+    
+    # Create summary dataframe
+    if all_results:
+        summary_df = pd.DataFrame(all_results)
+        
+        # Save and display final results
+        pipeline._save_summary_results(summary_df)
+        pipeline._print_final_summary(summary_df)
+        
+        return summary_df
+    else:
+        print("❌ No results collected")
+        return pd.DataFrame()
+
+
 def integrate_with_existing_evaluation():
     """
     Integration function to use with your existing real_ocr_vqa_validation.py
+    
+    Updated to work with the new SHIRG-Fovea architecture where selection
+    method and params are set at model initialization time.
     """
-    from real_ocr_vqa_model_runner import LaViDaModelRunner
     from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader
     
-    # Initialize components
-    pipeline = SHIRGEvaluationPipeline()
+    # Initialize dataset loader
     dataset_loader = OCRVQADatasetLoader()
-    model_runner = LaViDaModelRunner()
     
     # Load dataset samples
     samples = dataset_loader.get_real_ocr_vqa_samples()
     
-    # Run evaluation pipeline
-    results_df = pipeline.run_full_evaluation(samples, model_runner)
+    if not samples:
+        print("❌ No dataset samples loaded")
+        return None
+    
+    # Run evaluation with multiple configurations
+    results_df = run_multi_config_evaluation(samples)
     
     return results_df
 
 
+def main():
+    """Main function with command-line argument support"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='SHIRG Evaluation Pipeline')
+    parser.add_argument('--config', type=str, default='all',
+                      help='Configuration to run (all, baseline, shirg_base, shirg_entropy, shirg_edge, shirg_full, etc.)')
+    parser.add_argument('--method', type=str, default=None,
+                      choices=['base', 'entropy', 'edge', 'full'],
+                      help='Custom selection method (overrides config)')
+    parser.add_argument('--entropy-threshold', type=float, default=0.12,
+                      help='Entropy threshold for noise filtering')
+    parser.add_argument('--edge-weight', type=float, default=0.25,
+                      help='Weight for edge prior')
+    parser.add_argument('--radial-sigma', type=float, default=0.65,
+                      help='Sigma for radial weighting')
+    parser.add_argument('--merge-similar', action='store_true',
+                      help='Enable token merging for similar tokens')
+    parser.add_argument('--merge-threshold', type=float, default=0.9,
+                      help='Similarity threshold for token merging')
+    parser.add_argument('--samples', type=int, default=None,
+                      help='Number of samples to evaluate (default: all)')
+    
+    args = parser.parse_args()
+    
+    # Load dataset
+    from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader
+    dataset_loader = OCRVQADatasetLoader()
+    samples = dataset_loader.get_real_ocr_vqa_samples()
+    
+    if not samples:
+        print("❌ No dataset samples loaded")
+        return
+    
+    # Limit samples if requested
+    if args.samples:
+        samples = samples[:args.samples]
+        print(f"📊 Using first {args.samples} samples")
+    
+    # Handle custom configuration
+    if args.method:
+        # Create custom configuration based on command-line args
+        custom_config = {
+            "custom": {
+                "use_shirg": True,
+                "selection_method": args.method,
+                "selection_params": {},
+                "description": f"Custom SHIRG-{args.method.upper()}"
+            }
+        }
+        
+        # Add parameters based on method
+        if args.method == 'entropy':
+            custom_config["custom"]["selection_params"]["entropy_threshold"] = args.entropy_threshold
+        elif args.method == 'edge':
+            custom_config["custom"]["selection_params"]["edge_weight"] = args.edge_weight
+        elif args.method == 'full':
+            custom_config["custom"]["selection_params"] = {
+                "entropy_threshold": args.entropy_threshold,
+                "edge_weight": args.edge_weight,
+                "radial_sigma": args.radial_sigma,
+                "merge_similar": args.merge_similar,
+                "merge_threshold": args.merge_threshold
+            }
+        
+        results_df = run_multi_config_evaluation(samples, custom_config)
+    
+    elif args.config == 'all':
+        # Run all predefined configurations
+        results_df = integrate_with_existing_evaluation()
+    
+    else:
+        # Run specific configuration
+        pipeline = SHIRGEvaluationPipeline()
+        if args.config in pipeline.parameter_configs:
+            single_config = {args.config: pipeline.parameter_configs[args.config]}
+            results_df = run_multi_config_evaluation(samples, single_config)
+        else:
+            print(f"❌ Unknown configuration: {args.config}")
+            print(f"   Available: {list(pipeline.parameter_configs.keys())}")
+            return
+    
+    print("\n✅ Evaluation complete!")
+    if results_df is not None and not results_df.empty:
+        print(f"   Results saved to: /content/shirg_evaluation_results/")
+
+
 if __name__ == "__main__":
-    # Can be run standalone or integrated
-    print("SHIRG Evaluation Pipeline")
-    print("Use integrate_with_existing_evaluation() to run with your existing code")
-    print("Or import SHIRGEvaluationPipeline to use in your own scripts")
+    main()
