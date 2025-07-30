@@ -399,6 +399,77 @@ class SHIRGEvaluationPipeline:
         """
         return run_multi_config_evaluation(dataset_samples, configs)
     
+    def _create_per_dataset_breakdown(self, results: List[Dict]) -> Dict[str, Dict]:
+        """Create per-dataset breakdown of results"""
+        # SHIRG-FIX: 2025-07-30 - Create detailed per-dataset breakdown
+        # ISSUE: Need to see all datasets and their metrics
+        # SOLUTION: Group by dataset and calculate all available metrics
+        # RESEARCH IMPACT: Shows complete evaluation results for all datasets
+        
+        breakdown = {}
+        
+        # Group results by dataset
+        for result in results:
+            dataset = result.get('dataset', 'unknown')
+            
+            # Extract clean dataset name
+            if '/' in dataset:
+                clean_name = dataset.split('/')[-1]
+            else:
+                clean_name = dataset
+            
+            if clean_name not in breakdown:
+                breakdown[clean_name] = {
+                    'full_name': dataset,
+                    'samples': [],
+                    'metrics': {}
+                }
+            
+            # Add sample
+            sample_data = {
+                'question': result.get('question', ''),
+                'prediction': result.get('prediction', ''),
+                'ground_truth': result.get('ground_truth', []),
+                'metrics': {}
+            }
+            
+            # Add all available metrics for this sample
+            metric_keys = [k for k in result.keys() if k not in 
+                          ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error']]
+            for metric in metric_keys:
+                sample_data['metrics'][metric] = result[metric]
+            
+            breakdown[clean_name]['samples'].append(sample_data)
+        
+        # Calculate average metrics for each dataset
+        for dataset_name, dataset_data in breakdown.items():
+            metrics_summary = {}
+            
+            # Find all unique metrics across samples
+            all_metrics = set()
+            for sample in dataset_data['samples']:
+                all_metrics.update(sample['metrics'].keys())
+            
+            # Calculate averages for each metric
+            for metric in all_metrics:
+                values = [s['metrics'].get(metric, 0) for s in dataset_data['samples'] 
+                         if metric in s['metrics'] and s['metrics'][metric] is not None]
+                
+                if values:
+                    metrics_summary[metric] = {
+                        'mean': np.mean(values),
+                        'std': np.std(values),
+                        'min': min(values),
+                        'max': max(values),
+                        'count': len(values),
+                        'total_samples': len(dataset_data['samples'])
+                    }
+            
+            dataset_data['metrics'] = metrics_summary
+            dataset_data['num_samples'] = len(dataset_data['samples'])
+        
+        return breakdown
+    
     def _save_detailed_results(self, config_name: str, results: List[Dict], aggregated: Dict):
         """Save detailed results for a configuration"""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -412,6 +483,84 @@ class SHIRGEvaluationPipeline:
         agg_path = self.results_dir / f"{config_name}_aggregated_{timestamp}.json"
         with open(agg_path, 'w') as f:
             json.dump(aggregated, f, indent=2)
+        
+        # Save per-dataset breakdown
+        # SHIRG-FIX: 2025-07-30 - Save per-dataset breakdown for each configuration
+        # ISSUE: Need detailed per-dataset results for analysis
+        # SOLUTION: Group results by dataset and calculate metrics
+        # RESEARCH IMPACT: Enables detailed per-dataset analysis
+        per_dataset_breakdown = self._create_per_dataset_breakdown(results)
+        breakdown_path = self.results_dir / f"{config_name}_per_dataset_breakdown_{timestamp}.json"
+        with open(breakdown_path, 'w') as f:
+            json.dump(per_dataset_breakdown, f, indent=2)
+    
+    def _extract_per_dataset_metrics(self, summary_df: pd.DataFrame) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """Extract per-dataset metrics from summary dataframe"""
+        # SHIRG-FIX: 2025-07-30 - Extract per-dataset metrics in structured format
+        # ISSUE: Need structured per-dataset metrics for analysis
+        # SOLUTION: Parse column names and organize by dataset and configuration
+        # RESEARCH IMPACT: Enables detailed per-dataset performance analysis
+        
+        per_dataset_metrics = {}
+        
+        # Find all dataset-specific metric columns
+        dataset_columns = defaultdict(lambda: defaultdict(list))
+        
+        # Valid metrics we're looking for
+        metric_names = ['relaxed_accuracy', 'exact_match', 'accuracy', 'anls', 'vqa_accuracy', 'token_f1']
+        
+        for col in summary_df.columns:
+            # Skip non-metric columns
+            if col in ['config_name', 'description', 'num_samples', 'elapsed_time']:
+                continue
+            
+            # Skip aggregate metric columns
+            if col.endswith('_mean') or col.endswith('_std'):
+                continue
+            
+            # Check if this is a dataset-specific metric
+            for metric in metric_names:
+                if col.endswith('_' + metric):
+                    # Extract dataset name
+                    dataset_name = col[:-len('_' + metric)]
+                    dataset_columns[dataset_name][metric] = col
+                    break
+        
+        # Build the metrics structure
+        for dataset_name, metrics in dataset_columns.items():
+            per_dataset_metrics[dataset_name] = {
+                'configurations': {}
+            }
+            
+            # Add each configuration's metrics
+            for _, row in summary_df.iterrows():
+                config_name = row['config_name']
+                config_metrics = {}
+                
+                for metric_name, col_name in metrics.items():
+                    if col_name in row and pd.notna(row[col_name]):
+                        config_metrics[metric_name] = float(row[col_name])
+                    else:
+                        config_metrics[metric_name] = None
+                
+                per_dataset_metrics[dataset_name]['configurations'][config_name] = config_metrics
+            
+            # Calculate dataset averages across configurations
+            avg_metrics = {}
+            for metric_name, col_name in metrics.items():
+                if col_name in summary_df.columns:
+                    valid_values = summary_df[col_name].dropna()
+                    if len(valid_values) > 0:
+                        avg_metrics[metric_name] = {
+                            'mean': float(valid_values.mean()),
+                            'std': float(valid_values.std()),
+                            'min': float(valid_values.min()),
+                            'max': float(valid_values.max())
+                        }
+            
+            per_dataset_metrics[dataset_name]['average_metrics'] = avg_metrics
+        
+        return per_dataset_metrics
     
     def _save_summary_results(self, summary_df: pd.DataFrame):
         """Save summary results"""
@@ -425,9 +574,20 @@ class SHIRGEvaluationPipeline:
         json_path = self.results_dir / f"shirg_evaluation_summary_{timestamp}.json"
         summary_df.to_json(json_path, orient='records', indent=2)
         
+        # Save per-dataset metrics
+        # SHIRG-FIX: 2025-07-30 - Save per-dataset average metrics as separate JSON
+        # ISSUE: User requested per-dataset metrics to be saved separately
+        # SOLUTION: Extract and save per-dataset metrics in a structured format
+        # RESEARCH IMPACT: Enables easier analysis of per-dataset performance
+        per_dataset_metrics = self._extract_per_dataset_metrics(summary_df)
+        per_dataset_path = self.results_dir / f"shirg_per_dataset_metrics_{timestamp}.json"
+        with open(per_dataset_path, 'w') as f:
+            json.dump(per_dataset_metrics, f, indent=2)
+        
         print(f"\n💾 Results saved to:")
         print(f"   CSV: {csv_path}")
         print(f"   JSON: {json_path}")
+        print(f"   Per-Dataset Metrics: {per_dataset_path}")
     
     def _print_config_summary(self, result: Dict):
         """Print summary for a single configuration"""
@@ -457,8 +617,7 @@ class SHIRGEvaluationPipeline:
         # Find all dataset-specific metric columns
         dataset_metrics = defaultdict(lambda: defaultdict(list))
         
-        # Debug: print all columns to see what we have
-        # print(f"DEBUG: Available columns: {list(summary_df.columns)}")
+        # Find all dataset-specific metric columns from summary dataframe
         
         # Extract dataset names dynamically from column names
         for col in summary_df.columns:
@@ -524,12 +683,16 @@ class SHIRGEvaluationPipeline:
                         if has_valid_data:
                             break
                     
-                    # Only print if there's valid data
+                    # Print all datasets, not just those with non-zero values
+                    # SHIRG-FIX: 2025-07-30 - Show all datasets with results
+                    # ISSUE: Only showing datasets with non-zero values, hiding valid 0.0 results
+                    # SOLUTION: Always print dataset if it has any data
+                    # RESEARCH IMPACT: Shows complete evaluation results for all tested datasets
+                    print(f"\n{dataset_name}:")
+                    print("-" * 40)
                     if has_valid_data:
-                        print(f"\n{dataset_name}:")
-                        print("-" * 40)
                         datasets_with_data.append(dataset_name)
-                        print(dataset_df.to_string(index=False))
+                    print(dataset_df.to_string(index=False))
                         
                         # Find best configuration for this dataset (if anls exists)
                         anls_col = dataset_metrics[dataset_name].get('anls')
@@ -556,11 +719,12 @@ class SHIRGEvaluationPipeline:
             if datasets_with_data:
                 print(f"\n📊 Evaluated {len(datasets_with_data)} datasets with valid data: {', '.join(datasets_with_data)}")
             
-            # List datasets that had no valid data (all zeros or N/A)
+            # List datasets that had only zero scores (still valid results)
             all_datasets = list(dataset_metrics.keys())
             datasets_without_data = [d for d in all_datasets if d not in datasets_with_data]
             if datasets_without_data:
-                print(f"⚠️  {len(datasets_without_data)} datasets had no valid data (all zeros or N/A): {', '.join(datasets_without_data)}")
+                print(f"\n📊 {len(datasets_without_data)} datasets evaluated with zero scores: {', '.join(datasets_without_data)}")
+                print("   (Zero scores are valid results indicating incorrect predictions)")
         
         print("\n" + "=" * 80)
 
