@@ -296,12 +296,45 @@ class ShirgLoraTrainer:
         # SOLUTION: Ensure all LoRA parameters are trainable after PEFT application
         # LAVIDA IMPACT: None - only affects LoRA training
         # SHIRG IMPACT: Fixes zero gradient issue enabling proper LoRA training
-        from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
-        unfrozen_count = ensure_lora_parameters_trainable(self.model)
-        if unfrozen_count > 0:
-            rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
-            # Print updated trainable parameters
-            self.model.print_trainable_parameters()
+        
+        # SHIRG-FIX: 2025-07-30 - Use enhanced fix for device mismatch
+        # ISSUE: Device mismatch between components causes gradient flow failure
+        # SOLUTION: Use enhanced fix that handles both gradient and device issues
+        # LAVIDA IMPACT: Ensures all components on same device
+        # SHIRG IMPACT: Fixes zero gradient issue in multi-GPU training
+        try:
+            from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
+            
+            # Apply comprehensive fix
+            target_device = None
+            if hasattr(self, 'accelerator') and self.accelerator.device:
+                target_device = self.accelerator.device
+            elif torch.cuda.is_available():
+                target_device = torch.device("cuda:0")
+            
+            results = ensure_lora_parameters_trainable_enhanced(
+                self.model,
+                device=target_device,
+                fix_device_mismatch=True
+            )
+            
+            if results['unfrozen_params'] > 0 or results['moved_components'] > 0:
+                rank0_print(f"🔧 LoRA Gradient Fix Applied:")
+                rank0_print(f"   - Fixed {results['unfrozen_params']} frozen LoRA parameters")
+                rank0_print(f"   - Moved {results['moved_components']} components to {target_device}")
+                rank0_print(f"   - Total LoRA parameters: {results['total_lora_params']}")
+                # Print updated trainable parameters
+                self.model.print_trainable_parameters()
+                
+        except ImportError:
+            # Fallback to original fix if enhanced version not available
+            rank0_print("⚠️ Enhanced gradient fix not available, using basic fix")
+            from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
+            unfrozen_count = ensure_lora_parameters_trainable(self.model)
+            if unfrozen_count > 0:
+                rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
+                # Print updated trainable parameters
+                self.model.print_trainable_parameters()
         
         # Setup token dropout
         self.token_dropout = ShirgTokenDropout(
@@ -474,6 +507,22 @@ class ShirgLoraTrainer:
                 IMAGE_TOKEN_INDEX, 
                 return_tensors="pt"
             )
+            
+            # SHIRG-FIX: 2025-07-30 - Ensure tensors are on correct device
+            # ISSUE: Device mismatch when modifying labels tensor
+            # SOLUTION: Move tensors to correct device after creation
+            # LAVIDA IMPACT: Prevents device mismatch errors
+            # SHIRG IMPACT: Enables proper gradient flow in multi-GPU
+            if hasattr(self, 'accelerator') and self.accelerator.device:
+                device = self.accelerator.device
+            elif torch.cuda.is_available():
+                device = torch.device("cuda:0")
+            else:
+                device = torch.device("cpu")
+            
+            # Move input_ids to device if needed
+            if input_ids.device != device:
+                input_ids = input_ids.to(device)
             
             # Create labels - mask everything except the answer
             labels = input_ids.clone()

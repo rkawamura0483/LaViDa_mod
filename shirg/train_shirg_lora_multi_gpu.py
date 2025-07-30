@@ -138,6 +138,24 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
         # Call parent method (which includes the LoRA gradient fix)
         super().setup_model()
         
+        # SHIRG-FIX: 2025-07-30 - Apply enhanced gradient fix for multi-GPU
+        # ISSUE: Device mismatches more common in multi-GPU setups
+        # SOLUTION: Ensure comprehensive device and gradient fixes
+        # LAVIDA IMPACT: Consistent device placement across GPUs
+        # SHIRG IMPACT: Enables proper gradient flow in distributed training
+        try:
+            from shirg.fix_lora_gradients_enhanced import apply_comprehensive_fix
+            
+            # Apply comprehensive fix before DDP wrapping
+            local_rank = int(os.environ.get('LOCAL_RANK', 0))
+            device_str = f"cuda:{local_rank}"
+            
+            rank0_print(f"🔧 Applying comprehensive LoRA fix for GPU {local_rank}...")
+            apply_comprehensive_fix(self, force_device=device_str)
+            
+        except ImportError:
+            rank0_print("⚠️ Enhanced gradient fix not available")
+        
         # SHIRG-FIX: 2025-07-30 - Handle multi-GPU setup for 8 GPU training
         # ISSUE: Need proper handling for distributed model with device_map
         # SOLUTION: Check if model uses device_map and handle appropriately
