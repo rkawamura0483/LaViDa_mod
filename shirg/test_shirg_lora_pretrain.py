@@ -684,14 +684,23 @@ class ShirgLoraPreTrainTest:
                 },
             )
             
-            # SHIRG-FIX: 2025-07-30 - Disable device_map to avoid multi-GPU issues
-            # ISSUE: device_map="auto" distributes model across GPUs causing device mismatches
-            # SOLUTION: Force single GPU placement for testing
-            # LAVIDA IMPACT: Testing only - production can still use multi-GPU
-            # SHIRG IMPACT: Ensures tests run without device errors
+            # SHIRG-FIX: 2025-07-30 - Support both single and multi-GPU testing
+            # ISSUE: Need to test multi-GPU setup for 8 GPU training
+            # SOLUTION: Allow configurable device_map based on test requirements
+            # LAVIDA IMPACT: Can test both single and multi-GPU setups
+            # SHIRG IMPACT: Ensures compatibility with 8 GPU training
             
-            # Load model without device_map for testing
-            wrapper.device_map = None  # Disable device_map
+            # Check if we should use multi-GPU testing
+            use_multi_gpu = os.environ.get('SHIRG_TEST_MULTI_GPU', 'false').lower() == 'true'
+            if use_multi_gpu and torch.cuda.device_count() > 1:
+                print(f"   🌐 Testing with multi-GPU setup ({torch.cuda.device_count()} GPUs)")
+                # Use default device_map="auto" for multi-GPU
+                # Don't override device_map
+            else:
+                print(f"   📍 Testing with single GPU setup")
+                # Disable device_map for single GPU testing
+                wrapper.device_map = None
+            
             wrapper.load_model()
             model = wrapper.model
             tokenizer = wrapper.tokenizer
@@ -782,24 +791,32 @@ class ShirgLoraPreTrainTest:
                 model = get_peft_model(model, lora_config)
                 model.print_trainable_parameters()
             
-            # SHIRG-FIX: 2025-07-30 - Handle multi-GPU device placement
-            # ISSUE: Model distributed across multiple GPUs causing device mismatch
-            # SOLUTION: Move model to single GPU for testing
-            # LAVIDA IMPACT: Temporary single-GPU mode for testing only
-            # SHIRG IMPACT: Ensures consistent device placement during tests
-            # Move to GPU if available (use single GPU for testing)
+            # SHIRG-FIX: 2025-07-30 - Handle both single and multi-GPU device placement
+            # ISSUE: Need to support both single and multi-GPU testing
+            # SOLUTION: Conditionally handle device placement based on test mode
+            # LAVIDA IMPACT: Supports both testing scenarios
+            # SHIRG IMPACT: Ensures tests work for 8 GPU training setup
+            
+            use_multi_gpu = os.environ.get('SHIRG_TEST_MULTI_GPU', 'false').lower() == 'true'
             if torch.cuda.is_available():
-                # Force single GPU mode for testing
-                device = torch.device("cuda:0")
-                # Get base model (unwrap PEFT if needed)
-                base_model = model.get_base_model() if hasattr(model, 'get_base_model') else model
-                # Move entire model to single device
-                model = model.to(device)
-                if self.config.bf16:
-                    model = model.to(dtype=torch.bfloat16)
-                elif self.config.fp16:
-                    model = model.to(dtype=torch.float16)
-                print(f"   📍 Model moved to single GPU: {device}")
+                if use_multi_gpu and hasattr(model, 'hf_device_map'):
+                    # Multi-GPU mode - model is already distributed
+                    print(f"   🌐 Model distributed across GPUs")
+                    print(f"   Device map keys: {list(model.hf_device_map.keys())[:5]}...")
+                    # Don't move model - it's already distributed
+                    device = torch.device("cuda:0")  # For input tensors
+                else:
+                    # Single GPU mode for testing
+                    device = torch.device("cuda:0")
+                    # Get base model (unwrap PEFT if needed)
+                    base_model = model.get_base_model() if hasattr(model, 'get_base_model') else model
+                    # Move entire model to single device
+                    model = model.to(device)
+                    if self.config.bf16:
+                        model = model.to(dtype=torch.bfloat16)
+                    elif self.config.fp16:
+                        model = model.to(dtype=torch.float16)
+                    print(f"   📍 Model moved to single GPU: {device}")
                     
             # Create test batch (matching training data format)
             batch_size = 2
@@ -1692,8 +1709,15 @@ def main():
                        help="Override batch size")
     parser.add_argument("--skip-gpu", action="store_true",
                        help="Skip GPU tests")
+    parser.add_argument("--multi-gpu", action="store_true",
+                       help="Test with multi-GPU setup (8 GPUs)")
     
     args = parser.parse_args()
+    
+    # Set environment variable for multi-GPU testing if requested
+    if args.multi_gpu:
+        os.environ['SHIRG_TEST_MULTI_GPU'] = 'true'
+        print(f"🌐 Multi-GPU testing enabled")
     
     # Create config
     config = create_lora_training_config(
