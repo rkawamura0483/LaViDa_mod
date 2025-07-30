@@ -303,25 +303,36 @@ class ShirgLoraTrainer:
         # LAVIDA IMPACT: Some base vision tower modules become trainable
         # SHIRG IMPACT: Enables proper gradient flow for LoRA training
         try:
-            # First try aggressive fix
-            from shirg.fix_lora_gradients_aggressive import fix_lora_gradients_aggressive
-            
-            rank0_print("🔧 Applying AGGRESSIVE LoRA gradient fix...")
-            results = fix_lora_gradients_aggressive(
-                self.model,
-                unfreeze_base_modules=True,  # Key: unfreeze base modules that have LoRA
-                force_lora_gradients=True,
-                debug=True
+            # Try selective gradient flow fix
+            from shirg.fix_lora_gradients_selective import (
+                apply_selective_gradient_flow, 
+                get_lora_parameters_only,
+                verify_selective_gradient_flow,
+                apply_memory_optimizations
             )
             
-            if results['gradient_flow_enabled']:
-                rank0_print(f"✅ Aggressive fix applied successfully!")
-                rank0_print(f"   - LoRA parameters fixed: {results['lora_params_fixed']}")
-                rank0_print(f"   - Base modules unfrozen: {results['base_modules_unfrozen']}")
+            rank0_print("🔧 Applying Selective LoRA gradient flow fix...")
+            results = apply_selective_gradient_flow(self.model, debug=True)
+            
+            if results['success']:
+                rank0_print(f"✅ Selective gradient flow enabled!")
+                rank0_print(f"   - Modules with LoRA: {results['modules_with_lora']}")
+                rank0_print(f"   - Base params enabled: {results['base_params_enabled']}")
+                rank0_print(f"   - Vision tower fixed: {results['vision_tower_fixed']}")
+                
+                # Verify the setup
+                verify_results = verify_selective_gradient_flow(self.model, debug=True)
+                if not verify_results['setup_correct']:
+                    rank0_print("⚠️ Setup verification failed - check optimizer configuration")
+                
+                # Apply memory optimizations
+                rank0_print("\n🔧 Applying memory optimizations...")
+                apply_memory_optimizations(self.model, self.config.__dict__)
+                
                 # Print updated trainable parameters
                 self.model.print_trainable_parameters()
             else:
-                rank0_print("⚠️ Aggressive fix did not fully enable gradient flow")
+                rank0_print("⚠️ Selective gradient flow fix failed")
                 
         except ImportError:
             rank0_print("⚠️ Aggressive fix not available, trying enhanced fix")
@@ -384,12 +395,34 @@ class ShirgLoraTrainer:
         """Setup optimizer and learning rate scheduler"""
         print("🔧 Setting up optimizer and scheduler...")
         
-        # Get trainable parameters
-        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        # SHIRG-FIX: 2025-07-30 - Only add LoRA parameters to optimizer
+        # ISSUE: Base module parameters with requires_grad=True shouldn't be updated
+        # SOLUTION: Filter to only include LoRA parameters in optimizer
+        # LAVIDA IMPACT: Base model parameters remain unchanged during training
+        # SHIRG IMPACT: Enables proper LoRA-only training with gradient flow
         
-        # Setup optimizer
+        # Get only LoRA parameters for optimizer
+        lora_params = []
+        lora_param_names = []
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and 'lora' in name.lower():
+                lora_params.append(param)
+                lora_param_names.append(name)
+        
+        rank0_print(f"   Found {len(lora_params)} LoRA parameters for optimizer")
+        if len(lora_params) < 10:
+            # Print all if few
+            for name in lora_param_names:
+                rank0_print(f"      - {name}")
+        else:
+            # Print sample if many
+            for name in lora_param_names[:3]:
+                rank0_print(f"      - {name}")
+            rank0_print(f"      ... and {len(lora_params) - 3} more")
+        
+        # Setup optimizer with only LoRA parameters
         self.optimizer = torch.optim.AdamW(
-            trainable_params,
+            lora_params,
             lr=self.config.learning_rate,
             betas=(self.config.adam_beta1, self.config.adam_beta2),
             eps=self.config.adam_epsilon,
