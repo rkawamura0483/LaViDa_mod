@@ -34,13 +34,15 @@ def check_integration():
     try:
         from dataset_loaders import ChartQADataset, DocVQADataset, VQAv2Dataset, MixedVQADataset
         
-        # Test loading a small sample
+        # Test loading a small sample with all 5 training datasets
         test_dataset = MixedVQADataset(
             split="train",
             dataset_configs={
-                "chartqa": {"weight": 0.3, "max_samples": 10},
-                "docvqa": {"weight": 0.3, "max_samples": 10},
-                "vqa_v2": {"weight": 0.4, "max_samples": 10},
+                "chartqa": {"weight": 0.2, "max_samples": 2},
+                "textvqa": {"weight": 0.2, "max_samples": 2},
+                "ocrvqa": {"weight": 0.2, "max_samples": 2},
+                "infovqa": {"weight": 0.2, "max_samples": 2},
+                "vqa_v2": {"weight": 0.2, "max_samples": 2},
             },
             image_size=672,
             cache_dir="./temp_test_cache"

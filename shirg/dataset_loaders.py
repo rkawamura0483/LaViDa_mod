@@ -433,6 +433,201 @@ class TextVQADataset(Dataset):
         }
 
 
+class OCRVQADataset(Dataset):
+    """OCR-VQA dataset loader for book cover text reading"""
+    
+    def __init__(
+        self,
+        split: str = "train",
+        max_samples: Optional[int] = None,
+        image_size: int = 672,
+        cache_dir: str = "./data/ocrvqa",
+    ):
+        """
+        Initialize OCR-VQA dataset
+        
+        Args:
+            split: Dataset split ('train', 'validation', 'test')
+            max_samples: Maximum number of samples to load
+            image_size: Target image size
+            cache_dir: Directory to cache dataset
+        """
+        self.split = split if split != "val" else "validation"
+        self.image_size = image_size
+        self.cache_dir = cache_dir
+        
+        try:
+            # SHIRG-FIX: [2025-07-30] - Add OCR-VQA for training
+            # ISSUE: Need OCR-focused dataset for text reading capabilities
+            # SOLUTION: Use howard-hou/OCR-VQA which has train/val/test splits
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: Provides book cover OCR samples (1M QA pairs)
+            dataset = load_dataset("howard-hou/OCR-VQA", split=self.split, cache_dir=cache_dir)
+            self.data = dataset
+            
+            # Limit samples if requested
+            if max_samples and len(self.data) > max_samples:
+                indices = np.random.choice(len(self.data), max_samples, replace=False)
+                self.data = self.data.select(indices)
+                
+            print(f"✅ Loaded OCR-VQA {split} split: {len(self.data)} samples")
+            
+        except Exception as e:
+            print(f"❌ Failed to load OCR-VQA: {e}")
+            self.data = []
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # OCR-VQA format - handle image data
+        image = item.get('image', None)
+        if image is None:
+            image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, str):
+            try:
+                image = Image.open(image).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, bytes):
+            import io
+            try:
+                image = Image.open(io.BytesIO(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image).convert('RGB')
+        elif hasattr(image, 'convert'):
+            image = image.convert('RGB')
+        else:
+            try:
+                image = Image.fromarray(np.array(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        
+        # Resize to target size
+        image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+        
+        # Pad to square
+        if image.size != (self.image_size, self.image_size):
+            new_image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+            paste_x = (self.image_size - image.width) // 2
+            paste_y = (self.image_size - image.height) // 2
+            new_image.paste(image, (paste_x, paste_y))
+            image = new_image
+        
+        # OCR-VQA has questions about book metadata
+        return {
+            'image': image,
+            'question': item.get('question', 'What text is visible in this image?'),
+            'answer': item.get('answer', ''),
+            'id': f"ocrvqa_{idx}",
+            'dataset': 'ocrvqa'
+        }
+
+
+class InfoVQADataset(Dataset):
+    """InfoVQA dataset loader for infographic understanding"""
+    
+    def __init__(
+        self,
+        split: str = "train",
+        max_samples: Optional[int] = None,
+        image_size: int = 672,
+        cache_dir: str = "./data/infovqa",
+    ):
+        """
+        Initialize InfoVQA dataset
+        
+        Args:
+            split: Dataset split (only 'train' available)
+            max_samples: Maximum number of samples to load
+            image_size: Target image size
+            cache_dir: Directory to cache dataset
+        """
+        self.split = split
+        self.image_size = image_size
+        self.cache_dir = cache_dir
+        
+        try:
+            # SHIRG-FIX: [2025-07-30] - Add InfoVQA for training
+            # ISSUE: Need infographic dataset for dense visual reasoning
+            # SOLUTION: Use vidore/infovqa_train which has 10.1k training samples
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: Provides infographic samples requiring fine detail preservation
+            if split == "train":
+                dataset = load_dataset("vidore/infovqa_train", split="train", cache_dir=cache_dir)
+                self.data = dataset
+            else:
+                # For validation/test, would need different source
+                print(f"⚠️ InfoVQA {split} split not available in vidore/infovqa_train")
+                self.data = []
+            
+            # Limit samples if requested
+            if self.data and max_samples and len(self.data) > max_samples:
+                indices = np.random.choice(len(self.data), max_samples, replace=False)
+                self.data = self.data.select(indices)
+                
+            if self.data:
+                print(f"✅ Loaded InfoVQA {split} split: {len(self.data)} samples")
+            
+        except Exception as e:
+            print(f"❌ Failed to load InfoVQA: {e}")
+            self.data = []
+    
+    def __len__(self):
+        return len(self.data) if self.data else 0
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # InfoVQA format - handle image data
+        image = item.get('image', None)
+        if image is None:
+            image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, str):
+            try:
+                image = Image.open(image).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, bytes):
+            import io
+            try:
+                image = Image.open(io.BytesIO(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image).convert('RGB')
+        elif hasattr(image, 'convert'):
+            image = image.convert('RGB')
+        else:
+            try:
+                image = Image.fromarray(np.array(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        
+        # Resize to target size
+        image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+        
+        # Pad to square
+        if image.size != (self.image_size, self.image_size):
+            new_image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+            paste_x = (self.image_size - image.width) // 2
+            paste_y = (self.image_size - image.height) // 2
+            new_image.paste(image, (paste_x, paste_y))
+            image = new_image
+        
+        return {
+            'image': image,
+            'question': item.get('question', 'What information is shown in this infographic?'),
+            'answer': item.get('answer', ''),
+            'id': f"infovqa_{idx}",
+            'dataset': 'infovqa'
+        }
+
+
 class MixedVQADataset(Dataset):
     """Mixed dataset combining ChartQA, DocVQA, and VQA v2 with weighted sampling"""
     
@@ -462,11 +657,17 @@ class MixedVQADataset(Dataset):
         # SHIRG IMPACT: Training focuses on available datasets
         if dataset_configs is None:
             if split == "train":
-                # For training, use TextVQA instead of DocVQA
+                # SHIRG-FIX: [2025-07-30] - Comprehensive training dataset mix
+                # ISSUE: Need diverse datasets matching evaluation benchmarks
+                # SOLUTION: Include 5 complementary datasets for robust training
+                # LAVIDA IMPACT: None
+                # SHIRG IMPACT: Better coverage of high-res OCR/VQA scenarios
                 dataset_configs = {
-                    "chartqa": {"weight": 0.3, "max_samples": 10000},
-                    "textvqa": {"weight": 0.3, "max_samples": 10000},  # TextVQA replaces DocVQA
-                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+                    "chartqa": {"weight": 0.2, "max_samples": 10000},   # Charts & graphs
+                    "textvqa": {"weight": 0.2, "max_samples": 10000},   # Natural scene text
+                    "ocrvqa": {"weight": 0.2, "max_samples": 10000},    # Book covers
+                    "infovqa": {"weight": 0.2, "max_samples": 10000},   # Infographics
+                    "vqa_v2": {"weight": 0.2, "max_samples": 10000},    # General VQA
                 }
             else:
                 # For validation/test, include all datasets
@@ -486,7 +687,9 @@ class MixedVQADataset(Dataset):
                 "chartqa": ChartQADataset,
                 "docvqa": DocVQADataset,
                 "vqa_v2": VQAv2Dataset,
-                "textvqa": TextVQADataset,  # Added TextVQA
+                "textvqa": TextVQADataset,
+                "ocrvqa": OCRVQADataset,    # Book cover OCR
+                "infovqa": InfoVQADataset,   # Infographic understanding
             }.get(name)
             
             if dataset_class:
