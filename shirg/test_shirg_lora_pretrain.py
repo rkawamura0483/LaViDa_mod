@@ -532,13 +532,19 @@ class ShirgLoraPreTrainTest:
             # First test the vision tower component directly
             from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
             
+            # SHIRG-FIX: 2025-07-30 - Proper SHIRG-Fovea configuration
+            # ISSUE: SHIRG-Fovea expects 2 views but config was missing proper settings
+            # SOLUTION: Enable shirg_3view_mode and use anyres aspect ratio
+            # LAVIDA IMPACT: None - LaViDa continues to work with standard mode
+            # SHIRG IMPACT: Enables correct 2-view processing (1×384² + 1×448²) = 980 tokens
             # Create config for vision tower
             class VisionTowerConfig:
                 mm_vision_tower = "google/siglip-so400m-patch14-384"
                 enable_shirg = True
+                shirg_3view_mode = True  # Enable 2-view mode (1 global + 1 foveal)
                 mm_vision_select_layer = -2
                 mm_vision_select_feature = "patch"
-                image_aspect_ratio = "pad"
+                image_aspect_ratio = "anyres"  # For SHIRG compatibility
                 
             vision_config = VisionTowerConfig()
             
@@ -625,12 +631,34 @@ class ShirgLoraPreTrainTest:
                 
             # Test gradient flow through vision tower
             print(f"\n   Testing gradient computation:")
-            shirg_images.requires_grad = True
-            features = vision_tower(shirg_images, use_shirg=True)
+            # Create a new tensor for gradient testing (can't use processed images)
+            grad_test_images = torch.randn(1, 3, 672, 672, requires_grad=True)
+            if torch.cuda.is_available():
+                grad_test_images = grad_test_images.cuda()
+                if self.config.bf16:
+                    grad_test_images = grad_test_images.to(dtype=torch.bfloat16)
+            
+            # Process for SHIRG
+            from llava.mm_utils import process_images
+            grad_test_processed = process_images([Image.new('RGB', (672, 672))], image_processor, vision_config)
+            if isinstance(grad_test_processed, list):
+                grad_test_processed = [t.to(dtype=torch.bfloat16, device=vision_tower.device) for t in grad_test_processed]
+            else:
+                grad_test_processed = grad_test_processed.to(dtype=torch.bfloat16, device=vision_tower.device)
+            
+            # Test gradient flow
+            features = vision_tower(grad_test_processed, use_shirg=True)
             loss = features.mean()
             loss.backward()
             
-            if shirg_images.grad is not None:
+            # Check if gradients are computed on model parameters
+            has_grad = False
+            for param in vision_tower.parameters():
+                if param.grad is not None:
+                    has_grad = True
+                    break
+            
+            if has_grad:
                 print(f"   ✅ Gradients flow through vision tower")
                 result["details"]["gradients_computed"] = True
             else:
@@ -667,10 +695,61 @@ class ShirgLoraPreTrainTest:
                 vision_tower.config.enable_shirg = True
                 vision_tower.config.shirg_selection_method = self.config.shirg_method
                 
-            # Apply LoRA
+            # Debug: Print model structure to find correct module paths
+            print(f"\n   Debugging model structure:")
+            # Get the base model
+            base_model = model.get_model() if hasattr(model, 'get_model') else model
+            
+            # Find projector modules
+            projector_modules = []
+            vision_modules = []
+            
+            for name, module in base_model.named_modules():
+                if 'mm_projector' in name and isinstance(module, nn.Linear):
+                    projector_modules.append(name)
+                    print(f"      Found projector: {name}")
+                elif 'vision_tower' in name and 'self_attn' in name and any(suffix in name for suffix in ['q_proj', 'k_proj', 'v_proj']):
+                    vision_modules.append(name)
+                    if len(vision_modules) <= 5:  # Show first few
+                        print(f"      Found vision module: {name}")
+            
+            # Create corrected target modules based on actual model structure
+            corrected_target_modules = []
+            
+            # Add projector modules
+            for module_name in projector_modules:
+                if 'fc1' in module_name or 'fc2' in module_name:
+                    corrected_target_modules.append(module_name)
+            
+            # Add vision tower modules (blocks 0-5)
+            for i in range(6):  # blocks 0-5
+                for proj in ['q_proj', 'k_proj', 'v_proj'] if i < 4 else ['q_proj', 'k_proj']:
+                    # Try to find the module with this pattern
+                    pattern = f"layers.{i}.self_attn.{proj}"
+                    matching = [m for m in vision_modules if pattern in m]
+                    if matching:
+                        corrected_target_modules.extend(matching)
+            
+            # If we found correct modules, update the config
+            if corrected_target_modules:
+                print(f"\n   Updating LoRA target modules to match model structure")
+                print(f"   Found {len(corrected_target_modules)} target modules")
+                self.config.target_modules = corrected_target_modules
+            else:
+                print(f"\n   ⚠️ Warning: Could not find expected modules, using default paths")
+            
+            # Apply LoRA with corrected config
             lora_config = self.config.to_peft_config()
-            model = get_peft_model(model, lora_config)
-            model.print_trainable_parameters()
+            try:
+                model = get_peft_model(model, lora_config)
+                model.print_trainable_parameters()
+            except ValueError as e:
+                # If still failing, try without model prefix
+                print(f"\n   Trying alternative module paths...")
+                alt_modules = [m.replace('model.', '') for m in self.config.target_modules]
+                lora_config.target_modules = alt_modules
+                model = get_peft_model(model, lora_config)
+                model.print_trainable_parameters()
             
             # Move to GPU if available
             if torch.cuda.is_available():

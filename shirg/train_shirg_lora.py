@@ -151,9 +151,63 @@ class ShirgLoraTrainer:
                 'merge_threshold': self.config.shirg_merge_threshold,
             }
         
+        # Debug: Find actual module paths in the model
+        print("🔍 Discovering model structure for LoRA targeting...")
+        base_model = self.model.get_model() if hasattr(self.model, 'get_model') else self.model
+        
+        # Find projector and vision modules
+        projector_modules = []
+        vision_modules = []
+        
+        for name, module in base_model.named_modules():
+            if 'mm_projector' in name and isinstance(module, nn.Linear):
+                projector_modules.append(name)
+                print(f"   Found projector: {name}")
+            elif 'vision_tower' in name and 'self_attn' in name and any(suffix in name for suffix in ['q_proj', 'k_proj', 'v_proj']):
+                vision_modules.append(name)
+        
+        # Create corrected target modules
+        corrected_target_modules = []
+        
+        # Add projector modules
+        for module_name in projector_modules:
+            if 'fc1' in module_name or 'fc2' in module_name:
+                corrected_target_modules.append(module_name)
+        
+        # Add vision tower modules (blocks 0-5)
+        for i in range(6):
+            for proj in ['q_proj', 'k_proj', 'v_proj'] if i < 4 else ['q_proj', 'k_proj']:
+                pattern = f"layers.{i}.self_attn.{proj}"
+                matching = [m for m in vision_modules if pattern in m]
+                if matching:
+                    corrected_target_modules.extend(matching)
+        
+        # Update config if we found modules
+        if corrected_target_modules:
+            print(f"✅ Found {len(corrected_target_modules)} target modules")
+            self.config.target_modules = corrected_target_modules
+        else:
+            # Try without model prefix
+            print("⚠️ Trying alternative module paths without 'model.' prefix...")
+            self.config.target_modules = [m.replace('model.', '') for m in self.config.target_modules]
+        
         # Apply LoRA with Extra-LoRA footprint
         lora_config = self.config.to_peft_config()
-        self.model = get_peft_model(self.model, lora_config)
+        try:
+            self.model = get_peft_model(self.model, lora_config)
+        except ValueError as e:
+            print(f"❌ LoRA application failed: {e}")
+            # Last resort: try with most common patterns
+            fallback_modules = [
+                "mm_projector.fc1",
+                "mm_projector.fc2",
+                "vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
+                "vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
+                "vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",
+            ]
+            print(f"   Trying fallback modules: {fallback_modules[:3]}...")
+            lora_config.target_modules = fallback_modules
+            self.model = get_peft_model(self.model, lora_config)
         
         # Print trainable parameters
         self.model.print_trainable_parameters()
