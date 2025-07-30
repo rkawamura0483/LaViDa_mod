@@ -88,6 +88,13 @@ export NCCL_DEBUG=WARN  # Set to INFO for more debugging
 # SHIRG IMPACT: Fixes zero gradient issue in multi-GPU LoRA training
 export SHIRG_NO_DEVICE_MAP=1
 
+# SHIRG-FIX: 2025-07-30 - Disable checkpoint cleanup to prevent crashes
+# ISSUE: Checkpoint cleanup with shutil.rmtree() can crash on distributed filesystems
+# SOLUTION: Disable cleanup during training, manually clean up old checkpoints later
+# LAVIDA IMPACT: None
+# SHIRG IMPACT: Prevents crashes at checkpoint-500 on Lambda Cloud
+export SHIRG_DISABLE_CHECKPOINT_CLEANUP=1
+
 echo "🚀 Starting SHIRG LoRA training on 8 GPUs"
 echo "================================================"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"

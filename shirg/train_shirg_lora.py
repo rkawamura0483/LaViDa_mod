@@ -1080,7 +1080,14 @@ class ShirgLoraTrainer:
             json.dump(training_state, f, indent=2)
         
         # Clean up old checkpoints if needed
-        if not (is_best or is_final) and self.config.save_total_limit > 0:
+        # SHIRG-FIX: 2025-07-30 - Add environment variable to disable cleanup
+        # ISSUE: Checkpoint cleanup can cause crashes on distributed filesystems
+        # SOLUTION: Allow disabling cleanup via environment variable
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Prevents crashes during checkpoint saving on Lambda Cloud
+        if (not (is_best or is_final) and 
+            self.config.save_total_limit > 0 and
+            os.environ.get('SHIRG_DISABLE_CHECKPOINT_CLEANUP', '0') != '1'):
             self._cleanup_checkpoints()
     
     def _cleanup_checkpoints(self):
