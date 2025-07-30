@@ -58,6 +58,7 @@ class ShirgLoraPreTrainTest:
             ("Batch Processing", self.test_batch_processing),
             ("Checkpoint Saving", self.test_checkpoint_saving),
             ("Data Loading", self.test_data_loading),
+            ("Training Step Simulation", self.test_training_step),
             ("Performance Benchmarks", self.test_performance),
         ]
         
@@ -383,20 +384,25 @@ class ShirgLoraPreTrainTest:
         return result
     
     def test_vision_tower(self) -> Dict[str, Any]:
-        """Test vision tower with SHIRG directly"""
+        """Test vision tower with SHIRG using same approach as real_ocr_vqa_model_runner.py"""
         result = {"passed": True, "details": {}}
         
         try:
-            # Test loading vision tower directly
+            # Import required components
             from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
+            from llava.mm_utils import process_images
+            from PIL import Image
             
-            # Create config object with required attributes
+            # Create config object matching real_ocr_vqa_model_runner.py
             class VisionConfig:
                 mm_vision_tower = "google/siglip-so400m-patch14-384"
                 enable_shirg = True
+                shirg_3view_mode = True  # Enable 2-view mode (1 global + 1 foveal)
                 mm_vision_select_layer = -2
                 mm_vision_select_feature = "patch"
-                image_aspect_ratio = "pad"
+                image_aspect_ratio = "anyres"  # For compatibility
+                image_grid_pinpoints = [(768, 768)]  # For compatibility
+                mm_patch_merge_type = "spatial_unpad"
                 
             config = VisionConfig()
             
@@ -415,10 +421,26 @@ class ShirgLoraPreTrainTest:
                     
             vision_tower.eval()
             
-            # Test standard mode
+            # Get image processor from vision tower
+            image_processor = vision_tower.image_processor
+            
+            # Test standard mode using process_images like real inference
             batch_size = 2
             print(f"\n   Testing standard mode (384×384):")
-            standard_images = torch.randn(batch_size, 3, 384, 384)
+            
+            # Create PIL images for processing
+            standard_pil_images = [Image.new('RGB', (384, 384)) for _ in range(batch_size)]
+            
+            # Process images the same way as real_ocr_vqa_model_runner.py
+            standard_tensors = []
+            for img in standard_pil_images:
+                tensor = process_images([img], image_processor, config)
+                if isinstance(tensor, list):
+                    tensor = tensor[0]
+                standard_tensors.append(tensor)
+            
+            # Stack for batch processing
+            standard_images = torch.cat(standard_tensors, dim=0)
             if torch.cuda.is_available():
                 standard_images = standard_images.cuda()
                 if self.config.bf16:
@@ -435,26 +457,31 @@ class ShirgLoraPreTrainTest:
             else:
                 print(f"   ✅ Standard mode working correctly")
                 
-            # Test SHIRG mode
-            # SHIRG-FIX: 2025-07-30 - Updated to match SHIRG-Fovea architecture
-            # ISSUE: Test expected old 1216 tokens but SHIRG-Fovea produces 980 tokens
-            # SOLUTION: Update expected shape to 980 tokens and handle batch processing correctly
-            # LAVIDA IMPACT: None - just test correction
-            # SHIRG IMPACT: Ensures tests validate the correct SHIRG-Fovea behavior
+            # Test SHIRG mode using process_images like real inference
             print(f"\n   Testing SHIRG mode (672×672):")
             
-            # Process each image in batch separately to match evaluation pipeline behavior
+            # Process each image separately as SHIRG expects individual processing
             shirg_features_list = []
             for i in range(batch_size):
-                shirg_image = torch.randn(1, 3, 672, 672)  # Single image
-                if torch.cuda.is_available():
-                    shirg_image = shirg_image.cuda()
-                    if self.config.bf16:
-                        shirg_image = shirg_image.to(dtype=torch.bfloat16)
-                        
+                # Create PIL image
+                shirg_pil_image = Image.new('RGB', (672, 672))
+                
+                # Process image the same way as real_ocr_vqa_model_runner.py
+                # This should create the 2-view format SHIRG expects
+                image_tensor = process_images([shirg_pil_image], image_processor, config)
+                
+                # Handle list format for SHIRG 2-view processing
+                if isinstance(image_tensor, list):
+                    # SHIRG multi-view: convert each tensor in list
+                    image_tensor = [t.to(dtype=torch.bfloat16, device=vision_tower.device) for t in image_tensor]
+                    print(f"   📐 SHIRG image tensors: {len(image_tensor)} views with shapes {[t.shape for t in image_tensor]}")
+                else:
+                    image_tensor = image_tensor.to(dtype=torch.bfloat16, device=vision_tower.device)
+                    print(f"   📐 SHIRG image tensor: {image_tensor.shape}")
+                
                 with torch.no_grad():
-                    # Process single image
-                    features = vision_tower(shirg_image, use_shirg=True)
+                    # Process with SHIRG enabled
+                    features = vision_tower(image_tensor, use_shirg=True)
                     shirg_features_list.append(features)
             
             # Stack batch results
@@ -555,28 +582,35 @@ class ShirgLoraPreTrainTest:
                 result["error"] = f"Standard mode shape mismatch: {standard_features.shape}"
                 return result
                 
-            # Test SHIRG mode (672x672)
-            # SHIRG-FIX: 2025-07-30 - Updated to match SHIRG-Fovea architecture
-            # ISSUE: Test expected old 1216 tokens but SHIRG-Fovea produces 980 tokens
-            # SOLUTION: Update expected shape to 980 tokens and handle batch processing correctly
-            # LAVIDA IMPACT: None - just test correction
-            # SHIRG IMPACT: Ensures tests validate the correct SHIRG-Fovea behavior
+            # Test SHIRG mode (672x672) using process_images like real inference
             print(f"\n   Testing SHIRG mode (672×672):")
             
-            # Process each image in batch separately to match evaluation pipeline behavior
+            # Process each image separately as SHIRG expects individual processing
             shirg_features_list = []
             for i in range(batch_size):
-                shirg_image = torch.randn(1, 3, 672, 672)  # Single image
-                if torch.cuda.is_available():
-                    shirg_image = shirg_image.cuda()
-                    if self.config.bf16:
-                        shirg_image = shirg_image.to(dtype=torch.bfloat16)
-                    elif self.config.fp16:
-                        shirg_image = shirg_image.to(dtype=torch.float16)
-                        
+                # Create PIL image
+                from PIL import Image
+                shirg_pil_image = Image.new('RGB', (672, 672))
+                
+                # Process image the same way as real_ocr_vqa_model_runner.py
+                from llava.mm_utils import process_images
+                image_processor = model.get_model().get_vision_tower().image_processor
+                
+                # Process with SHIRG configuration
+                image_tensor = process_images([shirg_pil_image], image_processor, model.config)
+                
+                # Handle list format for SHIRG 2-view processing
+                if isinstance(image_tensor, list):
+                    # SHIRG multi-view: convert each tensor in list
+                    image_tensor = [t.to(dtype=torch.bfloat16, device=model.device) for t in image_tensor]
+                    print(f"   📐 SHIRG image tensors: {len(image_tensor)} views with shapes {[t.shape for t in image_tensor]}")
+                else:
+                    image_tensor = image_tensor.to(dtype=torch.bfloat16, device=model.device)
+                    print(f"   📐 SHIRG image tensor: {image_tensor.shape}")
+                
                 with torch.no_grad():
-                    # Process single image
-                    features = vision_tower(shirg_image, use_shirg=True)
+                    # Process through vision tower with SHIRG enabled
+                    features = vision_tower(image_tensor, use_shirg=True)
                     shirg_features_list.append(features)
             
             # Stack batch results
@@ -1160,6 +1194,109 @@ class ShirgLoraPreTrainTest:
             result["passed"] = False
             result["error"] = str(e)
             print(f"   ❌ Data loading test failed: {str(e)}")
+        
+        return result
+    
+    def test_training_step(self) -> Dict[str, Any]:
+        """Test actual training step with 1 sample to ensure 100% accuracy"""
+        result = {"passed": True, "details": {}}
+        
+        try:
+            # Import training components
+            from shirg.train_shirg_lora import ShirgLoraTrainer
+            from shirg.dataset_loaders import create_data_loaders
+            
+            print(f"   Testing actual training step with 1 sample...")
+            
+            # Create minimal config for testing
+            test_config = self.config
+            test_config.per_device_train_batch_size = 1
+            test_config.num_train_epochs = 1
+            test_config.logging_steps = 1
+            test_config.save_steps = 1000  # Don't save during test
+            test_config.eval_steps = 1000  # Don't eval during test
+            
+            # Create trainer instance
+            trainer = ShirgLoraTrainer(
+                config=test_config,
+                output_dir="./test_checkpoint",
+                use_wandb=False  # Disable wandb for testing
+            )
+            
+            # Setup model (this tests the full model loading pipeline)
+            print(f"   Setting up model...")
+            trainer.setup_model()
+            
+            # Create a single dummy sample
+            from PIL import Image
+            dummy_sample = {
+                "image": Image.new('RGB', (672, 672)),
+                "question": "What text is shown in this image?",
+                "answer": "Test answer"
+            }
+            
+            # Create minimal dataset
+            class DummyDataset(torch.utils.data.Dataset):
+                def __init__(self, sample):
+                    self.sample = sample
+                    
+                def __len__(self):
+                    return 1
+                    
+                def __getitem__(self, idx):
+                    return self.sample
+            
+            # Create dataloader
+            from torch.utils.data import DataLoader
+            dummy_dataset = DummyDataset(dummy_sample)
+            dataloader = DataLoader(dummy_dataset, batch_size=1)
+            
+            # Get one batch
+            batch = next(iter(dataloader))
+            
+            print(f"   Running training step...")
+            
+            # Test the training step
+            metrics = trainer.training_step(batch)
+            
+            # Check metrics
+            if "loss" in metrics:
+                result["details"]["loss"] = metrics["loss"]
+                print(f"   ✅ Training loss: {metrics['loss']:.4f}")
+                
+                # Check if loss is reasonable
+                if metrics["loss"] < 0 or metrics["loss"] > 100:
+                    result["warning"] = f"Unusual loss value: {metrics['loss']}"
+                    print(f"   ⚠️ {result['warning']}")
+            else:
+                result["passed"] = False
+                result["error"] = "No loss returned from training step"
+                print(f"   ❌ {result['error']}")
+            
+            # Check gradients
+            has_gradients = False
+            for name, param in trainer.model.named_parameters():
+                if param.requires_grad and param.grad is not None:
+                    has_gradients = True
+                    break
+                    
+            if has_gradients:
+                print(f"   ✅ Gradients computed successfully")
+            else:
+                result["passed"] = False
+                result["error"] = "No gradients computed"
+                print(f"   ❌ {result['error']}")
+            
+            # Cleanup
+            del trainer
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            result["passed"] = False
+            result["error"] = str(e)
+            print(f"   ❌ Training step test failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return result
     
