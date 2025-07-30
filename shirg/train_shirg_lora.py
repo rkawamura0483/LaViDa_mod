@@ -35,10 +35,10 @@ sys.path.append('./')
 sys.path.append('./shirg')
 
 # Import SHIRG components
-from shirg_lora_config import ShirgLoraConfig, create_lora_training_config
-from shirg_token_dropout import ShirgTokenDropout, ShirgDropoutScheduler
-from lavida_shirg_integration import LaViDaSHIRGWrapper
-from dataset_loaders import create_data_loaders, MixedVQADataset
+from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
+from shirg.shirg_token_dropout import ShirgTokenDropout, ShirgDropoutScheduler
+from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
+from shirg.dataset_loaders import create_data_loaders, MixedVQADataset
 
 # Import HuggingFace components
 from transformers import (

@@ -19,7 +19,8 @@ import argparse
 sys.path.append('./')
 sys.path.append('./shirg')
 
-from train_shirg_lora import ShirgLoraTrainer, ShirgLoraConfig, create_lora_training_config
+from shirg.train_shirg_lora import ShirgLoraTrainer
+from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 
 
 class MultiGPUShirgTrainer(ShirgLoraTrainer):

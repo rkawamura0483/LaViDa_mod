@@ -72,7 +72,7 @@ def setup_colab_environment():
 
 def get_colab_optimized_config():
     """Get training configuration optimized for Colab"""
-    from shirg_lora_config import ShirgLoraConfig
+    from shirg.shirg_lora_config import ShirgLoraConfig
     
     # Detect available GPU memory
     if torch.cuda.is_available():
@@ -195,7 +195,7 @@ def train_in_colab(
         config = get_colab_optimized_config()
     
     # Import trainer
-    from train_shirg_lora import ShirgLoraTrainer
+    from shirg.train_shirg_lora import ShirgLoraTrainer
     from torch.utils.data import Dataset, DataLoader
     
     # Create demo dataset
@@ -425,5 +425,5 @@ if __name__ == "__main__":
             train_in_colab()
     else:
         # Run standard training
-        from train_shirg_lora import main
+        from shirg.train_shirg_lora import main
         main()

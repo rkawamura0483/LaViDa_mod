@@ -60,7 +60,7 @@ echo ""
 echo "📊 Dataset Download (Optional)"
 echo "The datasets will be automatically downloaded during training."
 echo "To pre-download them, you can run:"
-echo "  python -c \"from dataset_loaders import create_data_loaders; create_data_loaders(max_samples_per_dataset=100)\""
+echo "  python -c \"from shirg.dataset_loaders import create_data_loaders; create_data_loaders(max_samples_per_dataset=100)\""
 
 # Final instructions
 echo ""

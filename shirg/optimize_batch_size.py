@@ -25,7 +25,7 @@ import numpy as np
 sys.path.append('./')
 sys.path.append('./shirg')
 
-from shirg_lora_config import ShirgLoraConfig, create_lora_training_config
+from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 
 
 class BatchSizeOptimizer:

@@ -25,7 +25,7 @@ import json
 sys.path.append('./')
 sys.path.append('./shirg')
 
-from shirg_lora_config import ShirgLoraConfig, create_lora_training_config
+from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 
 
 class ShirgLoraPreTrainTest:
@@ -229,7 +229,7 @@ class ShirgLoraPreTrainTest:
         
         try:
             # Just check if we can import and create config
-            from lavida_shirg_integration import LaViDaSHIRGWrapper
+            from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
             
             # Create wrapper with SHIRG config
             wrapper = LaViDaSHIRGWrapper(
