@@ -42,7 +42,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
     
     Key Features:
     - Standard LaViDa processing (384×384 → 729 tokens)
-    - SHIRG-Fovea processing (5-view anyres → ~1832 tokens selected)
+    - SHIRG-Fovea processing (2-view format → 980 tokens selected)
     - Cache-compatible static token selection
     - LoRA-adapted coordinate embeddings
     - Distance-aware importance scoring
@@ -76,14 +76,14 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG-FOVEA-CONFIG: 2025-07-29 - Configure image processor for anyres mode
         # ISSUE: SHIRG-Fovea uses same anyres processing as LaViDa but with different resolutions
         # SOLUTION: Use standard processor - anyres splitting handled by LaViDa pipeline
-        # RESEARCH IMPACT: Enables 5-view processing (1×384² + 4×512²) per methodology
+        # RESEARCH IMPACT: Enables 2-view processing (1×384² + 1×448²) per methodology
         # LAVIDA IMPACT: Maintains compatibility with LaViDa's anyres infrastructure
         
         # Both baseline and SHIRG use same processor - anyres handles view generation
         self.image_processor = SigLipImageProcessor()
         
         if self.shirg_enabled:
-            rank0_print("SHIRG-FOVEA-CONFIG: Using anyres 5-view processing (1×384² + 4×512²)")
+            rank0_print("SHIRG-FOVEA-CONFIG: Using 2-view processing (1×384² + 1×448²)")
         else:
             rank0_print("BASELINE-CONFIG: Using standard LaViDa anyres processing")
 
@@ -329,7 +329,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         Returns:
             image_features: Visual tokens
                 - Standard LaViDa: [B, 729, D] from 384×384
-                - SHIRG-Fovea: [B, ~1832, D] from 5-view anyres (196 global + 4×~409 peripheral)
+                - SHIRG-Fovea: [B, 980, D] from 2-view format (196 global + 784 foveal)
         """
         # GRADIENT-FIX: 2025-07-28 - CRITICAL: Always ensure gradient compatibility for validation
         # ISSUE: Validation script expects gradient flow through forward methods but tower is frozen
@@ -365,9 +365,9 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                     images[i] = img.requires_grad_(True)
         
         # SHIRG-CONCAT-FIX: 2025-07-29 - Handle concatenated multi-view images from encode_images
-        # ISSUE: LaViDa concatenates 5 views before calling vision tower, SHIRG needs to process them together
+        # ISSUE: LaViDa concatenates views before calling vision tower, SHIRG needs to process them separately
         # SOLUTION: Detect concatenated views and handle appropriately based on SHIRG mode
-        # RESEARCH IMPACT: Enables SHIRG to process LaViDa's anyres 5-view format correctly
+        # RESEARCH IMPACT: Enables SHIRG to process 2-view format correctly
         # LAVIDA IMPACT: Maintains compatibility with LaViDa's image concatenation pipeline
         
         # Determine whether to use SHIRG
@@ -387,7 +387,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         if hasattr(images, 'shape') and len(images.shape) == 4 and images.shape[0] == 5:
             # This is likely 5 concatenated views from LaViDa
             is_concatenated_views = True
-            rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated 5-view tensor: {images.shape}")
+            rank0_print(f"SHIRG-CONCAT-FIX: Detected concatenated view tensor: {images.shape}")
         
         if should_use_shirg and is_concatenated_views:
             # SHIRG-5VIEW-OUTPUT-FIX: 2025-07-29 - Return 5 separate views for LaViDa's split logic
@@ -396,7 +396,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             # RESEARCH IMPACT: Maintains SHIRG token selection while preserving LaViDa's architecture
             # LAVIDA IMPACT: Allows LaViDa's split_with_sizes to work correctly with SHIRG output
             
-            rank0_print("SHIRG-CONCAT-FIX: Processing 5 views with SHIRG")
+            rank0_print("SHIRG-CONCAT-FIX: Processing views with SHIRG")
             
             # BASELINE-COMPARISON-DEBUG: 2025-07-29 - Compare baseline vs SHIRG processing
             # ISSUE: Need to understand difference between baseline and SHIRG
@@ -415,15 +415,15 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             shirg_tokens = self.forward_with_shirg(view_list, text_embeddings)
             
             # SHIRG-OUTPUT-DEBUG: 2025-07-29 - Debug SHIRG output shape and content
-            # ISSUE: Need to understand why SHIRG is returning 729 tokens instead of 1508
+            # ISSUE: Need to understand why SHIRG is returning unexpected token count
             # SOLUTION: Add comprehensive logging of SHIRG output
             # RESEARCH IMPACT: Helps diagnose SHIRG token selection issues
             # LAVIDA IMPACT: Identifies integration problems between SHIRG and LaViDa
             rank0_print(f"SHIRG-OUTPUT-DEBUG: SHIRG returned shape: {shirg_tokens.shape}")
-            rank0_print(f"SHIRG-OUTPUT-DEBUG: Expected ~1508 tokens, got {shirg_tokens.shape[1] if len(shirg_tokens.shape) > 1 else 'N/A'}")
+            rank0_print(f"SHIRG-OUTPUT-DEBUG: Expected 980 tokens, got {shirg_tokens.shape[1] if len(shirg_tokens.shape) > 1 else 'N/A'}")
             
-            # CRITICAL: LaViDa expects to split features back into 5 views
-            # SHIRG returns [1, 1508, D] but we keep it as single view
+            # CRITICAL: LaViDa expects to split features back into views
+            # SHIRG returns [1, 980, D] but we keep it as single view
             # The single view path in spatial_unpad is fine - it just adds newline token
             
             # SHIRG token distribution: [196, 328, 328, 328, 328]
@@ -434,7 +434,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
                 # SHIRG-SINGLE-VIEW: Keep as single concatenated view
                 # ISSUE: Need to ensure proper processing through spatial_unpad
                 # SOLUTION: Return as single view, let spatial_unpad handle it
-                # RESEARCH IMPACT: Maintains SHIRG's 1508 token selection
+                # RESEARCH IMPACT: Maintains SHIRG's 980 token selection
                 # LAVIDA IMPACT: Processes through single image path in spatial_unpad
                 
                 rank0_print(f"SHIRG-5VIEW-OUTPUT: SHIRG returns concatenated {shirg_tokens.shape}")
@@ -816,9 +816,9 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         SHIRG-Fovea: Multi-view processing with per-view Top-K selection
         
         This method implements the SHIRG-Fovea methodology:
-        1. Process LaViDa's 5-view anyres format (1 global + 4 peripheral)
+        1. Process SHIRG's 2-view format (1 global + 1 foveal)
         2. Global view: 384² → 196 tokens (2×2 pooled)
-        3. Peripheral views: 4×512² → per-view Top-K selection (~409 tokens each)
+        3. Foveal view: 448² → Top-K selection (784 tokens)
         4. Static token selection (cache compatible)
         
         Args:
@@ -826,17 +826,17 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
             text_embeddings: Optional text embeddings for relevance scoring
             
         Returns:
-            visual_tokens: [B, ~1832, D] selected tokens (196 global + 4×~409 peripheral)
+            visual_tokens: [B, 980, D] selected tokens (196 global + 784 foveal)
         """
-        # SHIRG-FOVEA: 2025-07-29 - Process LaViDa's 5-view anyres format per new methodology
-        # RESEARCH IMPACT: Two-scale foveation with 1×384² global + 4×512² peripheral views
+        # SHIRG-FOVEA: 2025-07-30 - Process SHIRG's 2-view format per new methodology
+        # RESEARCH IMPACT: Two-scale foveation with 1×384² global + 1×448² foveal view
         # LAVIDA IMPACT: Maintains anyres structure while applying per-view Top-K selection
         
-        # Verify we're receiving 5-view anyres format
+        # Verify we're receiving 2-view format
         if isinstance(images, list):
             rank0_print(f"SHIRG-FOVEA-DEBUG: Processing {len(images)} views from anyres splitter")
         elif hasattr(images, 'shape'):
-            rank0_print(f"SHIRG-FOVEA-DEBUG: Single tensor input {images.shape} (expecting list of 5 views)")
+            rank0_print(f"SHIRG-FOVEA-DEBUG: Single tensor input {images.shape} (expecting list of 2 views)")
         # SHIRG-FIX: 2025-07-28 - Remove exception masking to expose gradient issues
         # ISSUE: Try-catch block hides real errors preventing gradient flow debugging
         # SOLUTION: Remove masking and let actual errors surface for proper fixing
@@ -851,7 +851,7 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         # SHIRG IMPACT: Uses the complete SHIRG implementation for high-resolution processing
         
         # Call the SHIRG method directly from the mixin class
-        # This implements SHIRG-Fovea: 5-view tokens → per-view selection → ~1832 tokens
+        # This implements SHIRG-Fovea: 2-view tokens → per-view selection → 980 tokens
         return SigLipShirgExtensions.forward_with_shirg(self, images, text_embeddings)
 
     # Additional convenience methods for external compatibility

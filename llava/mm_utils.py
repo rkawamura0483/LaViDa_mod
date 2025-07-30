@@ -315,72 +315,52 @@ def expand2square(pil_img, background_color):
         return result
 
 
-def process_shirg_3view_image(image, image_processor):
+def process_shirg_2view_image(image, image_processor):
     """
-    Process image for SHIRG 3-view format (1 global 384² + 2 foveal 448²)
+    Process image for SHIRG 2-view format (1 global 384² + 1 foveal 448²)
     
     Args:
         image (PIL.Image.Image): The input image to be processed
         image_processor: The image processor object
         
     Returns:
-        torch.Tensor: A tensor containing 3 processed image views
+        torch.Tensor: A tensor containing 2 processed image views
     """
-    # SHIRG-3VIEW-PROCESSING: 2025-07-29 - Implement SHIRG-Fovea image preprocessing
-    # ISSUE: SHIRG needs specific 3-view format instead of LaViDa's 5-view anyres
-    # SOLUTION: Create 1 global 384² view + 2 foveal 448² views from center crops
-    # RESEARCH IMPACT: Implements SHIRG-Fovea two-scale foveation architecture
+    # SHIRG-1FOVEAL-PROCESSING: 2025-07-30 - Implement SHIRG-Fovea image preprocessing
+    # ISSUE: SHIRG needs specific 2-view format instead of LaViDa's 5-view anyres
+    # SOLUTION: Create 1 global 384² view + 1 foveal 448² view from center crop
+    # RESEARCH IMPACT: Implements SHIRG-Fovea single foveal view architecture
     # LAVIDA IMPACT: Provides alternative preprocessing path for SHIRG mode
     
     # Step 1: Create global view - resize to 384x384
     global_view = image.resize((384, 384), Image.LANCZOS)
     
-    # Step 2: Create two foveal views from center crops
+    # Step 2: Create one foveal view from center crop
     # Get image dimensions
     width, height = image.size
     
-    # Calculate center crop for foveal views (448x448)
+    # Calculate center crop for foveal view (448x448)
     foveal_size = 448
     
-    # Foveal view 1: Center crop
+    # Foveal view: Center crop
     center_x, center_y = width // 2, height // 2
-    left1 = max(0, center_x - foveal_size // 2)
-    top1 = max(0, center_y - foveal_size // 2)
-    right1 = min(width, left1 + foveal_size)
-    bottom1 = min(height, top1 + foveal_size)
+    left = max(0, center_x - foveal_size // 2)
+    top = max(0, center_y - foveal_size // 2)
+    right = min(width, left + foveal_size)
+    bottom = min(height, top + foveal_size)
     
     # Adjust if crop is at edge
-    if right1 - left1 < foveal_size:
-        left1 = max(0, right1 - foveal_size)
-    if bottom1 - top1 < foveal_size:
-        top1 = max(0, bottom1 - foveal_size)
+    if right - left < foveal_size:
+        left = max(0, right - foveal_size)
+    if bottom - top < foveal_size:
+        top = max(0, bottom - foveal_size)
     
-    foveal_view1 = image.crop((left1, top1, right1, bottom1))
-    if foveal_view1.size != (foveal_size, foveal_size):
-        foveal_view1 = foveal_view1.resize((foveal_size, foveal_size), Image.LANCZOS)
-    
-    # Foveal view 2: Slightly offset center crop for diversity
-    # Offset by 10% of image size for second foveal view
-    offset_x = int(width * 0.1)
-    offset_y = int(height * 0.1)
-    
-    left2 = max(0, center_x - foveal_size // 2 + offset_x)
-    top2 = max(0, center_y - foveal_size // 2 + offset_y)
-    right2 = min(width, left2 + foveal_size)
-    bottom2 = min(height, top2 + foveal_size)
-    
-    # Adjust if crop is at edge
-    if right2 - left2 < foveal_size:
-        left2 = max(0, right2 - foveal_size)
-    if bottom2 - top2 < foveal_size:
-        top2 = max(0, bottom2 - foveal_size)
-    
-    foveal_view2 = image.crop((left2, top2, right2, bottom2))
-    if foveal_view2.size != (foveal_size, foveal_size):
-        foveal_view2 = foveal_view2.resize((foveal_size, foveal_size), Image.LANCZOS)
+    foveal_view = image.crop((left, top, right, bottom))
+    if foveal_view.size != (foveal_size, foveal_size):
+        foveal_view = foveal_view.resize((foveal_size, foveal_size), Image.LANCZOS)
     
     # Step 3: Process all views through image processor
-    views = [global_view, foveal_view1, foveal_view2]
+    views = [global_view, foveal_view]
     processed_views = []
     
     for view in views:
@@ -388,7 +368,7 @@ def process_shirg_3view_image(image, image_processor):
         processed = image_processor.preprocess(view, return_tensors="pt")["pixel_values"][0]
         processed_views.append(processed)
     
-    # Stack into single tensor [3, C, H, W]
+    # Stack into single tensor [2, C, H, W]
     return torch.stack(processed_views, dim=0)
 
 
@@ -398,22 +378,22 @@ def process_images(images, image_processor, model_cfg):
     if DEBUG_PRINT_IMAGE_RES:
         print("Preprocess:Image Aspect Ratio",image_aspect_ratio)
     
-    # SHIRG-3VIEW-INTEGRATION: 2025-07-29 - Add SHIRG 3-view processing mode
-    # ISSUE: SHIRG needs 3-view format (1 global 384² + 2 foveal 448²) instead of LaViDa's 5-view
-    # SOLUTION: Check for SHIRG mode and use custom 3-view preprocessing
+    # SHIRG-2VIEW-INTEGRATION: 2025-07-30 - Add SHIRG 2-view processing mode
+    # ISSUE: SHIRG needs 2-view format (1 global 384² + 1 foveal 448²) instead of LaViDa's 5-view
+    # SOLUTION: Check for SHIRG mode and use custom 2-view preprocessing
     # RESEARCH IMPACT: Implements SHIRG-Fovea architecture with 980 tokens
     # LAVIDA IMPACT: Preserves original LaViDa processing for non-SHIRG mode
     
-    # SHIRG-PREPROCESSING-DEBUG: 2025-07-29 - Debug SHIRG 3-view mode detection
+    # SHIRG-PREPROCESSING-DEBUG: 2025-07-30 - Debug SHIRG 2-view mode detection
     enable_shirg = getattr(model_cfg, "enable_shirg", False)
     shirg_3view_mode = getattr(model_cfg, "shirg_3view_mode", False)
     print(f"SHIRG-PREPROCESS: enable_shirg={enable_shirg}, shirg_3view_mode={shirg_3view_mode}, aspect_ratio={image_aspect_ratio}")
     
     if enable_shirg and shirg_3view_mode:
-        # SHIRG 3-view mode: process as 1 global + 2 foveal
-        print("SHIRG-PREPROCESS: Using SHIRG 3-view processing (1×384² + 2×448²)")
+        # SHIRG 2-view mode: process as 1 global + 1 foveal
+        print("SHIRG-PREPROCESS: Using SHIRG 2-view processing (1×384² + 1×448²)")
         for image in images:
-            image = process_shirg_3view_image(image, image_processor)
+            image = process_shirg_2view_image(image, image_processor)
             new_images.append(image)
     elif image_aspect_ratio == "highres":
         for image in images:

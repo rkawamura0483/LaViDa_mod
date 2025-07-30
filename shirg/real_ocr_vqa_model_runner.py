@@ -508,8 +508,8 @@ class LaViDaModelRunner:
             # SOLUTION: Use same grid pinpoints as baseline but SHIRG will handle token selection
             # RESEARCH IMPACT: SHIRG processes LaViDa's 5×384² views with per-view selection
             # LAVIDA IMPACT: Maintains compatibility with LaViDa's image preprocessing
-            # SHIRG-3VIEW-CONFIG: 2025-07-29 - Configure for new 3-view SHIRG-Fovea mode
-            # ISSUE: Research proposal uses 3-view format instead of 5-view
+            # SHIRG-2VIEW-CONFIG: 2025-07-30 - Configure for new 2-view SHIRG-Fovea mode
+            # ISSUE: Research proposal uses 2-view format (1 global + 1 foveal)
             # SOLUTION: Enable shirg_3view_mode for custom preprocessing
             # RESEARCH IMPACT: Implements updated SHIRG-Fovea architecture with 980 tokens
             # LAVIDA IMPACT: Alternative processing path for SHIRG experiments
@@ -520,13 +520,13 @@ class LaViDaModelRunner:
                 "mm_hidden_size": 1152,
                 "use_mm_proj": True,
                 "enable_shirg": True,  # Enable SHIRG processing
-                "shirg_3view_mode": True,  # NEW: Enable 3-view mode (1 global + 2 foveal)
+                "shirg_3view_mode": True,  # NEW: Enable 2-view mode (1 global + 1 foveal)
                 "image_aspect_ratio": "anyres",  # Keep for compatibility
                 "image_grid_pinpoints": [(768, 768)],  # Keep for compatibility
                 "mm_patch_merge_type": "spatial_unpad"  # Standard processing
             }
             
-            print("SHIRG-FOVEA-CONFIG: Using 3-view processing (1×384² global + 2×448² foveal)")
+            print("SHIRG-FOVEA-CONFIG: Using 2-view processing (1×384² global + 1×448² foveal)")
             
             # Load SHIRG model components
             print(f"   📂 Model path: {self.pretrained_path}")
@@ -591,8 +591,8 @@ class LaViDaModelRunner:
             # LAVIDA IMPACT: Allows proper routing of SHIRG tokens without pooling
             if hasattr(self.shirg_model, 'config'):
                 self.shirg_model.config.enable_shirg = True
-                self.shirg_model.config.shirg_3view_mode = True  # Enable 3-view mode
-                print(f"   🔍 SHIRG enabled on model config with 3-view mode")
+                self.shirg_model.config.shirg_3view_mode = True  # Enable 2-view mode
+                print(f"   🔍 SHIRG enabled on model config with 2-view mode")
             
             # Get vision tower and enable SHIRG
             if hasattr(self.shirg_model, 'get_vision_tower'):
@@ -1107,9 +1107,9 @@ class LaViDaModelRunner:
                     raise ValueError(f"Invalid image format for sample {sample_id}")
                 
                 # SHIRG-CONFIG-DEBUG: 2025-07-29 - Debug config attributes before process_images
-                # ISSUE: process_shirg_3view_image not being called despite flags being set
+                # ISSUE: process_shirg_2view_image not being called despite flags being set
                 # SOLUTION: Log config attributes to verify they're being passed correctly
-                # RESEARCH IMPACT: Identifies why SHIRG 3-view preprocessing isn't triggered
+                # RESEARCH IMPACT: Identifies why SHIRG 2-view preprocessing isn't triggered
                 # LAVIDA IMPACT: Ensures proper routing to SHIRG preprocessing
                 print(f"   🔍 SHIRG config before process_images:")
                 print(f"      - enable_shirg: {getattr(self.shirg_model.config, 'enable_shirg', 'NOT SET')}")

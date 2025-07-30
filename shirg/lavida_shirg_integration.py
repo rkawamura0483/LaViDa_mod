@@ -162,7 +162,7 @@ class LaViDaSHIRGWrapper:
         
         # Default SHIRG configuration optimized for LaViDa
         default_shirg_config = {
-            'target_tokens': 729,       # Fixed for LaViDa compatibility (avoids assertion failures)
+            'target_tokens': 980,       # Fixed for LaViDa compatibility (196 global + 784 foveal)
             'alpha': 0.3,               # Balance detail vs semantics (>0 enables SHIRG)
             'hierarchical_levels': 3,   # Spatial clustering depth
             'latency_budget_ms': 1000.0,
@@ -366,8 +366,8 @@ class LaViDaSHIRGWrapper:
             
             # Only patch if we're actually using SHIRG (alpha > 0 enables SHIRG selection)
             shirg_enabled = (self.shirg_config.get('alpha', 0) > 0)
-            # FIX: 2025-07-27 - Remove target_tokens check to enable SHIRG with 729 tokens
-            # ISSUE: Condition required target_tokens != 729, but we need 729 for LaViDa compatibility
+            # FIX: 2025-07-30 - Remove target_tokens check to enable SHIRG with 980 tokens
+            # ISSUE: Condition required target_tokens != 980, but we need 980 for LaViDa compatibility
             # SOLUTION: Only check alpha > 0 to distinguish baseline (alpha=0) from SHIRG (alpha>0)
             # RESEARCH IMPACT: Enables SHIRG integration while maintaining LaViDa compatibility
             
@@ -926,7 +926,7 @@ def compare_baseline_vs_shirg(image_path: str, question: str) -> Dict[str, Any]:
     
     # Test baseline (no SHIRG)
     print("Testing baseline LaViDa...")
-    baseline_model = LaViDaSHIRGWrapper(shirg_config={'target_tokens': 729, 'alpha': 0.0})  # Disable SHIRG
+    baseline_model = LaViDaSHIRGWrapper(shirg_config={'target_tokens': 980, 'alpha': 0.0})  # Disable SHIRG
     baseline_model.load_model()
     
     baseline_start = time.time()
@@ -1105,7 +1105,7 @@ def test_lavida_shirg_integration():
     try:
         # Create model wrapper
         model = create_lavida_shirg_model({
-            'target_tokens': 729,
+            'target_tokens': 980,
             'alpha': 0.3,
             'debug': True
         })
