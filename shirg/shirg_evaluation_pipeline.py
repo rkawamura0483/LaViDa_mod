@@ -239,9 +239,16 @@ class SHIRGEvaluationPipeline:
                 prediction = output.get('response', '') if isinstance(output, dict) else str(output)
                 
                 # Get ground truth answers
-                ground_truth = sample.get('answers', [sample.get('answer', '')])
+                # SHIRG-FIX: 2025-07-30 - Handle ground_truth key from dataset loader
+                # ISSUE: Dataset loader stores ground truth as 'ground_truth' not 'answers'
+                # SOLUTION: Check for 'ground_truth' key first, then fallback to 'answers'/'answer'
+                # LAVIDA IMPACT: None - just accessing data correctly
+                # SHIRG IMPACT: Enables proper evaluation metrics calculation
+                ground_truth = sample.get('ground_truth', sample.get('answers', [sample.get('answer', '')]))
                 if isinstance(ground_truth, str):
                     ground_truth = [ground_truth]
+                elif ground_truth is None:
+                    ground_truth = ['']
                 
                 # Print question, response, and ground truth for debugging
                 print(f"\n   📝 Sample {idx+1}/{len(dataset_samples)}:")
@@ -272,7 +279,7 @@ class SHIRGEvaluationPipeline:
                     'sample_id': sample.get('question_id', idx),
                     'dataset': sample.get('dataset_name', 'unknown'),
                     'prediction': '',
-                    'ground_truth': sample.get('answers', [sample.get('answer', '')]),
+                    'ground_truth': sample.get('ground_truth', sample.get('answers', [sample.get('answer', '')])),
                     'anls': 0.0,
                     'exact_match': 0.0,
                     'token_f1': 0.0,

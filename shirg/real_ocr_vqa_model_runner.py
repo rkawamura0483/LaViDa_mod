@@ -939,7 +939,7 @@ class LaViDaModelRunner:
         try:
             # If input_ids is None, prepare it using the proper LaViDa method
             if input_ids is None:
-                input_ids = self._prepare_input_ids(question, self.baseline_tokenizer, is_baseline=True)
+                input_ids = self._prepare_input_ids(question, self.baseline_tokenizer)
             
             # Ensure input_ids is on the correct device
             if input_ids is not None:
@@ -1113,7 +1113,7 @@ class LaViDaModelRunner:
         try:
             # If input_ids is None, prepare it using the proper LaViDa method
             if input_ids is None:
-                input_ids = self._prepare_input_ids(question, self.shirg_tokenizer, is_baseline=False)
+                input_ids = self._prepare_input_ids(question, self.shirg_tokenizer)
             
             # Ensure input_ids is on the correct device
             if input_ids is not None:
