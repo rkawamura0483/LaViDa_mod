@@ -49,13 +49,13 @@ class RealOCRVQAValidator:
             print("❌ No samples loaded - validation cannot proceed")
             return {}
         
-        # # Phase 1: Run all baseline inferences
-        # print("\n🔄 PHASE 1: BASELINE LaViDa INFERENCE")
-        # print("=" * 40)
-        # baseline_results = self.model_runner._run_all_baseline_inferences(ocr_vqa_samples)
+        # Phase 1: Run all baseline inferences
+        print("\n🔄 PHASE 1: BASELINE LaViDa INFERENCE")
+        print("=" * 40)
+        baseline_results = self.model_runner._run_all_baseline_inferences(ocr_vqa_samples)
         
-        # # Unload baseline model to free memory
-        # self.model_runner._unload_baseline_model()
+        # Unload baseline model to free memory
+        self.model_runner._unload_baseline_model()
         
         # Phase 2: Run all SHIRG inferences
         print("\n🔄 PHASE 2: SHIRG LaViDa INFERENCE")
