@@ -20,7 +20,16 @@ import requests
 from io import BytesIO
 import random
 import copy
-from dataset_eval_configs import DatasetEvalConfig
+# SHIRG-FIX: 2025-07-30 - Make DatasetEvalConfig optional
+# ISSUE: shirg_evaluation_pipeline doesn't use DatasetEvalConfig
+# SOLUTION: Import conditionally and handle absence gracefully
+# RESEARCH IMPACT: Allows both evaluation scripts to work
+try:
+    from dataset_eval_configs import DatasetEvalConfig
+    DATASET_CONFIG_AVAILABLE = True
+except ImportError:
+    DatasetEvalConfig = None
+    DATASET_CONFIG_AVAILABLE = False
 
 # SHIRG-FIX: 2025-07-28 - Add missing rank0_print function
 # ISSUE: NameError: name 'rank0_print' is not defined on line 865
@@ -60,7 +69,7 @@ except ImportError as e:
 class LaViDaModelRunner:
     """Handles LaViDa model loading, inference operations, and GPU memory management"""
     
-    def __init__(self, selection_method='base', selection_params=None, prompt_style='extractive'):
+    def __init__(self, selection_method='base', selection_params=None, prompt_style=None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Baseline LaViDa model components (original encoder)
@@ -87,8 +96,15 @@ class LaViDaModelRunner:
         self.selection_method = selection_method
         self.selection_params = selection_params or {}
         
-        # Initialize dataset evaluation config loader
-        self.eval_config_loader = DatasetEvalConfig('./')
+        # Initialize dataset evaluation config loader if available
+        # SHIRG-FIX: 2025-07-30 - Make eval_config_loader optional
+        # ISSUE: shirg_evaluation_pipeline doesn't use DatasetEvalConfig
+        # SOLUTION: Only initialize if module is available
+        # RESEARCH IMPACT: Allows both evaluation approaches to work
+        if DATASET_CONFIG_AVAILABLE:
+            self.eval_config_loader = DatasetEvalConfig('./')
+        else:
+            self.eval_config_loader = None
     
     def _load_baseline_model(self):
         """Load baseline LaViDa model with original SigLIP encoder"""
@@ -1190,7 +1206,7 @@ class LaViDaModelRunner:
             
                 
                 # Build question based on prompt style and dataset
-                if self.prompt_style == 'extractive' and dataset_type:
+                if self.prompt_style == 'extractive' and dataset_type and self.eval_config_loader:
                     # DATASET-SPECIFIC-PROMPT-FIX: 2025-01-30 - Use dataset-specific prompts from YAML
                     # ISSUE: Different datasets need different prompts and generation settings
                     # SOLUTION: Load exact prompts from lmms-eval YAML configurations
@@ -1280,7 +1296,7 @@ class LaViDaModelRunner:
                     )
                     
                     # Build conversation following original pattern
-                    if self.prompt_style == 'extractive' and dataset_type:
+                    if self.prompt_style == 'extractive' and dataset_type and self.eval_config_loader:
                         formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + self.eval_config_loader.format_question_with_prompts(question, dataset_type)
                     elif self.prompt_style == 'extractive':
                         formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question + "\nAnswer the question using a single word or phrase."
@@ -1302,7 +1318,7 @@ class LaViDaModelRunner:
                     
                     # Final fallback: Simple LaViDa-compatible prompt
                     try:
-                        if self.prompt_style == 'extractive' and dataset_type:
+                        if self.prompt_style == 'extractive' and dataset_type and self.eval_config_loader:
                             simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + self.eval_config_loader.format_question_with_prompts(question, dataset_type)
                         elif self.prompt_style == 'extractive':
                             simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + question + "\nAnswer the question using a single word or phrase."
@@ -1393,7 +1409,7 @@ class LaViDaModelRunner:
                 image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
                                 
                 # Get dataset-specific generation parameters
-                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
+                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if (dataset_type and self.eval_config_loader) else {}
                 
                 # GENERATION-FIX: 2025-07-29 - Improved generation parameters for better OCR responses
                 # DATASET-SPECIFIC-GENERATION: 2025-01-30 - Use dataset-specific generation parameters
@@ -1660,7 +1676,7 @@ class LaViDaModelRunner:
                 # LAVIDA IMPACT: Ensures SHIRG uses proper LaViDa generation
                 
                 # Get dataset-specific generation parameters
-                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
+                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if (dataset_type and self.eval_config_loader) else {}
                 
                 # Use identical LaViDa generation parameters as baseline
                 
