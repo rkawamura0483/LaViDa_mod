@@ -352,6 +352,22 @@ class LaViDaModelRunner:
                 image = sample_data['image']
                 question = sample_data['question']
                 
+                # DATASET-TYPE-FIX: 2025-07-30 - Extract dataset type from sample data
+                # ISSUE: dataset_type was not defined, causing NameError
+                # SOLUTION: Extract dataset_type from sample_data following shirg_evaluation_pipeline pattern
+                # LAVIDA IMPACT: None - just extracting data correctly
+                # SHIRG IMPACT: Enables proper dataset-specific prompts and generation parameters
+                dataset_name = sample_data.get('dataset_type', sample_data.get('dataset_name', 'unknown'))
+                # Extract dataset type from full name (e.g., "lmms-lab/DocVQA" -> "DocVQA")
+                if '/' in dataset_name:
+                    dataset_type = dataset_name.split('/')[-1]
+                else:
+                    dataset_type = dataset_name
+                
+                # Handle variations like "InfographicVQA" -> "InfoVQA"
+                if dataset_type == "InfographicVQA":
+                    dataset_type = "InfoVQA"
+                
                 # TOKENIZER-FIX: 2025-07-29 - Robust baseline tokenizer validation
                 # ISSUE: baseline_tokenizer can be None causing 'NoneType' object is not subscriptable
                 # SOLUTION: Add comprehensive None checks and meaningful error handling
@@ -438,6 +454,22 @@ class LaViDaModelRunner:
                 # Extract components
                 image = sample_data['image']
                 question = sample_data['question']
+                
+                # DATASET-TYPE-FIX: 2025-07-30 - Extract dataset type from sample data
+                # ISSUE: dataset_type was not defined, causing NameError
+                # SOLUTION: Extract dataset_type from sample_data following shirg_evaluation_pipeline pattern
+                # LAVIDA IMPACT: None - just extracting data correctly
+                # SHIRG IMPACT: Enables proper dataset-specific prompts and generation parameters
+                dataset_name = sample_data.get('dataset_type', sample_data.get('dataset_name', 'unknown'))
+                # Extract dataset type from full name (e.g., "lmms-lab/DocVQA" -> "DocVQA")
+                if '/' in dataset_name:
+                    dataset_type = dataset_name.split('/')[-1]
+                else:
+                    dataset_type = dataset_name
+                
+                # Handle variations like "InfographicVQA" -> "InfoVQA"
+                if dataset_type == "InfographicVQA":
+                    dataset_type = "InfoVQA"
                 
                 # SHIRG-Fovea: Use original image, let vision tower handle anyres 5-view processing
                 # The anyres splitter creates 1×384² global + 4×512² peripheral views
