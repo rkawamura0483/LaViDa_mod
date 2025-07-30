@@ -168,9 +168,6 @@ class LaViDaSHIRGWrapper:
             vision_kwargs: Vision tower configuration
         """
         
-        if not LAVIDA_AVAILABLE:
-            raise ImportError("LaViDa not available. Please install dependencies first.")
-        
         self.model_path = model_path
         self.device_map = device_map
         self.torch_dtype = torch_dtype
