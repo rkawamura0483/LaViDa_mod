@@ -243,7 +243,12 @@ class SigLipVisionTower(nn.Module, SigLipShirgExtensions):
         self.vision_tower.vision_model.head = nn.Identity()
         
         # SHIRG: Enable gradient flow for LoRA training on specific layers
-        self.vision_tower.requires_grad_(False)
+        # SHIRG-FIX: 2025-07-30 - Don't globally freeze vision tower
+        # ISSUE: requires_grad_(False) blocks gradient flow to LoRA adapters
+        # SOLUTION: Let PEFT handle parameter freezing individually
+        # LAVIDA IMPACT: None - PEFT will freeze base parameters as intended
+        # SHIRG IMPACT: Enables gradient flow through vision tower to LoRA adapters
+        # self.vision_tower.requires_grad_(False)  # COMMENTED OUT - blocks LoRA gradients!
         
         
         # GRADIENT-FIX: 2025-07-28 - Enable minimal gradient path for LoRA training

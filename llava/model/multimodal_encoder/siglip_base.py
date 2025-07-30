@@ -216,43 +216,49 @@ class SigLipVisionEmbeddings(nn.Module):
         orig_pos_embeds = self.position_embedding.weight  # [num_positions, embed_dim]
         grid_size = int(self.num_positions ** 0.5)  # Original grid size (27 for 384×384)
         
-        with torch.no_grad():
-            # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor before view operation
-            # ISSUE: view() fails with "view size is not compatible" during gradient computation
-            # SOLUTION: Make tensor contiguous before reshape to prevent stride issues
-            # LAVIDA IMPACT: Enables gradient flow through position embeddings
-            # SHIRG IMPACT: Fixes LoRA training gradient computation
-            
-            # Reshape to 2D grid: [grid_size, grid_size, embed_dim] → [embed_dim, grid_size, grid_size]
-            # SHIRG-FIX: 2025-07-28 - Use reshape instead of view for better gradient compatibility
-            # ISSUE: view() can fail during gradient computation if tensor is non-contiguous
-            # SOLUTION: Use reshape() which handles non-contiguous tensors automatically
-            # LAVIDA IMPACT: More robust gradient flow during LoRA training
-            # SHIRG IMPACT: Prevents view errors during position embedding interpolation
-            orig_pos_embeds_2d = orig_pos_embeds.reshape(grid_size, grid_size, self.embed_dim).permute(2, 0, 1).unsqueeze(0)
-            
-            # Move to target device and dtype
-            orig_pos_embeds_2d = orig_pos_embeds_2d.to(device=device, dtype=dtype)
-            
-            # Bicubic interpolation to target grid size
-            interp_pos_embeds_2d = F.interpolate(
-                orig_pos_embeds_2d, 
-                size=(target_grid_size, target_grid_size), 
-                mode='bicubic', 
-                align_corners=False
-            )
-            
-            # Reshape back to token sequence: [1, embed_dim, target_grid_size, target_grid_size] → [1, num_tokens, embed_dim]
-            # SHIRG-FIX: 2025-07-28 - Use reshape for better gradient compatibility
-            # ISSUE: view() can fail during gradient computation with permuted tensors
-            # SOLUTION: Use reshape() which automatically handles non-contiguous cases
-            # LAVIDA IMPACT: Ensures gradient flow compatibility
-            # SHIRG IMPACT: Enables LoRA gradient computation
-            interp_pos_embeds = interp_pos_embeds_2d.permute(0, 2, 3, 1).reshape(1, num_tokens, self.embed_dim)
-            
-            # Cache the result
-            self._cached_pos_embeds_dict[cache_key] = interp_pos_embeds
-            
+        # SHIRG-FIX: 2025-07-30 - Remove torch.no_grad() to allow gradient flow for LoRA
+        # ISSUE: torch.no_grad() blocks all gradient computation through position embeddings
+        # SOLUTION: Remove no_grad context - position embeddings stay frozen via PEFT but gradients can flow
+        # LAVIDA IMPACT: Position embedding parameters remain frozen, only gradient flow is enabled
+        # SHIRG IMPACT: Critical fix - enables LoRA gradient flow through vision tower
+        
+        # The following operations now allow gradient flow (but parameters remain frozen by PEFT)
+        # SHIRG-FIX: 2025-07-28 - Ensure contiguous tensor before view operation
+        # ISSUE: view() fails with "view size is not compatible" during gradient computation
+        # SOLUTION: Make tensor contiguous before reshape to prevent stride issues
+        # LAVIDA IMPACT: Enables gradient flow through position embeddings
+        # SHIRG IMPACT: Fixes LoRA training gradient computation
+        
+        # Reshape to 2D grid: [grid_size, grid_size, embed_dim] → [embed_dim, grid_size, grid_size]
+        # SHIRG-FIX: 2025-07-28 - Use reshape instead of view for better gradient compatibility
+        # ISSUE: view() can fail during gradient computation if tensor is non-contiguous
+        # SOLUTION: Use reshape() which handles non-contiguous tensors automatically
+        # LAVIDA IMPACT: More robust gradient flow during LoRA training
+        # SHIRG IMPACT: Prevents view errors during position embedding interpolation
+        orig_pos_embeds_2d = orig_pos_embeds.reshape(grid_size, grid_size, self.embed_dim).permute(2, 0, 1).unsqueeze(0)
+        
+        # Move to target device and dtype
+        orig_pos_embeds_2d = orig_pos_embeds_2d.to(device=device, dtype=dtype)
+        
+        # Bicubic interpolation to target grid size
+        interp_pos_embeds_2d = F.interpolate(
+            orig_pos_embeds_2d, 
+            size=(target_grid_size, target_grid_size), 
+            mode='bicubic', 
+            align_corners=False
+        )
+        
+        # Reshape back to token sequence: [1, embed_dim, target_grid_size, target_grid_size] → [1, num_tokens, embed_dim]
+        # SHIRG-FIX: 2025-07-28 - Use reshape for better gradient compatibility
+        # ISSUE: view() can fail during gradient computation with permuted tensors
+        # SOLUTION: Use reshape() which automatically handles non-contiguous cases
+        # LAVIDA IMPACT: Ensures gradient flow compatibility
+        # SHIRG IMPACT: Enables LoRA gradient computation
+        interp_pos_embeds = interp_pos_embeds_2d.permute(0, 2, 3, 1).reshape(1, num_tokens, self.embed_dim)
+        
+        # Cache the result
+        self._cached_pos_embeds_dict[cache_key] = interp_pos_embeds
+        
         return interp_pos_embeds
 
 
