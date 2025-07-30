@@ -26,8 +26,27 @@ from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader, OCRVQAResultAnalyze
 class RealOCRVQAValidator:
     """Main validator orchestrating dataset loading, model inference, and result analysis"""
     
-    def __init__(self):
-        self.model_runner = LaViDaModelRunner()
+    def __init__(self, selection_method='base', selection_params=None):
+        """
+        Initialize validator with SHIRG selection method configuration
+        
+        Args:
+            selection_method: Token selection method ('base', 'entropy', 'edge', 'full')
+            selection_params: Method-specific parameters dict:
+                - entropy_threshold: τ for noise filtering (default: 0.12)
+                - edge_weight: Weight for edge prior (default: 0.25)
+                - radial_sigma: σ for radial weighting (default: 0.65)
+                - merge_threshold: Similarity threshold (default: 0.9)
+                - merge_similar: Enable token merging (default: False)
+        """
+        self.selection_method = selection_method
+        self.selection_params = selection_params or {}
+        
+        # Initialize components with selection method
+        self.model_runner = LaViDaModelRunner(
+            selection_method=selection_method,
+            selection_params=selection_params
+        )
         self.dataset_loader = OCRVQADatasetLoader()
         self.result_analyzer = OCRVQAResultAnalyzer()
     
@@ -90,15 +109,87 @@ class RealOCRVQAValidator:
         
         return all_results
 
-def main():
-    """Run baseline vs SHIRG comparison validation"""
-    validator = RealOCRVQAValidator()
+def run_validation_with_method(method='base', params=None):
+    """Run validation with specific selection method"""
+    print(f"\n{'='*60}")
+    print(f"🧪 Running validation with method: {method.upper()}")
+    print(f"   Parameters: {params}")
+    print(f"{'='*60}\n")
+    
+    validator = RealOCRVQAValidator(selection_method=method, selection_params=params)
     results = validator.run_real_ocr_vqa_validation()
     
-    print(f"\n🎉 Baseline vs SHIRG comparison complete!")
+    print(f"\n🎉 Baseline vs SHIRG-{method.upper()} comparison complete!")
     print(f"   📊 Results: /content/shirg_validation_results/")
     print(f"   🖼️ Visualizations: /content/shirg_token_visualizations/")
     return results
+
+def main():
+    """Run baseline vs SHIRG comparison validation with multiple methods"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='SHIRG OCR/VQA Validation')
+    parser.add_argument('--method', type=str, default='base',
+                      choices=['base', 'entropy', 'edge', 'full', 'all'],
+                      help='Token selection method to use')
+    parser.add_argument('--entropy-threshold', type=float, default=0.12,
+                      help='Entropy threshold for noise filtering')
+    parser.add_argument('--edge-weight', type=float, default=0.25,
+                      help='Weight for edge prior')
+    parser.add_argument('--radial-sigma', type=float, default=0.65,
+                      help='Sigma for radial weighting')
+    parser.add_argument('--merge-similar', action='store_true',
+                      help='Enable token merging for similar tokens')
+    parser.add_argument('--merge-threshold', type=float, default=0.9,
+                      help='Similarity threshold for token merging')
+    
+    args = parser.parse_args()
+    
+    if args.method == 'all':
+        # Run all methods for comparison
+        methods_configs = [
+            ('base', {}),
+            ('entropy', {'entropy_threshold': args.entropy_threshold}),
+            ('edge', {'edge_weight': args.edge_weight}),
+            ('full', {
+                'entropy_threshold': args.entropy_threshold,
+                'edge_weight': args.edge_weight,
+                'radial_sigma': args.radial_sigma,
+                'merge_similar': args.merge_similar,
+                'merge_threshold': args.merge_threshold
+            })
+        ]
+        
+        all_results = {}
+        for method, params in methods_configs:
+            results = run_validation_with_method(method, params)
+            all_results[method] = results
+        
+        # Compare results across methods
+        print("\n" + "="*60)
+        print("📊 COMPARISON ACROSS ALL METHODS")
+        print("="*60)
+        
+        # TODO: Add comparison analysis here
+        
+        return all_results
+    else:
+        # Run single method
+        params = {}
+        if args.method == 'entropy':
+            params = {'entropy_threshold': args.entropy_threshold}
+        elif args.method == 'edge':
+            params = {'edge_weight': args.edge_weight}
+        elif args.method == 'full':
+            params = {
+                'entropy_threshold': args.entropy_threshold,
+                'edge_weight': args.edge_weight,
+                'radial_sigma': args.radial_sigma,
+                'merge_similar': args.merge_similar,
+                'merge_threshold': args.merge_threshold
+            }
+        
+        return run_validation_with_method(args.method, params)
 
 if __name__ == "__main__":
     main()

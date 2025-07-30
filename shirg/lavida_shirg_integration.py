@@ -141,13 +141,20 @@ class LaViDaSHIRGWrapper:
                  shirg_config: Optional[Dict[str, Any]] = None,
                  device_map: str = "auto",
                  torch_dtype = torch.bfloat16,
-                 vision_kwargs: Optional[Dict[str, Any]] = None):
+                 vision_kwargs: Optional[Dict[str, Any]] = None,
+                 selection_method: str = "base",
+                 selection_params: Optional[Dict[str, Any]] = None):
         """
         Initialize LaViDa with SHIRG integration
         
         Args:
             model_path: HuggingFace model path for LaViDa
             shirg_config: SHIRG configuration parameters
+            device_map: Device mapping for model
+            torch_dtype: Data type for model
+            vision_kwargs: Additional vision model kwargs
+            selection_method: Token selection method ('base', 'entropy', 'edge', 'full')
+            selection_params: Method-specific parameters
             device_map: Device mapping for model loading
             torch_dtype: Torch data type for model
             vision_kwargs: Vision tower configuration
@@ -193,6 +200,10 @@ class LaViDaSHIRGWrapper:
         if vision_kwargs:
             default_vision_kwargs.update(vision_kwargs)
         self.vision_kwargs = default_vision_kwargs
+        
+        # Store selection method and parameters
+        self.selection_method = selection_method
+        self.selection_params = selection_params or {}
         
         # Initialize model components
         self.tokenizer = None
@@ -418,9 +429,12 @@ class LaViDaSHIRGWrapper:
                                         if ref_device and text_embeddings.device != ref_device:
                                             text_embeddings = text_embeddings.to(device=ref_device, dtype=ref_dtype)
                                     
-                                    # Call SHIRG-Fovea method
+                                    # Call SHIRG-Fovea method with selection parameters
                                     selected_features = vision_tower.forward_with_shirg(
-                                        images, text_embeddings=text_embeddings
+                                        images, 
+                                        text_embeddings=text_embeddings,
+                                        selection_method=wrapper.selection_method,
+                                        selection_params=wrapper.selection_params
                                     )
                                     
                                     if wrapper.shirg_config.get('debug', False):

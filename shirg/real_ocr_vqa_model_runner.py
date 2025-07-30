@@ -59,7 +59,7 @@ except ImportError as e:
 class LaViDaModelRunner:
     """Handles LaViDa model loading, inference operations, and GPU memory management"""
     
-    def __init__(self):
+    def __init__(self, selection_method='base', selection_params=None):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Baseline LaViDa model components (original encoder)
@@ -80,6 +80,10 @@ class LaViDaModelRunner:
         self.pretrained_path = "KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
         self.model_name = "llava_llada"
         self.conv_template_name = "llada"
+        
+        # SHIRG selection method configuration
+        self.selection_method = selection_method
+        self.selection_params = selection_params or {}
     
     def _load_baseline_model(self):
         """Load baseline LaViDa model with original SigLIP encoder"""
