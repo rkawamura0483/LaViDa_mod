@@ -345,23 +345,23 @@ class ShirgLoraTrainer:
                     rank0_print(f"   - Modules with LoRA: {results['modules_with_lora']}")
                     rank0_print(f"   - Base params enabled: {results['base_params_enabled']}")
                     rank0_print(f"   - Vision tower fixed: {results['vision_tower_fixed']}")
-                
-                # Verify the setup
-                verify_results = verify_selective_gradient_flow(self.model, debug=True)
-                if not verify_results['setup_correct']:
-                    rank0_print("⚠️ Setup verification failed - check optimizer configuration")
-                
-                # Apply memory optimizations
-                rank0_print("\n🔧 Applying memory optimizations...")
-                apply_memory_optimizations(self.model, self.config.__dict__)
-                
-                # Print updated trainable parameters
-                self.model.print_trainable_parameters()
-            else:
-                rank0_print("⚠️ Selective gradient flow fix failed")
-                
-        except ImportError:
-            rank0_print("⚠️ Aggressive fix not available, trying enhanced fix")
+                    
+                    # Verify the setup
+                    verify_results = verify_selective_gradient_flow(self.model, debug=True)
+                    if not verify_results['setup_correct']:
+                        rank0_print("⚠️ Setup verification failed - check optimizer configuration")
+                    
+                    # Apply memory optimizations
+                    rank0_print("\n🔧 Applying memory optimizations...")
+                    apply_memory_optimizations(self.model, self.config.__dict__)
+                    
+                    # Print updated trainable parameters
+                    self.model.print_trainable_parameters()
+                else:
+                    rank0_print("⚠️ Selective gradient flow fix failed")
+                    
+            except ImportError:
+                rank0_print("⚠️ Aggressive fix not available, trying enhanced fix")
             
             # Try enhanced fix
             try:
