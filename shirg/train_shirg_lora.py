@@ -319,24 +319,28 @@ class ShirgLoraTrainer:
         # LAVIDA IMPACT: None - only affects LoRA training
         # SHIRG IMPACT: Fixes zero gradient issue enabling proper LoRA training
         
-        # SHIRG-FIX: 2025-07-30 - Use aggressive fix for gradient flow
-        # ISSUE: LoRA adapters on frozen modules don't receive gradients
-        # SOLUTION: Use aggressive fix that unfreezes base modules with LoRA
-        # LAVIDA IMPACT: Some base vision tower modules become trainable
-        # SHIRG IMPACT: Enables proper gradient flow for LoRA training
-        try:
-            # Try selective gradient flow fix
-            from shirg.fix_lora_gradients_selective import (
-                apply_selective_gradient_flow, 
-                get_lora_parameters_only,
-                verify_selective_gradient_flow,
-                apply_memory_optimizations
-            )
-            
-            rank0_print("🔧 Applying Selective LoRA gradient flow fix...")
-            results = apply_selective_gradient_flow(self.model, debug=True)
-            
-            if results['success']:
+        # SHIRG-FIX: 2025-07-30 - DISABLE gradient flow fix for DDP compatibility
+        # ISSUE: Selective gradient flow fix causes "parameter marked ready twice" error in DDP
+        # SOLUTION: Temporarily disable the fix and rely on PEFT's default gradient handling
+        # LAVIDA IMPACT: May have lower gradients but avoids DDP conflicts
+        # SHIRG IMPACT: Training should proceed without DDP errors
+        
+        disable_gradient_fix = True  # Set to False to re-enable the fix
+        
+        if not disable_gradient_fix:
+            try:
+                # Try selective gradient flow fix
+                from shirg.fix_lora_gradients_selective import (
+                    apply_selective_gradient_flow, 
+                    get_lora_parameters_only,
+                    verify_selective_gradient_flow,
+                    apply_memory_optimizations
+                )
+                
+                rank0_print("🔧 Applying Selective LoRA gradient flow fix...")
+                results = apply_selective_gradient_flow(self.model, debug=True)
+                
+                if results['success']:
                 rank0_print(f"✅ Selective gradient flow enabled!")
                 rank0_print(f"   - Modules with LoRA: {results['modules_with_lora']}")
                 rank0_print(f"   - Base params enabled: {results['base_params_enabled']}")
@@ -393,6 +397,11 @@ class ShirgLoraTrainer:
                     rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
                     # Print updated trainable parameters
                     self.model.print_trainable_parameters()
+        else:
+            # Gradient fix disabled for DDP compatibility
+            rank0_print("⚠️ Gradient flow fix disabled for DDP compatibility")
+            rank0_print("   Using PEFT's default gradient handling")
+            self.model.print_trainable_parameters()
         
         # Setup token dropout
         self.token_dropout = ShirgTokenDropout(

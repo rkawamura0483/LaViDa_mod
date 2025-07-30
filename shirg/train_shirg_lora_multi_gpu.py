@@ -242,12 +242,15 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             else:
                 rank0_print(f"✅ Model already wrapped with DDP")
         
-        # SHIRG-FIX: 2025-07-30 - Apply selective gradient flow AFTER DDP wrapping
-        # ISSUE: PEFT LoRA requires gradient flow through base modules
-        # SOLUTION: Enable requires_grad on base modules but only optimize LoRA params
-        # LAVIDA IMPACT: Base modules stay frozen but allow gradient flow
-        # SHIRG IMPACT: Fixes inconsistent gradient flow in distributed training
-        if dist.is_initialized():
+        # SHIRG-FIX: 2025-07-30 - DISABLE selective gradient flow for DDP compatibility
+        # ISSUE: Selective gradient flow causes "parameter marked ready twice" error
+        # SOLUTION: Disable the fix and rely on PEFT's default gradient handling
+        # LAVIDA IMPACT: May have lower gradients but avoids DDP conflicts
+        # SHIRG IMPACT: Training should proceed without DDP errors
+        
+        disable_gradient_fix = True  # Set to False to re-enable
+        
+        if dist.is_initialized() and not disable_gradient_fix:
             try:
                 from shirg.fix_lora_gradients_selective import (
                     apply_selective_gradient_flow,
@@ -280,6 +283,10 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 rank0_print("⚠️ Selective gradient fix not available")
             except Exception as e:
                 rank0_print(f"⚠️ Error applying selective gradient flow: {e}")
+        elif dist.is_initialized():
+            # Gradient fix disabled
+            rank0_print("⚠️ Gradient flow fix disabled for DDP compatibility")
+            rank0_print("   Using PEFT's default gradient handling")
     
     def save_checkpoint(self, *args, **kwargs):
         """Only save checkpoints from rank 0"""
