@@ -1470,21 +1470,44 @@ class LaViDaModelRunner:
                             # Create mock SHIRG metadata for visualization
                             total_tokens = basic_features.shape[1] if len(basic_features.shape) > 1 else 2304
                             
-                            # Generate mock selection indices (every other token for visualization)
-                            mock_selected_indices = list(range(0, total_tokens, 2))
+                            # Try to get actual selection visualization if available
+                            actual_viz_data = None
+                            if hasattr(self.shirg_tower, 'shirg_extensions'):
+                                try:
+                                    actual_viz_data = self.shirg_tower.shirg_extensions.get_last_selection_visualization()
+                                except:
+                                    pass
                             
-                            fallback_metadata = {
-                                'method': 'SHIRG_FALLBACK',
-                                'input_tokens': total_tokens,
-                                'global_tokens': 256,
-                                'peripheral_views': 4,
-                                'peripheral_tokens_per_view': 409,
-                                'input_resolution': '5-view anyres',
-                                'feature_dim': basic_features.shape[-1] if len(basic_features.shape) > 1 else 1152,
-                                'selected_indices': mock_selected_indices,
-                                'selection_error': str(e),
-                                'visualization_ready': True  # This allows visualization to proceed
-                            }
+                            if actual_viz_data and 'foveal_selection_indices' in actual_viz_data:
+                                # Use actual selection data
+                                fallback_metadata = {
+                                    'method': 'SHIRG_ACTUAL',
+                                    'input_tokens': total_tokens,
+                                    'global_tokens': actual_viz_data.get('global_tokens', 256),
+                                    'foveal_tokens': actual_viz_data.get('foveal_tokens', 724),
+                                    'foveal_selection_indices': actual_viz_data['foveal_selection_indices'],
+                                    'input_resolution': '2-view (384² + 448²)',
+                                    'feature_dim': basic_features.shape[-1] if len(basic_features.shape) > 1 else 1152,
+                                    'selection_error': str(e),
+                                    'visualization_ready': True
+                                }
+                                print(f"   ✅ Retrieved actual SHIRG selection pattern for visualization")
+                            else:
+                                # Generate mock selection indices (every other token for visualization)
+                                mock_selected_indices = list(range(0, total_tokens, 2))
+                                
+                                fallback_metadata = {
+                                    'method': 'SHIRG_FALLBACK',
+                                    'input_tokens': total_tokens,
+                                    'global_tokens': 256,
+                                    'peripheral_views': 4,
+                                    'peripheral_tokens_per_view': 409,
+                                    'input_resolution': '5-view anyres',
+                                    'feature_dim': basic_features.shape[-1] if len(basic_features.shape) > 1 else 1152,
+                                    'selected_indices': mock_selected_indices,
+                                    'selection_error': str(e),
+                                    'visualization_ready': True  # This allows visualization to proceed
+                                }
                             
                             print(f"   🔄 Using fallback metadata for visualization: {total_tokens} tokens")
                             return fallback_metadata

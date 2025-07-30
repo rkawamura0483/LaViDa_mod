@@ -99,7 +99,15 @@ class SigLipShirgExtensions:
                     # Target: 980 total - 256 global = 724 foveal
                     K = min(actual_tokens, 724)
                 
-                selected = self.topk_per_view(view_tokens, K, text_embeddings)
+                # Enable visualization tracking if needed
+                if hasattr(self, '_enable_visualization'):
+                    selected, indices = self.topk_per_view(view_tokens, K, text_embeddings, return_indices=True)
+                    # Store for visualization
+                    if not hasattr(self, '_foveal_selection_indices'):
+                        self._foveal_selection_indices = []
+                    self._foveal_selection_indices.append(indices)
+                else:
+                    selected = self.topk_per_view(view_tokens, K, text_embeddings)
                 selected_foveal.append(selected)
                 rank0_print(f"   Foveal view: selected {selected.shape[1]} tokens from {actual_tokens} total ({K/actual_tokens*100:.1f}%)")
             
@@ -278,7 +286,33 @@ class SigLipShirgExtensions:
         
         return global_pooled, foveal_features
     
-    def topk_per_view(self, view_tokens, K, text_embeddings=None):
+    def get_last_selection_visualization(self):
+        """
+        Get the last token selection pattern for visualization
+        
+        Returns:
+            dict: Contains selection indices and scores for visualization
+        """
+        visualization_data = {
+            'method': 'SHIRG-2View',
+            'global_tokens': 256,
+            'foveal_tokens': 724,
+            'total_tokens': 980
+        }
+        
+        if hasattr(self, '_foveal_selection_indices') and self._foveal_selection_indices:
+            # Get the last foveal selection indices
+            last_indices = self._foveal_selection_indices[-1]
+            if last_indices is not None:
+                visualization_data['foveal_selection_indices'] = last_indices.cpu().numpy().tolist()
+                visualization_data['foveal_total_tokens'] = 1024  # 32x32 for 448² with patch_size=14
+        
+        if hasattr(self, '_last_selection_scores') and self._last_selection_scores is not None:
+            visualization_data['selection_scores'] = self._last_selection_scores.cpu().numpy().tolist()
+        
+        return visualization_data
+    
+    def topk_per_view(self, view_tokens, K, text_embeddings=None, return_indices=False):
         """
         SHIRG-Fovea: Per-view Top-K selection with composite scoring
         
@@ -288,9 +322,11 @@ class SigLipShirgExtensions:
             view_tokens: [B, 1024, D] tokens from one foveal view (448² patch)
             K: Number of tokens to keep (784 for 76.6% keep rate)
             text_embeddings: Optional text embeddings for similarity scoring
+            return_indices: If True, also return the selected indices for visualization
             
         Returns:
             selected_tokens: [B, K, D] selected tokens from this view
+            (optional) topk_indices: [B, K] indices of selected tokens if return_indices=True
         """
         B, N, D = view_tokens.shape
         
@@ -323,8 +359,14 @@ class SigLipShirgExtensions:
         # Combine scores: 0.7*attention + 0.3*similarity
         combined_scores = 0.7 * attn_scores + 0.3 * sim_scores
         
+        # Store last selection scores for visualization
+        self._last_selection_scores = combined_scores.detach().cpu() if hasattr(self, '_enable_visualization') else None
+        
         # Select top-K tokens
         topk_values, topk_indices = torch.topk(combined_scores, K, dim=1)  # [B, K]
+        
+        # Store last selection indices for visualization
+        self._last_selection_indices = topk_indices.detach().cpu() if hasattr(self, '_enable_visualization') else None
         
         # Gather selected tokens
         selected_tokens = torch.gather(
@@ -332,6 +374,8 @@ class SigLipShirgExtensions:
             topk_indices.unsqueeze(-1).expand(-1, -1, D)
         )  # [B, K, D]
         
+        if return_indices:
+            return selected_tokens, topk_indices
         return selected_tokens
     
     def ensure_gradient_flow(self, tokens, input_images):

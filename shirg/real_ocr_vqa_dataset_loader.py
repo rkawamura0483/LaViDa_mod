@@ -1189,7 +1189,8 @@ class OCRVQAResultAnalyzer:
                 font_small = ImageFont.load_default()
             
             # Title
-            draw.text((10, 10), f"SHIRG 2-View Token Selection: {sample_name}", fill='black', font=font_title)
+            pattern_type = "Actual SHIRG" if actual_selection_pattern is not None else "Simulated"
+            draw.text((10, 10), f"SHIRG 2-View Token Selection ({pattern_type}): {sample_name}", fill='black', font=font_title)
             draw.text((10, 35), f"Q: {question[:100]}{'...' if len(question) > 100 else ''}", fill='black', font=font_normal)
             
             # Global view (384×384 → 256 tokens)
@@ -1252,25 +1253,75 @@ class OCRVQAResultAnalyzer:
             selected_count = 0
             target_selected = 724
             
-            # Use a simple pattern: select tokens based on distance from center
-            center_x = foveal_grid_size / 2
-            center_y = foveal_grid_size / 2
+            # Try to get actual SHIRG selection pattern
+            actual_selection_pattern = None
+            if model_runner is not None and hasattr(model_runner, 'shirg_tower'):
+                try:
+                    # Enable visualization on the SHIRG tower
+                    if hasattr(model_runner.shirg_tower, 'shirg_extensions'):
+                        model_runner.shirg_tower.shirg_extensions._enable_visualization = True
+                        
+                        # Get actual selection visualization data
+                        viz_data = model_runner.shirg_tower.shirg_extensions.get_last_selection_visualization()
+                        if 'foveal_selection_indices' in viz_data:
+                            actual_selection_pattern = viz_data['foveal_selection_indices']
+                            print(f"   ✅ Using actual SHIRG selection pattern with {len(actual_selection_pattern[0])} tokens")
+                except Exception as e:
+                    print(f"   ⚠️ Could not get actual SHIRG selection: {e}")
             
-            # Calculate distances and sort tokens by distance
-            token_distances = []
-            for y in range(foveal_grid_size):
-                for x in range(foveal_grid_size):
-                    dist = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-                    token_distances.append((dist, x, y))
-            
-            # Sort by distance (prioritize center tokens)
-            token_distances.sort(key=lambda t: t[0])
-            
-            # Select the first 724 tokens
+            # Use actual selection pattern or fallback to demonstration pattern
             selected_tokens = set()
-            for i in range(min(target_selected, len(token_distances))):
-                _, x, y = token_distances[i]
-                selected_tokens.add((x, y))
+            
+            if actual_selection_pattern is not None and len(actual_selection_pattern) > 0:
+                # Use actual SHIRG selection indices
+                indices = actual_selection_pattern[0]  # First batch
+                for idx in indices:
+                    # Convert linear index to 2D grid position
+                    y = idx // foveal_grid_size
+                    x = idx % foveal_grid_size
+                    if x < foveal_grid_size and y < foveal_grid_size:
+                        selected_tokens.add((x, y))
+            else:
+                # Fallback: Create a more realistic pattern based on SHIRG algorithm
+                # SHIRG uses 0.7*attention + 0.3*similarity scoring
+                # This typically results in selection of:
+                # 1. Tokens with high attention to CLS (often distributed across image)
+                # 2. Tokens with high magnitude (informative regions)
+                
+                # Create a pattern that simulates this behavior
+                for y in range(foveal_grid_size):
+                    for x in range(foveal_grid_size):
+                        # Simulate attention score (higher near edges and corners for OCR/charts)
+                        edge_dist = min(x, y, foveal_grid_size-1-x, foveal_grid_size-1-y)
+                        attn_score = 1.0 - (edge_dist / (foveal_grid_size/2))
+                        
+                        # Simulate magnitude score (checkerboard pattern for text regions)
+                        mag_score = ((x // 4) + (y // 4)) % 2
+                        
+                        # Combined score
+                        combined = 0.7 * attn_score + 0.3 * mag_score
+                        
+                        # Add some randomness
+                        combined += np.random.random() * 0.2
+                        
+                        # Select if score is high enough (targeting ~70.7% selection)
+                        if combined > 0.45:
+                            selected_tokens.add((x, y))
+                
+                # Ensure we have approximately the right number of tokens
+                current_count = len(selected_tokens)
+                if current_count > target_selected:
+                    # Remove excess tokens randomly
+                    tokens_list = list(selected_tokens)
+                    np.random.shuffle(tokens_list)
+                    selected_tokens = set(tokens_list[:target_selected])
+                elif current_count < target_selected * 0.9:
+                    # Add more tokens if we're too far below target
+                    for y in range(foveal_grid_size):
+                        for x in range(foveal_grid_size):
+                            if (x, y) not in selected_tokens and len(selected_tokens) < target_selected:
+                                if np.random.random() > 0.5:
+                                    selected_tokens.add((x, y))
             
             # Draw foveal tokens
             for y in range(foveal_grid_size):

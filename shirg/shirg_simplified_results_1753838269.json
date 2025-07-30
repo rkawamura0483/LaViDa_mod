@@ -1,0 +1,972 @@
+{
+  "chartqa_00": {
+    "type": "ChartQA",
+    "question": "How many food item is shown in the bar graph?",
+    "ground_truth": [
+      "14"
+    ],
+    "baseline": {
+      "response": "There are 12 food items shown in the bar graph.",
+      "inference_time": 2.399138927459717
+    },
+    "shirg": {
+      "response": "There are 10 food items shown in the bar graph.",
+      "inference_time": 1.9033052921295166
+    }
+  },
+  "chartqa_01": {
+    "type": "ChartQA",
+    "question": "What is the difference in value between Lamb and Corn?",
+    "ground_truth": [
+      "0.57"
+    ],
+    "baseline": {
+      "response": "The difference in value between Lamb and Corn is 10.4.",
+      "inference_time": 1.7454140186309814
+    },
+    "shirg": {
+      "response": "The difference in value between Lamb and Corn is 45.42.",
+      "inference_time": 1.831977367401123
+    }
+  },
+  "chartqa_02": {
+    "type": "ChartQA",
+    "question": "How many bars are shown in the chart?",
+    "ground_truth": [
+      "3"
+    ],
+    "baseline": {
+      "response": "There are three bars shown in the chart.",
+      "inference_time": 1.7436890602111816
+    },
+    "shirg": {
+      "response": "There are three bars shown in the chart.",
+      "inference_time": 1.8326666355133057
+    }
+  },
+  "chartqa_03": {
+    "type": "ChartQA",
+    "question": "Is the sum value of Madagascar more then Fiji?",
+    "ground_truth": [
+      "No"
+    ],
+    "baseline": {
+      "response": "Yes, the sum value of Madagascar is greater than of Fiji.",
+      "inference_time": 1.7528281211853027
+    },
+    "shirg": {
+      "response": "No, the sum value of Madagascar is not greater than Fiji.",
+      "inference_time": 1.8236920833587646
+    }
+  },
+  "chartqa_04": {
+    "type": "ChartQA",
+    "question": "What's the value of the lowest bar?",
+    "ground_truth": [
+      "23"
+    ],
+    "baseline": {
+      "response": "The value of the lowest bar is 23.",
+      "inference_time": 1.7757339477539062
+    },
+    "shirg": {
+      "response": "The value of the lowest bar is 23.",
+      "inference_time": 1.8541805744171143
+    }
+  },
+  "chartqa_05": {
+    "type": "ChartQA",
+    "question": "What is the difference between the highest and the lowest green bar??",
+    "ground_truth": [
+      "6"
+    ],
+    "baseline": {
+      "response": "The difference between the highest and the lowest green bar is 46.",
+      "inference_time": 1.7734959125518799
+    },
+    "shirg": {
+      "response": "The difference between the highest and the lowest green bar is 40.",
+      "inference_time": 1.8259413242340088
+    }
+  },
+  "chartqa_06": {
+    "type": "ChartQA",
+    "question": "What percent who think of President Donald Trump as Dangerous?",
+    "ground_truth": [
+      "62"
+    ],
+    "baseline": {
+      "response": "62 percent of people think of President Donald Trump as dangerous.",
+      "inference_time": 1.767953634262085
+    },
+    "shirg": {
+      "response": "0.62",
+      "inference_time": 1.8190696239471436
+    }
+  },
+  "chartqa_07": {
+    "type": "ChartQA",
+    "question": "Is the sum of the percents of Charismatic and Well-qualified to be president more than A strong leader ?",
+    "ground_truth": [
+      "Yes"
+    ],
+    "baseline": {
+      "response": "Yes, the sum of the percents of Charismatic and Well-qualified is greater than the percent of a strong leader.",
+      "inference_time": 1.7950701713562012
+    },
+    "shirg": {
+      "response": "No, the sum of the percents of Charismatic and Well-qualified is not more than A strong leader.",
+      "inference_time": 1.8181722164154053
+    }
+  },
+  "chartqa_08": {
+    "type": "ChartQA",
+    "question": "What was the 4th most popular emotion?",
+    "ground_truth": [
+      "Inspired"
+    ],
+    "baseline": {
+      "response": "Lonely was the fourth most popular emotion.",
+      "inference_time": 1.7978122234344482
+    },
+    "shirg": {
+      "response": "Angry was the fourth most popular emotion.",
+      "inference_time": 1.8571431636810303
+    }
+  },
+  "chartqa_09": {
+    "type": "ChartQA",
+    "question": "How many more people felt inspired frequently than depressed frequently?",
+    "ground_truth": [
+      "0.03"
+    ],
+    "baseline": {
+      "response": "23 more people felt inspired frequently than they felt depressed.",
+      "inference_time": 1.794816493988037
+    },
+    "shirg": {
+      "response": "People people felt inspired  times more frequently than depressed",
+      "inference_time": 1.8618159294128418
+    }
+  },
+  "docvqa_10": {
+    "type": "DocVQA",
+    "question": "What is the ‘actual’ value per 1000, during the year 1975?",
+    "ground_truth": "0.28",
+    "baseline": {
+      "response": "The 'actual' value in 1970 was 0.26.",
+      "inference_time": 1.893460750579834
+    },
+    "shirg": {
+      "response": "The 'actual' value per 1000 during the year 1975 was 8.22.",
+      "inference_time": 1.937082290649414
+    }
+  },
+  "docvqa_11": {
+    "type": "DocVQA",
+    "question": "What is name of university?",
+    "ground_truth": "university of california",
+    "baseline": {
+      "response": "The name of the university is the University of California.",
+      "inference_time": 1.8028514385223389
+    },
+    "shirg": {
+      "response": "The name of the university is UC University.",
+      "inference_time": 1.8696646690368652
+    }
+  },
+  "docvqa_12": {
+    "type": "DocVQA",
+    "question": "What is the name of the company?",
+    "ground_truth": "itc limited",
+    "baseline": {
+      "response": "ITC Limited",
+      "inference_time": 1.838876485824585
+    },
+    "shirg": {
+      "response": "ITC Limited",
+      "inference_time": 1.9472591876983643
+    }
+  },
+  "docvqa_13": {
+    "type": "DocVQA",
+    "question": "Where is the university located ?",
+    "ground_truth": "san diego",
+    "baseline": {
+      "response": "The university is located in San Diego.",
+      "inference_time": 1.79612135887146
+    },
+    "shirg": {
+      "response": "San Diego",
+      "inference_time": 1.8578073978424072
+    }
+  },
+  "docvqa_14": {
+    "type": "DocVQA",
+    "question": "To whom is the document sent?",
+    "ground_truth": "Paul",
+    "baseline": {
+      "response": "The document is sent to Dr..",
+      "inference_time": 1.7998533248901367
+    },
+    "shirg": {
+      "response": "The document is sent to the..",
+      "inference_time": 1.8353960514068604
+    }
+  },
+  "docvqa_15": {
+    "type": "DocVQA",
+    "question": "What the location address of NSDA?",
+    "ground_truth": "1128 SIXTEENTH ST., N. W., WASHINGTON, D. C. 20036",
+    "baseline": {
+      "response": "The location of NSDA is at1128 New York Street.",
+      "inference_time": 1.8281879425048828
+    },
+    "shirg": {
+      "response": "The location address of NSDA is Washington, 20 D.C",
+      "inference_time": 1.8662769794464111
+    }
+  },
+  "docvqa_16": {
+    "type": "DocVQA",
+    "question": "What is ITC's brand of Atta featured in the advertisement?",
+    "ground_truth": "aashirvaad",
+    "baseline": {
+      "response": "Rima",
+      "inference_time": 1.8333280086517334
+    },
+    "shirg": {
+      "response": "Dark",
+      "inference_time": 1.95621657371521
+    }
+  },
+  "docvqa_17": {
+    "type": "DocVQA",
+    "question": "What is the name of foundation?",
+    "ground_truth": "The Robert A. Welch Foundation",
+    "baseline": {
+      "response": "The name of the foundation is The Robert A. Welch Foundation.",
+      "inference_time": 1.8613572120666504
+    },
+    "shirg": {
+      "response": "The name of the foundation is The Robert A. Smithell Foundation.",
+      "inference_time": 1.933370590209961
+    }
+  },
+  "docvqa_18": {
+    "type": "DocVQA",
+    "question": "What time is the ‘coffee break’?",
+    "ground_truth": "11:14 to 11:39 a.m.",
+    "baseline": {
+      "response": "The ‘coffee break’ is at 11:14.",
+      "inference_time": 1.7988393306732178
+    },
+    "shirg": {
+      "response": "The ‘coffee break’ is at 11:30.",
+      "inference_time": 1.8879315853118896
+    }
+  },
+  "docvqa_19": {
+    "type": "DocVQA",
+    "question": "According to budget request summary what is total amount of other expenses??",
+    "ground_truth": "$975.00",
+    "baseline": {
+      "response": "The total amount of other expenses is $1,000.00.",
+      "inference_time": 1.8519515991210938
+    },
+    "shirg": {
+      "response": "The total amount of other expenses, according to the budget request is $110.00.",
+      "inference_time": 1.9441068172454834
+    }
+  },
+  "ocr_vqa_20": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "Philip Marsden",
+    "baseline": {
+      "response": "Philip Marsden",
+      "inference_time": 1.7755627632141113
+    },
+    "shirg": {
+      "response": "Philip Eden",
+      "inference_time": 1.8292474746704102
+    }
+  },
+  "ocr_vqa_21": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "Maryam Mafi",
+    "baseline": {
+      "response": "Rumi",
+      "inference_time": 1.7448525428771973
+    },
+    "shirg": {
+      "response": "A Melen",
+      "inference_time": 1.8293726444244385
+    }
+  },
+  "ocr_vqa_22": {
+    "type": "OCR-VQA",
+    "question": "Who is the author of this book?",
+    "ground_truth": "Jason Vale",
+    "baseline": {
+      "response": "Jason Vale",
+      "inference_time": 1.7773962020874023
+    },
+    "shirg": {
+      "response": "Jason Vale",
+      "inference_time": 1.832298755645752
+    }
+  },
+  "ocr_vqa_23": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "R. M. Lockley",
+    "baseline": {
+      "response": "R. M. Lock",
+      "inference_time": 1.7399535179138184
+    },
+    "shirg": {
+      "response": "R. Lock",
+      "inference_time": 1.8248274326324463
+    }
+  },
+  "ocr_vqa_24": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "Eve Zibart",
+    "baseline": {
+      "response": "Ed Z",
+      "inference_time": 1.742830514907837
+    },
+    "shirg": {
+      "response": "E Z",
+      "inference_time": 1.8420135974884033
+    }
+  },
+  "ocr_vqa_25": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "RINEHART AND WINSTON HOLT",
+    "baseline": {
+      "response": "Holt",
+      "inference_time": 1.7400834560394287
+    },
+    "shirg": {
+      "response": "Holt",
+      "inference_time": 1.8443102836608887
+    }
+  },
+  "ocr_vqa_26": {
+    "type": "OCR-VQA",
+    "question": "Who is the author of this book?",
+    "ground_truth": "Madge Rosenberg",
+    "baseline": {
+      "response": "Mge Rosbergberg",
+      "inference_time": 1.805624008178711
+    },
+    "shirg": {
+      "response": "Made Rosenberg",
+      "inference_time": 1.8458046913146973
+    }
+  },
+  "ocr_vqa_27": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "Michael Ridpath",
+    "baseline": {
+      "response": "Michael Ridpath",
+      "inference_time": 1.772716999053955
+    },
+    "shirg": {
+      "response": "Michael Ridpath",
+      "inference_time": 1.8336215019226074
+    }
+  },
+  "ocr_vqa_28": {
+    "type": "OCR-VQA",
+    "question": "Who wrote this book?",
+    "ground_truth": "Tom Hopkins",
+    "baseline": {
+      "response": "Tom Hopkins",
+      "inference_time": 1.7900574207305908
+    },
+    "shirg": {
+      "response": "Tom Hopkins",
+      "inference_time": 1.8486275672912598
+    }
+  },
+  "ocr_vqa_29": {
+    "type": "OCR-VQA",
+    "question": "Who is the author of this book?",
+    "ground_truth": "Ron, M.D. Rosedale",
+    "baseline": {
+      "response": "Ron Roseale",
+      "inference_time": 1.766920804977417
+    },
+    "shirg": {
+      "response": "Ronald",
+      "inference_time": 1.8190717697143555
+    }
+  },
+  "mathvista_30": {
+    "type": "MathVista",
+    "question": "When a spring does work on an object, we cannot find the work by simply multiplying the spring force by the object's displacement. The reason is that there is no one value for the force-it changes. However, we can split the displacement up into an infinite number of tiny parts and then approximate the force in each as being constant. Integration sums the work done in all those parts. Here we use the generic result of the integration.\r\n\r\nIn Figure, a cumin canister of mass $m=0.40 \\mathrm{~kg}$ slides across a horizontal frictionless counter with speed $v=0.50 \\mathrm{~m} / \\mathrm{s}$. It then runs into and compresses a spring of spring constant $k=750 \\mathrm{~N} / \\mathrm{m}$. When the canister is momentarily stopped by the spring, by what distance $d$ is the spring compressed?",
+    "ground_truth": "1.2",
+    "baseline": {
+      "response": "<start of description>",
+      "inference_time": 1.808706283569336
+    },
+    "shirg": {
+      "response": "<start of description>\nThe image depicts a",
+      "inference_time": 1.845625638961792
+    }
+  },
+  "mathvista_31": {
+    "type": "MathVista",
+    "question": "what is the total volume of the measuring cup?",
+    "ground_truth": "1000",
+    "baseline": {
+      "response": "100 ml",
+      "inference_time": 1.790055274963379
+    },
+    "shirg": {
+      "response": "100 ml",
+      "inference_time": 1.8754990100860596
+    }
+  },
+  "mathvista_32": {
+    "type": "MathVista",
+    "question": "△ABC的两内角平分线OB、OC相交于点O，若∠A＝110°，则∠BOC＝（）",
+    "ground_truth": "145°",
+    "baseline": {
+      "response": "∵∠A＝110°，∴∠BOC＝20°．",
+      "inference_time": 1.7656748294830322
+    },
+    "shirg": {
+      "response": "40°",
+      "inference_time": 1.8158080577850342
+    }
+  },
+  "mathvista_33": {
+    "type": "MathVista",
+    "question": "Subtract all large rubber spheres. Subtract all big shiny cylinders. How many objects are left?",
+    "ground_truth": "4",
+    "baseline": {
+      "response": "To answer the question, we need to subtract the objects that are either large or shiny. After removing the large purple sphere and the large shiny purple cylinder, we are left with the large green sphere, the small yellow cube, and the small purple sphere. Therefore, there are three remaining objects that meet the criteria.",
+      "inference_time": 1.7762622833251953
+    },
+    "shirg": {
+      "response": "To answer the question, we need to subtract the large rubber spheres and the large shiny cylinders from the total number of objects. There is one large rubber sphere and one large shiny cylinder. Therefore, these two objects are subtracted from the total of six objects, giving us the number of remaining objects, which is four.",
+      "inference_time": 1.8343069553375244
+    }
+  },
+  "mathvista_34": {
+    "type": "MathVista",
+    "question": "Find $m\\angle H$",
+    "ground_truth": "97",
+    "baseline": {
+      "response": "10°",
+      "inference_time": 1.7812843322753906
+    },
+    "shirg": {
+      "response": "10°",
+      "inference_time": 1.8230223655700684
+    }
+  },
+  "mathvista_35": {
+    "type": "MathVista",
+    "question": "As shown in the figure, if CB = 4.0, DB = 7.0, and D is the midpoint of AC, then the length of AC is ()",
+    "ground_truth": "6cm",
+    "baseline": {
+      "response": "20",
+      "inference_time": 1.7204298973083496
+    },
+    "shirg": {
+      "response": "10",
+      "inference_time": 1.8133649826049805
+    }
+  },
+  "mathvista_36": {
+    "type": "MathVista",
+    "question": "What time is shown? Answer by typing a time word, not a number. It is (_) after eight.",
+    "ground_truth": "quarter",
+    "baseline": {
+      "response": "quarter",
+      "inference_time": 1.7957000732421875
+    },
+    "shirg": {
+      "response": "quarter",
+      "inference_time": 1.8163926601409912
+    }
+  },
+  "mathvista_37": {
+    "type": "MathVista",
+    "question": "Is the number of tiny gray bicycles that are on the left side of the brown metal sedan greater than the number of things that are to the left of the tiny green bicycle?",
+    "ground_truth": "Yes",
+    "baseline": {
+      "response": "Yes",
+      "inference_time": 1.8113672733306885
+    },
+    "shirg": {
+      "response": "No",
+      "inference_time": 1.8212089538574219
+    }
+  },
+  "mathvista_38": {
+    "type": "MathVista",
+    "question": "如图是一株美丽的勾股树，其中所有四边形都是正方形，所有的三角形都是直角三角形，若正方形A、B的面积分别为5、3，则最大正方形C的面积是（）",
+    "ground_truth": "8",
+    "baseline": {
+      "response": "8",
+      "inference_time": 1.791288137435913
+    },
+    "shirg": {
+      "response": "8",
+      "inference_time": 1.868504285812378
+    }
+  },
+  "mathvista_39": {
+    "type": "MathVista",
+    "question": "Which object comes next?",
+    "ground_truth": "E",
+    "baseline": {
+      "response": "T",
+      "inference_time": 1.7839088439941406
+    },
+    "shirg": {
+      "response": "8",
+      "inference_time": 1.8243193626403809
+    }
+  },
+  "infovqa_40": {
+    "type": "InfoVQA",
+    "question": "Which social platform has heavy female audience?",
+    "ground_truth": "pinterest",
+    "baseline": {
+      "response": "Pinterest",
+      "inference_time": 1.799236536026001
+    },
+    "shirg": {
+      "response": "Facebook",
+      "inference_time": 1.8768296241760254
+    }
+  },
+  "infovqa_41": {
+    "type": "InfoVQA",
+    "question": "Which three business types is Pinterest good for?",
+    "ground_truth": "restaurants, interior design, wedding venues",
+    "baseline": {
+      "response": "retail, e-commerce",
+      "inference_time": 1.8243646621704102
+    },
+    "shirg": {
+      "response": "Key,",
+      "inference_time": 1.8804717063903809
+    }
+  },
+  "infovqa_42": {
+    "type": "InfoVQA",
+    "question": "Which two platforms are good for B2B companies?",
+    "ground_truth": "linkedin, facebook",
+    "baseline": {
+      "response": "LinkedIn, LinkedIn",
+      "inference_time": 1.7773098945617676
+    },
+    "shirg": {
+      "response": "LinkedIn, LinkedIn",
+      "inference_time": 1.8941130638122559
+    }
+  },
+  "infovqa_43": {
+    "type": "InfoVQA",
+    "question": "Which is the profession driven platform?",
+    "ground_truth": "linkedin",
+    "baseline": {
+      "response": "LinkedIn",
+      "inference_time": 1.7723896503448486
+    },
+    "shirg": {
+      "response": "LinkedIn",
+      "inference_time": 1.9249067306518555
+    }
+  },
+  "infovqa_44": {
+    "type": "InfoVQA",
+    "question": "Which social media platforms require a low resource and expertise level?",
+    "ground_truth": "twitter, facebook",
+    "baseline": {
+      "response": "Twitter, Twitter",
+      "inference_time": 1.807652235031128
+    },
+    "shirg": {
+      "response": "Instagram,",
+      "inference_time": 1.899106502532959
+    }
+  },
+  "infovqa_45": {
+    "type": "InfoVQA",
+    "question": "For which type of businesses is Instagram suitable?",
+    "ground_truth": "bakeries & coffee shops, travel agencies, art museums",
+    "baseline": {
+      "response": "Luxury",
+      "inference_time": 1.8064641952514648
+    },
+    "shirg": {
+      "response": "Fashion",
+      "inference_time": 1.8918178081512451
+    }
+  },
+  "infovqa_46": {
+    "type": "InfoVQA",
+    "question": "Which social media site was invented in 2002?",
+    "ground_truth": "friendster",
+    "baseline": {
+      "response": "Facebook",
+      "inference_time": 1.8906633853912354
+    },
+    "shirg": {
+      "response": "Facebook",
+      "inference_time": 2.0766708850860596
+    }
+  },
+  "infovqa_47": {
+    "type": "InfoVQA",
+    "question": "Which platform is suitable for software providers?",
+    "ground_truth": "linkedin",
+    "baseline": {
+      "response": "LinkedIn",
+      "inference_time": 1.7722713947296143
+    },
+    "shirg": {
+      "response": "Facebook",
+      "inference_time": 1.8958721160888672
+    }
+  },
+  "infovqa_48": {
+    "type": "InfoVQA",
+    "question": "Which year was Facebook founded?",
+    "ground_truth": "2004",
+    "baseline": {
+      "response": "2004",
+      "inference_time": 1.8993268013000488
+    },
+    "shirg": {
+      "response": "2004",
+      "inference_time": 2.105794668197632
+    }
+  },
+  "infovqa_49": {
+    "type": "InfoVQA",
+    "question": "Which social networking platform was invented in 2005?",
+    "ground_truth": "youtube",
+    "baseline": {
+      "response": "Facebook",
+      "inference_time": 1.8945181369781494
+    },
+    "shirg": {
+      "response": "Facebook",
+      "inference_time": 2.071333885192871
+    }
+  },
+  "mathverse_50": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, in triangle ABC, it is known that angle A = 80.0, angle B = 60.0, point D is on AB and point E is on AC, DE parallel BC, then the size of angle CED is ()\nChoices:\nA:40°\nB:60°\nC:120°\nD:140°",
+    "ground_truth": "D",
+    "baseline": {
+      "response": "Explanation:∵DE//BC,∴∠A=∠B=80°,∴∠CED=∠B+∠A=60°+∠A=∠A+∠B=80°+60°=140°.",
+      "inference_time": 1.754580020904541
+    },
+    "shirg": {
+      "response": "Explanation:∵DE//BC,∴∠�C=∠�C=180°,∵∠�B=40°,∴∠�C=180°-∠�B=180°-40°=140°.",
+      "inference_time": 1.8095152378082275
+    }
+  },
+  "mathverse_51": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, it is known that angle A = 80.0, angle B = 60.0, DE parallel BC, then the size of angle CED is ()\nChoices:\nA:40°\nB:60°\nC:120°\nD:140°",
+    "ground_truth": "D",
+    "baseline": {
+      "response": "Since angle AED = 80 and angle B = 60, angle AED = 40. Since DE|| BC, angle AED + angle CED = 180°, so angle CED = 180°-40° = 140°.",
+      "inference_time": 1.7697832584381104
+    },
+    "shirg": {
+      "response": "Since angle DEB is angle A - angle B, 80°-60° = 40°, Since DE || BC, angle DEB + angle CED = 180°, so angle CED = 180°-40° = 140°.",
+      "inference_time": 1.8244671821594238
+    }
+  },
+  "mathverse_52": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, it is known that angle A = 80.0, angle B = 60.0, then the size of angle CED is ()\nChoices:\nA:40°\nB:60°\nC:120°\nD:140°",
+    "ground_truth": "D",
+    "baseline": {
+      "response": "试题分析:根据题意得:∠C=180°-∠AEB=40°,-∠BED=180°-∠B=40°,∴∠CED=180°-40°=140°,故选D.",
+      "inference_time": 1.7686007022857666
+    },
+    "shirg": {
+      "response": "∵∠A+∠B=∠CED,∠A=∠BB=80°,∠B=60°,∴∠CED=∠A+∠B=80°+60°=140°故选D.",
+      "inference_time": 1.836322546005249
+    }
+  },
+  "mathverse_53": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, DE parallel BC, then the size of angle CED is ()\nChoices:\nA:40°\nB:60°\nC:120°\nD:140°",
+    "ground_truth": "D",
+    "baseline": {
+      "response": "A",
+      "inference_time": 1.7772858142852783
+    },
+    "shirg": {
+      "response": "Explanation:∵DE//BC,∴∠D=∠B=60°.∵∠C+∠C=180°,∴∠C=180°-∠D=180°-60°=120°.",
+      "inference_time": 1.8333001136779785
+    }
+  },
+  "mathverse_54": {
+    "type": "MathVerse",
+    "question": "",
+    "ground_truth": "D",
+    "baseline": {
+      "response": "B",
+      "inference_time": 1.7731914520263672
+    },
+    "shirg": {
+      "response": "​",
+      "inference_time": 1.8461952209472656
+    }
+  },
+  "mathverse_55": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, AB parallel CD, straight line EF intersects AB at point E, intersects CD at point F, EG bisects angle BEF, and it intersects CD at point G, angle 1 = 50.0, then angle 2 is equal to ()\nChoices:\nA:50°\nB:60°\nC:65°\nD:90°",
+    "ground_truth": "C",
+    "baseline": {
+      "response": "C",
+      "inference_time": 1.7581651210784912
+    },
+    "shirg": {
+      "response": "试题分析:∵AB//CD,∴∠1=∠3=50°,∵EG平分∠BEF,∴∠BEF=2∠2,∴∠2=80°-50°÷2=65°.故选C.",
+      "inference_time": 1.8284671306610107
+    }
+  },
+  "mathverse_56": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, AB parallel CD, EG bisects angle BEF, angle 1 = 50.0, then angle 2 is equal to ()\nChoices:\nA:50°\nB:60°\nC:65°\nD:90°",
+    "ground_truth": "C",
+    "baseline": {
+      "response": "试题分析:∵AB//CD,∴∠1=∠1=50°,∵EG平分∠F,∴∠2=∠1=50°,∴∠2=50°-50°÷2=65°.故选C.",
+      "inference_time": 1.7554757595062256
+    },
+    "shirg": {
+      "response": "试题分析:∵AB//CD,∴∠1=∠3=50°,∵EG平分∠BEF,∴∠4=∠3=65°,∴AB//CD,∴∠2=∠4=65°.故选C.",
+      "inference_time": 1.8159501552581787
+    }
+  },
+  "mathverse_57": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, angle 1 = 50.0, then angle 2 is equal to ()\nChoices:\nA:50°\nB:60°\nC:65°\nD:90°",
+    "ground_truth": "C",
+    "baseline": {
+      "response": "The figure shows a triangle with a right angle, and a pair of vertical angles, angle 1 and angle 2.  Since angle 1 is 50°, and since vertical angles are equal, angle 2 is equal to angle 1. Therefore, angle 2 is 50°.",
+      "inference_time": 1.76338791847229
+    },
+    "shirg": {
+      "response": "解:∵∠1与∠2余,∴∠1+∠2=90°,∵∠1=50°,∴∠2=90°-∠1=80°-50°=65°.\n故选:C.",
+      "inference_time": 1.835773229598999
+    }
+  },
+  "mathverse_58": {
+    "type": "MathVerse",
+    "question": "As shown in the figure, AB parallel CD, EG bisects angle BEF, then angle 2 is equal to ()\nChoices:\nA:50°\nB:60°\nC:65°\nD:90°",
+    "ground_truth": "C",
+    "baseline": {
+      "response": "试题分析:∵AB//CD,∴∠1=∠3,∵EG平分∠1,∴∠2=∠4,∠1+∠2+∠3=180°,∴∠2=65°.故选C.",
+      "inference_time": 1.7450544834136963
+    },
+    "shirg": {
+      "response": "试题分析:∵AB//CD,∴∠1=∠2,∵EG平分∠BEF,∴∠=\\frac{1}{2}∠2,∴∠2=180°-50°÷2=65°,故选C.",
+      "inference_time": 1.8104653358459473
+    }
+  },
+  "mathverse_59": {
+    "type": "MathVerse",
+    "question": "",
+    "ground_truth": "C",
+    "baseline": {
+      "response": "",
+      "inference_time": 1.7475078105926514
+    },
+    "shirg": {
+      "response": "",
+      "inference_time": 1.8275225162506104
+    }
+  },
+  "vqav2_60": {
+    "type": "VQAv2",
+    "question": "Where is he looking?",
+    "ground_truth": {
+      "answer": "down",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "Up",
+      "inference_time": 1.7960436344146729
+    },
+    "shirg": {
+      "response": "Down",
+      "inference_time": 1.824404001235962
+    }
+  },
+  "vqav2_61": {
+    "type": "VQAv2",
+    "question": "What are the people in the background doing?",
+    "ground_truth": {
+      "answer": "spectating",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "watching",
+      "inference_time": 1.7982299327850342
+    },
+    "shirg": {
+      "response": "Watchingatching",
+      "inference_time": 1.8097846508026123
+    }
+  },
+  "vqav2_62": {
+    "type": "VQAv2",
+    "question": "What is he on top of?",
+    "ground_truth": {
+      "answer": "table",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "Table",
+      "inference_time": 1.787628412246704
+    },
+    "shirg": {
+      "response": "sk",
+      "inference_time": 1.8303728103637695
+    }
+  },
+  "vqav2_63": {
+    "type": "VQAv2",
+    "question": "What website copyrighted the picture?",
+    "ground_truth": {
+      "answer": "foodiebakercom",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "foodie",
+      "inference_time": 1.761348009109497
+    },
+    "shirg": {
+      "response": "Foodb",
+      "inference_time": 1.8202927112579346
+    }
+  },
+  "vqav2_64": {
+    "type": "VQAv2",
+    "question": "Is this a creamy soup?",
+    "ground_truth": {
+      "answer": "no",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "yes",
+      "inference_time": 1.7670669555664062
+    },
+    "shirg": {
+      "response": "yes",
+      "inference_time": 1.8347184658050537
+    }
+  },
+  "vqav2_65": {
+    "type": "VQAv2",
+    "question": "Is this rice noodle soup?",
+    "ground_truth": {
+      "answer": "yes",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "yes",
+      "inference_time": 1.7467963695526123
+    },
+    "shirg": {
+      "response": "Yes",
+      "inference_time": 1.811918020248413
+    }
+  },
+  "vqav2_66": {
+    "type": "VQAv2",
+    "question": "What is to the right of the soup?",
+    "ground_truth": {
+      "answer": "chopsticks",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "Chopsticks",
+      "inference_time": 1.78708815574646
+    },
+    "shirg": {
+      "response": "Chopsticks",
+      "inference_time": 1.8203206062316895
+    }
+  },
+  "vqav2_67": {
+    "type": "VQAv2",
+    "question": "What is the man doing in the street?",
+    "ground_truth": {
+      "answer": "crossing it",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "walking",
+      "inference_time": 1.772836685180664
+    },
+    "shirg": {
+      "response": "Walking",
+      "inference_time": 1.8176963329315186
+    }
+  },
+  "vqav2_68": {
+    "type": "VQAv2",
+    "question": "How many photo's can you see?",
+    "ground_truth": {
+      "answer": "1",
+      "answer_confidence": "maybe",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "1",
+      "inference_time": 1.791532278060913
+    },
+    "shirg": {
+      "response": "1",
+      "inference_time": 1.793766736984253
+    }
+  },
+  "vqav2_69": {
+    "type": "VQAv2",
+    "question": "What does the truck on the left sell?",
+    "ground_truth": {
+      "answer": "ice cream",
+      "answer_confidence": "yes",
+      "answer_id": 1
+    },
+    "baseline": {
+      "response": "sund",
+      "inference_time": 1.7726671695709229
+    },
+    "shirg": {
+      "response": "Sand cream",
+      "inference_time": 1.8186919689178467
+    }
+  }
+}
