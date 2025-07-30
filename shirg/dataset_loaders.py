@@ -131,16 +131,27 @@ class DocVQADataset(Dataset):
             image_size: Target image size
             cache_dir: Directory to cache dataset
         """
+        # SHIRG-FIX: [2025-07-30] - Handle DocVQA split mapping
+        # ISSUE: lmms-lab/DocVQA only has validation and test splits, no train
+        # SOLUTION: For training, use TextVQA as alternative or skip DocVQA
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Training uses alternative datasets
+        if split == "train":
+            print("⚠️ DocVQA train split not available in lmms-lab/DocVQA")
+            print("   This dataset is evaluation-only. Using empty dataset for training.")
+            print("   Consider using TextVQA or ChartQA for training instead.")
+            self.data = []
+            self.split = split
+            self.image_size = image_size
+            self.cache_dir = cache_dir
+            return
+        
         self.split = split if split != "val" else "validation"
         self.image_size = image_size
         self.cache_dir = cache_dir
         
         try:
-            # SHIRG-FIX: [2025-07-30] - Fix DocVQA dataset loading
-            # ISSUE: DocVQA requires config name specification
-            # SOLUTION: Use 'DocVQA' config as required by the dataset
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: Enables proper DocVQA dataset loading
+            # Load DocVQA for validation/test only
             dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=self.split, cache_dir=cache_dir)
             self.data = dataset
             
@@ -321,6 +332,107 @@ class VQAv2Dataset(Dataset):
         }
 
 
+class TextVQADataset(Dataset):
+    """TextVQA dataset loader as alternative to DocVQA for training"""
+    
+    def __init__(
+        self,
+        split: str = "train",
+        max_samples: Optional[int] = None,
+        image_size: int = 672,
+        cache_dir: str = "./data/textvqa",
+    ):
+        """
+        Initialize TextVQA dataset
+        
+        Args:
+            split: Dataset split ('train', 'validation', 'test')
+            max_samples: Maximum number of samples to load
+            image_size: Target image size
+            cache_dir: Directory to cache dataset
+        """
+        self.split = split if split != "val" else "validation"
+        self.image_size = image_size
+        self.cache_dir = cache_dir
+        
+        try:
+            # SHIRG-FIX: [2025-07-30] - Add TextVQA as DocVQA alternative
+            # ISSUE: Need text-heavy dataset for training since DocVQA lacks train split
+            # SOLUTION: Use lmms-lab/textvqa which has proper train split
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: Provides text-reading samples for training
+            dataset = load_dataset("lmms-lab/textvqa", split=self.split, cache_dir=cache_dir)
+            self.data = dataset
+            
+            # Limit samples if requested
+            if max_samples and len(self.data) > max_samples:
+                indices = np.random.choice(len(self.data), max_samples, replace=False)
+                self.data = self.data.select(indices)
+                
+            print(f"✅ Loaded TextVQA {split} split: {len(self.data)} samples")
+            
+        except Exception as e:
+            print(f"❌ Failed to load TextVQA: {e}")
+            self.data = []
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        
+        # TextVQA format - similar handling to other datasets
+        image = item.get('image', None)
+        if image is None:
+            image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, str):
+            try:
+                image = Image.open(image).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, bytes):
+            import io
+            try:
+                image = Image.open(io.BytesIO(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, np.ndarray):
+            image = Image.fromarray(image).convert('RGB')
+        elif hasattr(image, 'convert'):
+            image = image.convert('RGB')
+        else:
+            try:
+                image = Image.fromarray(np.array(image)).convert('RGB')
+            except:
+                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        
+        # Resize to target size
+        image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)
+        
+        # Pad to square
+        if image.size != (self.image_size, self.image_size):
+            new_image = Image.new('RGB', (self.image_size, self.image_size), (255, 255, 255))
+            paste_x = (self.image_size - image.width) // 2
+            paste_y = (self.image_size - image.height) // 2
+            new_image.paste(image, (paste_x, paste_y))
+            image = new_image
+        
+        # TextVQA may have multiple answers
+        answers = item.get('answers', [])
+        if isinstance(answers, list) and len(answers) > 0:
+            answer = answers[0]  # Take first answer
+        else:
+            answer = str(answers) if answers else "unknown"
+        
+        return {
+            'image': image,
+            'question': item.get('question', 'What text is shown in this image?'),
+            'answer': answer,
+            'id': f"textvqa_{idx}",
+            'dataset': 'textvqa'
+        }
+
+
 class MixedVQADataset(Dataset):
     """Mixed dataset combining ChartQA, DocVQA, and VQA v2 with weighted sampling"""
     
@@ -343,13 +455,26 @@ class MixedVQADataset(Dataset):
         self.split = split
         self.image_size = image_size
         
-        # Default configuration from research
+        # SHIRG-FIX: [2025-07-30] - Adjust dataset weights for training
+        # ISSUE: DocVQA has no train split
+        # SOLUTION: For training, use ChartQA and VQAv2 with adjusted weights
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Training focuses on available datasets
         if dataset_configs is None:
-            dataset_configs = {
-                "chartqa": {"weight": 0.3, "max_samples": 10000},
-                "docvqa": {"weight": 0.3, "max_samples": 10000},
-                "vqa_v2": {"weight": 0.4, "max_samples": 10000},
-            }
+            if split == "train":
+                # For training, use TextVQA instead of DocVQA
+                dataset_configs = {
+                    "chartqa": {"weight": 0.3, "max_samples": 10000},
+                    "textvqa": {"weight": 0.3, "max_samples": 10000},  # TextVQA replaces DocVQA
+                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+                }
+            else:
+                # For validation/test, include all datasets
+                dataset_configs = {
+                    "chartqa": {"weight": 0.3, "max_samples": 10000},
+                    "docvqa": {"weight": 0.3, "max_samples": 10000},
+                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+                }
         
         self.datasets = {}
         self.weights = []
@@ -361,6 +486,7 @@ class MixedVQADataset(Dataset):
                 "chartqa": ChartQADataset,
                 "docvqa": DocVQADataset,
                 "vqa_v2": VQAv2Dataset,
+                "textvqa": TextVQADataset,  # Added TextVQA
             }.get(name)
             
             if dataset_class:
