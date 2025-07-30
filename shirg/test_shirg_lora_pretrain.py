@@ -1379,6 +1379,16 @@ class ShirgLoraPreTrainTest:
             print(f"   Setting up model...")
             trainer.setup_model()
             
+            # SHIRG-FIX: 2025-07-30 - Setup optimizer before training step
+            # ISSUE: test_training_step calls trainer.training_step without setting up optimizer
+            # SOLUTION: Call setup_optimizer_scheduler to initialize self.optimizer
+            # LAVIDA IMPACT: None - just test infrastructure
+            # SHIRG IMPACT: Allows training step test to complete successfully
+            print(f"   Setting up optimizer...")
+            # Estimate number of training steps (just 1 for test)
+            num_training_steps = 1
+            trainer.setup_optimizer_scheduler(num_training_steps)
+            
             # Create a single dummy sample
             from PIL import Image
             dummy_sample = {
