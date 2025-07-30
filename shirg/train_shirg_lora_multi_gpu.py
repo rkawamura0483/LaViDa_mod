@@ -239,11 +239,16 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                     self.model = self.model.cuda(local_rank)
                 
                 # Wrap with DDP
+                # SHIRG-FIX: 2025-07-30 - Set find_unused_parameters=False for LoRA training
+                # ISSUE: find_unused_parameters=True causes performance overhead
+                # SOLUTION: With LoRA, all parameters in forward pass are used
+                # LAVIDA IMPACT: Better training performance
+                # SHIRG IMPACT: Removes unnecessary autograd graph traversal
                 self.model = DDP(
                     self.model,
                     device_ids=[local_rank],
                     output_device=local_rank,
-                    find_unused_parameters=True,  # Required for LoRA
+                    find_unused_parameters=False,  # LoRA uses all params in forward
                 )
                 
                 rank0_print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")

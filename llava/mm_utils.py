@@ -422,11 +422,9 @@ def process_images(images, image_processor, model_cfg):
     # SHIRG-PREPROCESSING-DEBUG: 2025-07-30 - Debug SHIRG 2-view mode detection
     enable_shirg = getattr(model_cfg, "enable_shirg", False)
     shirg_3view_mode = getattr(model_cfg, "shirg_3view_mode", False)
-    print(f"SHIRG-PREPROCESS: enable_shirg={enable_shirg}, shirg_3view_mode={shirg_3view_mode}, aspect_ratio={image_aspect_ratio}")
     
     if enable_shirg and shirg_3view_mode:
         # SHIRG 2-view mode: process as 1 global + 1 foveal
-        print("SHIRG-PREPROCESS: Using SHIRG 2-view processing (2×448²)")
         for image in images:
             image = process_shirg_2view_image(image, image_processor)
             new_images.append(image)

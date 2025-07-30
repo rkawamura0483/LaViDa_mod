@@ -74,7 +74,6 @@ class SigLipShirgExtensions:
             if torch.is_tensor(pixel_values) and len(pixel_values.shape) == 4:
                 # Stacked tensor: [num_views, C, H, W]
                 if pixel_values.shape[0] == 2:  # Expected 2 views for SHIRG-Fovea
-                    rank0_print(f"SHIRG-1FOVEAL: Converting stacked tensor {pixel_values.shape} to list of 2 views")
                     pixel_values = [pixel_values[i] for i in range(2)]
                 else:
                     raise ValueError(f"SHIRG-Fovea expects 2 views, got tensor with {pixel_values.shape[0]} views")
@@ -89,12 +88,10 @@ class SigLipShirgExtensions:
                 B, num_views = pixel_values.shape[:2]
                 if num_views == 2:
                     if B == 1:
-                        rank0_print(f"SHIRG-1FOVEAL: Converting 5D tensor {pixel_values.shape} to list of 2 views")
                         pixel_values = pixel_values.squeeze(0)  # Remove batch dimension
                         pixel_values = [pixel_values[i] for i in range(2)]
                     else:
                         # Batch processing: process each item separately
-                        rank0_print(f"SHIRG-BATCH: Processing batch of {B} items with 2 views each")
                         batch_results = []
                         for b in range(B):
                             # Extract views for this batch item
@@ -109,10 +106,6 @@ class SigLipShirgExtensions:
             
             # Step 1: Extract multiview tokens (1 global + 1 foveal)
             global_pooled, foveal_features = self.extract_multiview_tokens(pixel_values)
-            
-            rank0_print(f"SHIRG-Fovea: Extracted multiview tokens")
-            rank0_print(f"   Global: {global_pooled.shape} (pooled from 448²)")
-            rank0_print(f"   Foveal: {len(foveal_features)} view × {foveal_features[0].shape if foveal_features else 'None'}")
             
             # Step 2: Per-view Top-K selection on foveal view
             # Adjusted keep rate to maintain ~980 total tokens with 2×2 global pooling
@@ -148,7 +141,7 @@ class SigLipShirgExtensions:
                                                 method=selection_method,
                                                 params=selection_params)
                 selected_foveal.append(selected)
-                rank0_print(f"   Foveal view: selected {selected.shape[1]} tokens from {actual_tokens} total ({K/actual_tokens*100:.1f}%)")
+
             
             # Step 3: Concatenate all tokens
             # Global (256) + Foveal (724) = 980 tokens total
@@ -160,8 +153,7 @@ class SigLipShirgExtensions:
             
             for view_idx, view_tokens in enumerate(all_views):
                 # Debug token values
-                rank0_print(f"SHIRG-DEBUG View {view_idx}: shape={view_tokens.shape}, "
-                           f"mean={view_tokens.mean().item():.4f}, std={view_tokens.std().item():.4f}")
+                
                 
                 # Ensure gradient flow for LoRA training
                 view_tokens = self.ensure_gradient_flow(view_tokens, sample_image)
@@ -177,13 +169,11 @@ class SigLipShirgExtensions:
             
             # Validate token count
             total_tokens = concatenated_tokens.shape[1]
-            rank0_print(f"SHIRG-Fovea: Final token count: {total_tokens}")
-            rank0_print(f"   Global tokens: {processed_views[0].shape[1]}")
-            rank0_print(f"   Foveal tokens per view: {processed_views[1].shape[1]}")
+            
             
             # CRITICAL: Ensure exactly 980 tokens for LaViDa compatibility
             if total_tokens != 980:
-                rank0_print(f"⚠️ WARNING: Token count {total_tokens} != 980. LaViDa may fail!")
+                
                 # Add emergency padding or truncation if needed
                 if total_tokens < 980:
                     # Pad with repeated last token
@@ -192,11 +182,11 @@ class SigLipShirgExtensions:
                     noise = torch.randn_like(last_token) * 1e-6
                     padding = last_token + noise
                     concatenated_tokens = torch.cat([concatenated_tokens, padding], dim=1)
-                    rank0_print(f"   Emergency padding: added {padding_needed} tokens")
+                    
                 elif total_tokens > 980:
                     # Truncate to 980 tokens
                     concatenated_tokens = concatenated_tokens[:, :980, :]
-                    rank0_print(f"   Emergency truncation: removed {total_tokens - 980} tokens")
+                    
                 
                 total_tokens = concatenated_tokens.shape[1]
             
@@ -210,18 +200,7 @@ class SigLipShirgExtensions:
             foveal_tokens = processed_views[1].shape[1]
             expected_total = global_tokens + foveal_tokens
             
-            if global_tokens == 256 and foveal_tokens == 724:
-                rank0_print(f"   Expected with 448² both views: 256 + 724 = 980 tokens")
-            else:
-                rank0_print(f"   Adaptive token count: {global_tokens} + {foveal_tokens} = {expected_total} tokens")
-            
-            if total_tokens == 980:
-                rank0_print(f"✅ SHIRG token count matches target: {total_tokens}")
-            elif total_tokens == expected_total:
-                rank0_print(f"✅ SHIRG token count matches expected: {total_tokens}")
-            else:
-                rank0_print(f"⚠️ SHIRG token count {total_tokens} != {expected_total} expected")
-            
+
             # FINAL ASSERTION: LaViDa requires exactly 980 tokens
             assert concatenated_tokens.shape[1] == 980, (
                 f"CRITICAL: LaViDa requires exactly 980 tokens, got {concatenated_tokens.shape[1]}. "
@@ -231,9 +210,6 @@ class SigLipShirgExtensions:
             return concatenated_tokens
             
         except Exception as e:
-            rank0_print(f"🚨 SHIRG forward failed: {e}")
-            import traceback
-            rank0_print(f"Traceback: {traceback.format_exc()}")
             
             # Fallback to baseline processing
             raise  # Re-raise to let encoder handle fallback
@@ -327,9 +303,7 @@ class SigLipShirgExtensions:
             ).permute(0, 2, 3, 1)  # [B, 16, 16, D]
             
             global_pooled = pooled_spatial.reshape(B, 256, D)
-            rank0_print(f"   SHIRG-Fovea: Global view 448² → {N} tokens → 2×2 pool → {global_pooled.shape[1]} tokens")
         else:
-            rank0_print(f"⚠️ SHIRG-Fovea: Expected 1024 tokens from global view, got {N}. Using adaptive pooling.")
             # Use adaptive pooling as fallback
             grid_size = int(math.sqrt(N))
             spatial_features = global_features.view(B, grid_size, grid_size, D)
@@ -382,19 +356,11 @@ class SigLipShirgExtensions:
         # LAVIDA IMPACT: Maintains compatibility with vision tower processing
         
         actual_tokens = view_features.shape[1]
-        if actual_tokens == 1024:  # 448² with patch_size=14 → 32×32
-            rank0_print(f"   SHIRG-Fovea: Processing 448² foveal view ({actual_tokens} tokens)")
-        elif actual_tokens == 729:  # 384² with patch_size=14 → 27×27 (fallback)
-            rank0_print(f"   SHIRG-Fovea: Processing 384² foveal view ({actual_tokens} tokens) - fallback resolution")
-        else:
-            rank0_print(f"⚠️ SHIRG-Fovea: Unexpected token count from foveal view: {actual_tokens}")
+        
         
         foveal_features.append(view_features)
         
         elapsed_time = (time.time() - start_time) * 1000
-        rank0_print(f"SHIRG-Fovea: Extracted multiview tokens in {elapsed_time:.1f}ms")
-        rank0_print(f"   Global: {global_pooled.shape} (2×2 pooled from 384²)")
-        rank0_print(f"   Foveal: {len(foveal_features)} view × {foveal_features[0].shape if foveal_features else 'None'}")
         
         return global_pooled, foveal_features
     
@@ -484,7 +450,7 @@ class SigLipShirgExtensions:
             
             # Generate random scores for each token
             combined_scores = torch.rand(B, N, device=view_tokens.device)
-            rank0_print(f"   Random selection: selecting {K} tokens randomly from {N} total")
+            
             
         elif method == 'base':
             combined_scores = 0.7 * attn_scores + 0.3 * sim_scores
@@ -495,7 +461,7 @@ class SigLipShirgExtensions:
             attn_std = attn_scores.std(dim=-1, keepdim=True)
             noise_mask = (attn_std <= τ).float()  # Keep low-std tokens
             combined_scores = (0.7 * attn_scores + 0.3 * sim_scores) * noise_mask
-            rank0_print(f"   Entropy filter: removed {(1-noise_mask.mean()).item()*100:.1f}% tokens")
+            
             
         elif method == 'edge':
             # Edge-aware scoring with edge prior

@@ -107,10 +107,6 @@ class LaViDaModelRunner:
         print("🔧 BASELINE-CRITICAL: Enabled LaViDa pooling (3,645→980 tokens) via NOT_ALWASY_DO_2DPOOL=0")
         
         try:
-            # Explicitly load without SHIRG modifications
-            print(f"   📂 Model path: {self.pretrained_path}")
-            print(f"   🏷️ Model name: {self.model_name}")
-            print(f"   🔧 Conv template: {self.conv_template_name}")
             
             # COMPREHENSIVE-DEBUG: 2025-07-29 - Add detailed model loading diagnostics
             # ISSUE: Need to track exactly where model loading fails for better debugging
@@ -623,8 +619,6 @@ class LaViDaModelRunner:
                         self.shirg_tower.config.enable_shirg = True
                         # Ensure SHIRG uses proper high-resolution configuration
                         self.shirg_tower.shirg_enabled = True
-                        print(f"   🔍 SHIRG enabled on vision tower")
-                        print(f"   🔍 SHIRG configuration: enable_shirg={getattr(self.shirg_tower.config, 'enable_shirg', False)}")
                     else:
                         print(f"   ⚠️ Vision tower has no config attribute - SHIRG mode may not work properly")
                     
@@ -675,10 +669,6 @@ class LaViDaModelRunner:
                     # This would require integrating with PEFT library
                     print(f"   ⚠️ LoRA loading not yet implemented - model using base weights")
                     break
-        
-        if not lora_found:
-            print(f"   📋 No LoRA weights found, using base model weights")
-            print(f"   📋 Continuing without LoRA weights")
     
     # DEPRECATED: _resize_for_shirg removed - SHIRG-Fovea uses anyres 5-view processing
     
@@ -702,28 +692,20 @@ class LaViDaModelRunner:
             
             # Check for None/invalid image
             if image is None:
-                print(f"   ❌ Sample {sample_id}: Image is None")
                 return None
             
             # Handle PIL Images (most common case)
             if isinstance(image, Image.Image):
                 # Ensure RGB mode for proper channel dimension inference
-                if image.mode != 'RGB':
-                    print(f"   🔄 Sample {sample_id}: Converting {image.mode} to RGB")
-                    image = image.convert('RGB')
+
                 
                 # Validate image has valid dimensions
                 width, height = image.size
-                if width == 0 or height == 0:
-                    print(f"   ❌ Sample {sample_id}: Invalid image dimensions {width}x{height}")
-                    return None
                 
-                print(f"   ✅ Sample {sample_id}: Valid PIL Image {width}x{height} in {image.mode} mode")
                 return image
             
             # Handle numpy arrays
             elif isinstance(image, np.ndarray):
-                print(f"   🔄 Sample {sample_id}: Converting numpy array to PIL Image")
                 
                 # Handle different numpy array formats
                 if image.ndim == 2:
@@ -810,9 +792,7 @@ class LaViDaModelRunner:
             try:
                 # Use exact same pattern as original predict.py
                 conv_template_name = "llada"  # Exact same as original
-                
-                print(f"   📝 Using LaViDa conversation template: {conv_template_name}")
-                print(f"   📝 Prompt style: {self.prompt_style}")
+            
                 
                 # Build question based on prompt style and dataset
                 if self.prompt_style == 'extractive' and dataset_type:
@@ -1284,15 +1264,6 @@ class LaViDaModelRunner:
                 # RESEARCH IMPACT: Identifies why SHIRG produces empty outputs
                 # LAVIDA IMPACT: Ensures SHIRG uses proper LaViDa generation
                 
-                print(f"   🔍 SHIRG generation inputs:")
-                print(f"      - input_ids: {input_ids.shape}")
-                print(f"      - images type: {type(images_for_generate)}")
-                if isinstance(images_for_generate, list):
-                    print(f"      - images list len: {len(images_for_generate)}")
-                elif hasattr(images_for_generate, 'shape'):
-                    print(f"      - images shape: {images_for_generate.shape}")
-                print(f"      - image_sizes: {image_sizes}")
-                
                 # Get dataset-specific generation parameters
                 gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
                 
@@ -1310,7 +1281,6 @@ class LaViDaModelRunner:
                 while max_tokens % block_length != 0 and block_length > 1:
                     block_length = block_length // 2
                 
-                print(f"   🔧 Using max_new_tokens={max_tokens}, block_length={block_length}")
                 
                 result = self.shirg_model.generate(
                     input_ids,
@@ -1331,31 +1301,16 @@ class LaViDaModelRunner:
                 if isinstance(result, tuple) and len(result) == 2:
                     cont, hist = result
                     output_ids = cont
-                    print(f"   🔍 SHIRG generation result type: tuple")
-                    print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
-                    # SHIRG-DECODE-DEBUG: 2025-07-29 - Enhanced debugging for empty outputs
-                    # ISSUE: SHIRG generates 64 tokens but they decode to empty string
-                    # SOLUTION: Add detailed logging of token IDs to diagnose the issue
-                    # RESEARCH IMPACT: Helps identify why SHIRG produces empty responses
-                    # LAVIDA IMPACT: Ensures SHIRG can generate meaningful outputs like baseline
-                    
-                    print(f"   🔍 Output IDs first 20 tokens: {output_ids[0, :20] if output_ids.shape[0] > 0 else 'No tokens'}")
-                    print(f"   🔍 Output IDs unique values: {torch.unique(output_ids).tolist() if output_ids.numel() < 100 else 'Too many unique values'}")
                     
                     # Check for common special tokens
                     if hasattr(self.shirg_tokenizer, 'pad_token_id'):
                         pad_count = (output_ids == self.shirg_tokenizer.pad_token_id).sum().item()
-                        print(f"   🔍 Pad token count: {pad_count}/{output_ids.numel()}")
                     if hasattr(self.shirg_tokenizer, 'eos_token_id'):
                         eos_count = (output_ids == self.shirg_tokenizer.eos_token_id).sum().item()
-                        print(f"   🔍 EOS token count: {eos_count}")
                 else:
                     # Fallback if only single value returned
                     output_ids = result
                     hist = None
-                    print(f"   🔍 SHIRG generation result type: {type(result)}")
-                    print(f"   🔍 Output IDs shape: {output_ids.shape if hasattr(output_ids, 'shape') else 'No shape'}")
-                    print(f"   🔍 Output IDs first 20 tokens: {output_ids[0, :20] if hasattr(output_ids, 'shape') and output_ids.shape[0] > 0 else 'No tokens'}")
             
             # SHIRG-DECODE-FIX: 2025-07-29 - Use same LaViDa decoding as baseline
             # ISSUE: SHIRG must use identical decoding method as baseline for fair comparison
@@ -1365,12 +1320,9 @@ class LaViDaModelRunner:
             
             # Decode SHIRG response (same as baseline)
             text_outputs = self.shirg_tokenizer.batch_decode(output_ids, skip_special_tokens=True)
-            print(f"   🔍 SHIRG decoded text outputs (raw): {text_outputs}")
             # Clean up LaViDa-specific artifacts
             text_outputs = [text_output.lstrip('!') for text_output in text_outputs]
-            print(f"   🔍 SHIRG decoded text outputs (cleaned): {text_outputs}")
             response = text_outputs[0] if text_outputs else ""
-            print(f"   🔍 SHIRG final response: '{response}'")
             
             # Calculate tokens for analysis
             response_tokens = self.shirg_tokenizer.encode(response, return_tensors='pt')[0]
@@ -1420,11 +1372,6 @@ class LaViDaModelRunner:
             actual_tokens = vision_info.get('num_tokens', 'unknown')
             shirg_enabled = vision_info.get('shirg_enabled', False)
             
-            print(f"   📊 SHIRG: Image tensor {image_tensor.shape} → {actual_tokens} tokens (SHIRG: {'on' if shirg_enabled else 'off'})")
-            if selection_metadata.get('input_tokens'):
-                print(f"   🎯 Selection: {selection_metadata.get('input_tokens', '?')} → {actual_tokens} tokens")
-            print(f"   💬 Response: {len(response)} chars, ⏱️ {inference_time:.2f}s")
-            
             return {
                 'response': response,
                 'tokens_used': len(response_ids) if hasattr(response_ids, '__len__') else 0,
@@ -1451,23 +1398,9 @@ class LaViDaModelRunner:
                 'traceback': traceback.format_exc(),
                 'phase': 'shirg_inference'
             }
+
             
-            print(f"   📋 Error details:")
-            print(f"      Error type: {error_details['error_type']}")
-            print(f"      Error message: {error_details['error_message']}")
-            print(f"   📋 Full traceback:")
-            print(error_details['traceback'])
-            
-            # Log context information
-            print(f"   📋 Context at error:")
-            print(f"      Image tensor type: {type(image_tensor) if 'image_tensor' in locals() else 'Not created'}")
-            if 'image_tensor' in locals() and hasattr(image_tensor, 'shape'):
-                print(f"      Image tensor shape: {image_tensor.shape}")
-            if 'images_for_generate' in locals():
-                print(f"      Images for generate type: {type(images_for_generate)}")
-                if isinstance(images_for_generate, list):
-                    print(f"      Images list length: {len(images_for_generate)}")
-            
+
             return {
                 'response': f"Error during SHIRG inference: {str(e)[:200]}...",
                 'tokens_used': 0,
@@ -1526,9 +1459,6 @@ class LaViDaModelRunner:
                 if hasattr(self.shirg_tower, 'extract_dual_scale_tokens'):
                     # SHIRG-enabled tower
                     try:
-                        print(f"   📋 SHIRG metadata: Calling extract_dual_scale_tokens")
-                        print(f"      Image tensor shape: {image_tensor.shape}")
-                        print(f"      Image tensor dtype: {image_tensor.dtype}")
                         
                         features, scaffold = self.shirg_tower.extract_dual_scale_tokens(image_tensor)
                         

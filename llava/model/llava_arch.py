@@ -210,7 +210,6 @@ class LlavaMetaForCausalLM(ABC):
         
         if num_tokens != expected_tokens:
             # This is likely SHIRG output - return as-is without pooling
-            print(f"SHIRG-POOLING-BYPASS: Detected non-grid tokens ({num_tokens} != {expected_tokens}), skipping pooling")
             return image_feature
         
         # Standard LaViDa pooling for grid-based tokens
@@ -241,7 +240,6 @@ class LlavaMetaForCausalLM(ABC):
         # Vision tower output: [5, 729, 1152] for multi-view, [1, 729, 1152] for single-view
         # Pooler should reduce: [5, 729, 1152] → [5, 196, hidden_size] → [1, 980, hidden_size]
         if hasattr(image_features, 'shape'):
-            print(f"MM_PROJECTOR-DEBUG: Vision tower output: {image_features.shape}")
             pre_projector_shape = image_features.shape
         
         # POOLER-DEBUG-FIX: 2025-07-29 - Add debug info about projector type
@@ -250,28 +248,17 @@ class LlavaMetaForCausalLM(ABC):
         # LAVIDA IMPACT: Helps diagnose why pooling is not being applied correctly
         # RESEARCH IMPACT: Ensures baseline LaViDa works correctly for SHIRG comparison
         mm_projector = self.get_model().mm_projector
-        print(f"MM_PROJECTOR-DEBUG: Projector type: {type(mm_projector).__name__}")
-        if hasattr(mm_projector, 'config'):
-            print(f"MM_PROJECTOR-DEBUG: Projector config: {mm_projector.config}")
-        if hasattr(self.get_model().config, 'mm_projector_type'):
-            print(f"MM_PROJECTOR-DEBUG: Config mm_projector_type: {self.get_model().config.mm_projector_type}")
-        if hasattr(self.get_model().config, 'mm_pooler_ratio'):
-            print(f"MM_PROJECTOR-DEBUG: Config mm_pooler_ratio: {self.get_model().config.mm_pooler_ratio}")
         
         # mage_features = self.get_model().vision_resampler(image_features, images=images)
         image_features = mm_projector(image_features)
         
         # LAVIDA-PAPER-FIX: Verify pooler projector worked correctly
         if hasattr(image_features, 'shape'):
-            print(f"MM_PROJECTOR-DEBUG: After projector: {image_features.shape}")
             # SHIRG-PROJECTOR-DEBUG: 2025-07-29 - Debug projected token values
             # ISSUE: Need to verify token quality after projection
             # SOLUTION: Log statistics of projected tokens
             # RESEARCH IMPACT: Identifies if projection causes empty outputs
             # LAVIDA IMPACT: Ensures SHIRG tokens are properly projected
-            print(f"MM_PROJECTOR-DEBUG: Token stats - mean={image_features.mean().item():.4f}, "
-                  f"std={image_features.std().item():.4f}, "
-                  f"min={image_features.min().item():.4f}, max={image_features.max().item():.4f}")
             post_projector_shape = image_features.shape
             
             # Check if pooling occurred correctly
@@ -287,31 +274,9 @@ class LlavaMetaForCausalLM(ABC):
                 # SHIRG IMPACT: Provides proper feedback for SHIRG token selection results
                 
                 # Check if this looks like SHIRG output (varying token counts)
-                if pre_views == 5 and pre_tokens_per_view != 729:
-                    # Likely SHIRG - log the actual structure
-                    print(f"✅ SHIRG-MULTIVIEW: Detected SHIRG token structure")
-                    print(f"   Pre-projector shape: {pre_projector_shape}")
-                    print(f"   Post-projector shape: {post_projector_shape}")
-                elif pre_tokens_per_view == 729:
-                    # BASELINE-FIX: LaViDa doesn't pool by default - keeps all 729 tokens
-                    if post_tokens_per_view == 729:
-                        print(f"✅ BASELINE-CORRECT: LaViDa maintains full token count (no pooling)")
-                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
-                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
-                    elif post_tokens_per_view == 196:
-                        print(f"✅ POOLER-CORRECT: Multi-view 2×2 pooling applied!")
-                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
-                        print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
-                    else:
-                        print(f"⚠️ UNEXPECTED: Different token reduction")
-                        print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
-                else:
-                    # Other token counts
-                    print(f"MM_PROJECTOR-DEBUG: Processing {pre_tokens_per_view} tokens per view")
-                    print(f"   {pre_views} views: {pre_tokens_per_view}→{post_tokens_per_view} tokens per view")
-                    print(f"   Total tokens: {pre_views * pre_tokens_per_view}→{post_views * post_tokens_per_view}")
+
             else:
-                print(f"MM_PROJECTOR-DEBUG: Shape change: {pre_projector_shape} → {post_projector_shape}")
+                pass
         
         return image_features
     
@@ -486,18 +451,13 @@ class LlavaMetaForCausalLM(ABC):
                 
                 if actual_images == 1 and total_tokens > 1000:
                     # SHIRG returned concatenated tokens as single view
-                    print(f"SHIRG-SPLIT-FIX: SHIRG returned concatenated tokens as single view")
-                    print(f"   Total SHIRG tokens: {total_tokens} (expected ~1508)")
                     # Keep as single view - don't split
                     encoded_image_features = [encoded_image_features]
                 elif actual_images == total_expected_images:
                     # SHIRG might be disabled or in fallback mode
-                    print(f"SHIRG-SPLIT-FIX: SHIRG in fallback mode, using normal split")
                     encoded_image_features = torch.split(encoded_image_features, split_sizes)
                 else:
                     # Unexpected format - try to handle gracefully
-                    print(f"WARNING: SHIRG output format unexpected - {actual_images} images")
-                    print(f"   Encoded shape: {encoded_image_features.shape}")
                     # Try to handle as list
                     if actual_images == 1:
                         encoded_image_features = [encoded_image_features]
@@ -520,15 +480,12 @@ class LlavaMetaForCausalLM(ABC):
             for idx, image_feat in enumerate(encoded_image_features):
                 # DEBUG: Log the pooling condition evaluation
                 in_video_batch = idx in video_idx_in_batch
-                print(f"POOLING-CONDITION idx={idx}: in_video_batch={in_video_batch}, ALWASY_DO_2DPOOL={ALWASY_DO_2DPOOL}")
-                print(f"POOLING-CONDITION idx={idx}: video_idx_in_batch={video_idx_in_batch}")
                 
                 # SHIRG-TOKEN-COUNT-DEBUG: 2025-07-29 - Debug token counts for each view
                 # ISSUE: Need to understand token distribution for SHIRG vs baseline
                 # SOLUTION: Log detailed token information for debugging
                 # RESEARCH IMPACT: Helps diagnose empty output issue
                 # LAVIDA IMPACT: Identifies token processing differences
-                print(f"   🔍 View {idx}: shape={image_feat.shape}, tokens={image_feat.shape[1] if len(image_feat.shape) > 1 else 'N/A'}")
                 
                 if idx in video_idx_in_batch or ALWASY_DO_2DPOOL:
                     # POOLING-FIX: 2025-07-29 - Improved pooling logic for baseline vs SHIRG models
@@ -549,10 +506,7 @@ class LlavaMetaForCausalLM(ABC):
                     model_has_shirg = (has_shirg_attr and shirg_enabled and has_config_shirg and config_shirg_enabled)
                     
                     # DEBUG: Print pooling decision details
-                    print(f"POOLING-DEBUG idx={idx}: has_shirg_attr={has_shirg_attr}, shirg_enabled={shirg_enabled}")
-                    print(f"POOLING-DEBUG idx={idx}: has_config_shirg={has_config_shirg}, config_shirg_enabled={config_shirg_enabled}")
-                    print(f"POOLING-DEBUG idx={idx}: model_has_shirg={model_has_shirg}, input_shape={image_feat.shape}")
-                    
+
                     if model_has_shirg:
                         # SHIRG-POOLING-BYPASS: 2025-07-29 - Skip pooling for SHIRG tokens
                         # ISSUE: SHIRG returns concatenated tokens that are already processed
@@ -560,31 +514,24 @@ class LlavaMetaForCausalLM(ABC):
                         # RESEARCH IMPACT: Preserves SHIRG's token selection (196 + 4×328 = 1508)
                         # LAVIDA IMPACT: SHIRG tokens skip LaViDa's 2x2 pooling
                         
-                        print(f"POOLING-DEBUG idx={idx}: SHIRG path - bypassing pooling")
                         
                         # Check token count to verify SHIRG output
                         num_tokens = image_feat.shape[1] if len(image_feat.shape) > 1 else 0
-                        if num_tokens > 1000:
-                            print(f"   View {idx}: SHIRG concatenated output ({num_tokens} tokens) - skipping pooling")
-                        elif num_tokens == 729:
-                            print(f"   View {idx}: Fallback to baseline (729 tokens) - will apply pooling")
+                        if num_tokens == 729:
                             # This is actually baseline fallback, apply pooling
                             pooled_feat = self.get_2dPool(image_feat)
-                            print(f"   After pooling: {pooled_feat.shape}")
                             image_features.append(pooled_feat)
                             continue
                         else:
-                            print(f"   View {idx}: Unexpected token count {num_tokens}")
+                            pass
                         
                         # SHIRG tokens bypass pooling - they're already processed
                         image_features.append(image_feat)
                     else:
                         # Standard LaViDa tokens need get_2dPool processing (384×384 → 729 → pooled)
                         pooled_feat = self.get_2dPool(image_feat)
-                        print(f"POOLING-DEBUG idx={idx}: LaViDa path - pooling applied, input_shape={image_feat.shape}, output_shape={pooled_feat.shape}")
                         image_features.append(pooled_feat)
                 else:
-                    print(f"POOLING-CONDITION idx={idx}: No pooling condition met - using original tokens, shape={image_feat.shape}")
                     image_features.append(image_feat)
             # image_features = self.encode_multimodals(concat_images, video_idx_in_batch, split_sizes)
             # rank_print(f"Encoded image feats : {[x.shape for x in image_features]}")
@@ -594,25 +541,9 @@ class LlavaMetaForCausalLM(ABC):
             image_aspect_ratio = getattr(self.config, "image_aspect_ratio", "square")
             mm_newline_position = getattr(self.config, "mm_newline_position", "one_token")
             # mm_patch_merge_type = 'spatial_unpad'
-            if DEBUG_PRINT_IMAGE_RES:
-                print(f"DEBUG_PRINT_IMAGE_RES: {image_aspect_ratio,mm_patch_merge_type,mm_newline_position}")
             if mm_patch_merge_type == "flat":
                 # SHIRG-FLATTEN-DEBUG: Debug flattening issue
-                print(f"SHIRG-FLATTEN-DEBUG: Before flattening:")
-                for idx, feat in enumerate(image_features):
-                    print(f"   Feature {idx}: shape = {feat.shape}")
                 image_features = [x.flatten(0, 1) for x in image_features]
-                print(f"SHIRG-FLATTEN-DEBUG: After flattening:")
-                for idx, feat in enumerate(image_features):
-                    print(f"   Feature {idx}: shape = {feat.shape}")
-                    # SHIRG-FLATTEN-VALUE-DEBUG: 2025-07-29 - Check token values after flatten
-                    # ISSUE: Need to verify if flatten operation affects token values
-                    # SOLUTION: Log token statistics after flattening
-                    # RESEARCH IMPACT: Identifies if flatten causes issues
-                    # LAVIDA IMPACT: Ensures proper token handling
-                    print(f"   Feature {idx} stats: mean={feat.mean().item():.4f}, "
-                          f"std={feat.std().item():.4f}, "
-                          f"min={feat.min().item():.4f}, max={feat.max().item():.4f}")
                 # print(len(image_features))
             elif mm_patch_merge_type.startswith("spatial"):
                 new_image_features = []
@@ -728,9 +659,6 @@ class LlavaMetaForCausalLM(ABC):
                                 base_image_feature = base_image_feature.to(image_feature.device)
                             image_feature = torch.cat((base_image_feature, image_feature), dim=0)
                         # DEBUG: Log shape after spatial_unpad processing
-                        print(f"SPATIAL-UNPAD-DEBUG: Multi-patch processed shape: {image_feature.shape}")
-                        print(f"   Base feature shape: {base_image_feature.shape}")
-                        print(f"   Total tokens after concat: {image_feature.shape[0]}")
                         new_image_features.append(image_feature)
                     else:  # single image operations
                         image_feature = image_feature[0]
@@ -745,7 +673,6 @@ class LlavaMetaForCausalLM(ABC):
                                 image_newline = image_newline.to(image_feature.device)
                             image_feature = torch.cat((image_feature, image_newline), dim=0)
                         # DEBUG: Log shape after single image processing
-                        print(f"SPATIAL-UNPAD-DEBUG: Single image processed shape: {image_feature.shape}")
                         new_image_features.append(image_feature)
                         
                 image_features = new_image_features
@@ -833,7 +760,6 @@ class LlavaMetaForCausalLM(ABC):
                 if i < num_images:
                     try:
                         cur_image_features = image_features[cur_image_idx]
-                        print(f"SHIRG-GENERATION-DEBUG: Inserting image {cur_image_idx} features: {cur_image_features.shape}")
                     except IndexError:
                         print(f"WARNING: Image index {cur_image_idx} out of bounds, using previous")
                         breakpoint()
@@ -843,21 +769,15 @@ class LlavaMetaForCausalLM(ABC):
                     # SHIRG-TOKEN-FIX: Ensure image features have batch dimension
                     if len(cur_image_features.shape) == 2:
                         # Add batch dimension if missing (happens after flatten)
-                        print(f"   Adding batch dimension to image features")
                         cur_image_features = cur_image_features
                     
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
                     cur_input_ids.append(torch.full((cur_image_features.shape[0],), IMAGE_TOKEN_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
-                    print(f"   Image features inserted: {cur_image_features.shape[0]} tokens")
                     # SHIRG-INSERT-DEBUG: 2025-07-29 - Debug token values at insertion
                     # ISSUE: Need to verify token quality when inserted into sequence
                     # SOLUTION: Log statistics of inserted tokens
                     # RESEARCH IMPACT: Identifies if insertion causes issues
-                    # LAVIDA IMPACT: Ensures proper token handling in sequence
-                    print(f"   Inserted token stats: mean={cur_image_features.mean().item():.4f}, "
-                          f"std={cur_image_features.std().item():.4f}, "
-                          f"min={cur_image_features.min().item():.4f}, max={cur_image_features.max().item():.4f}")
                     
                     # SHIRG-CRITICAL-DEBUG: 2025-07-29 - Check if SHIRG tokens differ from baseline
                     # ISSUE: SHIRG produces empty outputs while baseline works
@@ -865,20 +785,13 @@ class LlavaMetaForCausalLM(ABC):
                     # RESEARCH IMPACT: Identifies why SHIRG tokens don't generate text
                     # LAVIDA IMPACT: Ensures both baseline and SHIRG work correctly
                     if cur_image_features.shape[0] > 1000:
-                        print(f"   🔍 SHIRG MODE DETECTED: {cur_image_features.shape[0]} tokens (expected ~1508)")
                         # Check for any anomalies in SHIRG tokens
                         nan_count = torch.isnan(cur_image_features).sum().item()
                         inf_count = torch.isinf(cur_image_features).sum().item()
                         zero_count = (cur_image_features == 0).all(dim=-1).sum().item()
-                        print(f"   Token health: NaN={nan_count}, Inf={inf_count}, All-zero={zero_count}")
                         
                         # Check token magnitude distribution
                         token_norms = torch.norm(cur_image_features, dim=-1)
-                        print(f"   Token norms: mean={token_norms.mean().item():.4f}, "
-                              f"std={token_norms.std().item():.4f}, "
-                              f"min={token_norms.min().item():.4f}, max={token_norms.max().item():.4f}")
-                    else:
-                        print(f"   BASELINE MODE: {cur_image_features.shape[0]} tokens")
             cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
 
             # import pdb; pdb.set_trace()
@@ -896,20 +809,10 @@ class LlavaMetaForCausalLM(ABC):
             text_token_positions = torch.where(cur_new_labels != IGNORE_INDEX)[0].cpu().tolist()
             image_token_start_positions = torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].cpu().tolist()
             
-            print(f"SHIRG-SEQUENCE-DEBUG: Sequence composition for batch {batch_idx}:")
-            print(f"   Total embeddings: {cur_new_input_embeds.shape}")
-            print(f"   Text token positions: {text_token_positions[:20]}..." if text_token_positions else "   No text tokens found")
-            print(f"   Image token start positions: {image_token_start_positions[:5]}..." if image_token_start_positions else "   No image tokens found")
-            print(f"   Label distribution: IGNORE={(cur_new_labels == IGNORE_INDEX).sum()}, others={cur_new_labels.shape[0] - (cur_new_labels == IGNORE_INDEX).sum()}")
-            
+
             # Check embedding values at boundaries
             if image_token_start_positions:
                 idx = image_token_start_positions[0]
-                if idx > 0:
-                    print(f"   Embedding before image: mean={cur_new_input_embeds[idx-1].mean():.4f}")
-                print(f"   First image embedding: mean={cur_new_input_embeds[idx].mean():.4f}")
-                if idx + 1509 < cur_new_input_embeds.shape[0]:
-                    print(f"   Embedding after image: mean={cur_new_input_embeds[idx+1509].mean():.4f}")
 
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
@@ -920,11 +823,6 @@ class LlavaMetaForCausalLM(ABC):
         # rank_print("Finishing Inserting")
         
         # SHIRG-LENGTH-DEBUG: Debug sequence length issues
-        print(f"SHIRG-LENGTH-DEBUG: tokenizer_model_max_length = {tokenizer_model_max_length}")
-        for idx, (embed, modality) in enumerate(zip(new_input_embeds, modalities)):
-            print(f"   Sequence {idx}: length={embed.shape[0]}, modality={modality}")
-            if tokenizer_model_max_length and embed.shape[0] > tokenizer_model_max_length:
-                print(f"   WARNING: Sequence {idx} will be truncated from {embed.shape[0]} to {tokenizer_model_max_length}")
 
         new_input_embeds = [x[:tokenizer_model_max_length] for x, modality in zip(new_input_embeds, modalities)]
         new_labels = [x[:tokenizer_model_max_length] for x, modality in zip(new_labels, modalities)]
@@ -1004,16 +902,6 @@ class LlavaMetaForCausalLM(ABC):
         # rank0_print("Finish preparing")
         
         # SHIRG-GENERATION-DEBUG: Final embeddings check
-        if new_input_embeds is not None:
-            print(f"SHIRG-GENERATION-DEBUG: Final embeddings shape: {new_input_embeds.shape}")
-            print(f"   Total sequence length: {new_input_embeds.shape[1]}")
-            print(f"   Batch size: {new_input_embeds.shape[0]}")
-            # Check if embeddings contain reasonable values
-            if torch.isnan(new_input_embeds).any():
-                print("   WARNING: NaN values in embeddings!")
-            if torch.isinf(new_input_embeds).any():
-                print("   WARNING: Inf values in embeddings!")
-            print(f"   Embedding stats - min: {new_input_embeds.min():.4f}, max: {new_input_embeds.max():.4f}, mean: {new_input_embeds.mean():.4f}")
         
         if return_inputs:
             return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels,new_input_ids_padded
