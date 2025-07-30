@@ -6,7 +6,7 @@ Loads the official lmms-eval prompts and generation parameters for each dataset
 
 import os
 import yaml
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 class DatasetEvalConfig:
     """Loads and manages evaluation configurations for different datasets"""
