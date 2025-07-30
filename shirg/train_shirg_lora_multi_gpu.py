@@ -105,6 +105,10 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
         # Call parent method
         super().prepare_datasets()
         
+        # Initialize samplers to None (in case not distributed)
+        self.train_sampler = None
+        self.val_sampler = None
+        
         # Replace samplers with distributed versions
         if dist.is_initialized():
             # Training sampler
@@ -117,6 +121,7 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             )
             
             # Validation sampler (only if validation is enabled)
+            val_sampler = None
             if not self.skip_validation:
                 val_sampler = DistributedSampler(
                     self.val_dataset,
@@ -125,6 +130,14 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                     shuffle=False,
                     drop_last=False,
                 )
+            
+            # SHIRG-FIX: 2025-07-30 - Store samplers for epoch setting
+            # ISSUE: DistributedSampler needs set_epoch() called each epoch
+            # SOLUTION: Store sampler references to access in train() method
+            # LAVIDA IMPACT: Prevents NCCL timeout after epoch 1
+            # SHIRG IMPACT: Fixes 8-GPU training deadlock between epochs
+            self.train_sampler = train_sampler
+            self.val_sampler = val_sampler
             
             # Recreate dataloaders with distributed samplers
             from torch.utils.data import DataLoader
@@ -322,6 +335,120 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
         """Clean up distributed training"""
         if dist.is_initialized():
             dist.destroy_process_group()
+    
+    def train(self):
+        """Override train to properly set epoch on DistributedSampler"""
+        # SHIRG-FIX: 2025-07-30 - Set epoch on DistributedSampler for proper shuffling
+        # ISSUE: Without set_epoch(), different GPUs may get different data ordering
+        # SOLUTION: Override train() to set epoch before each training epoch
+        # LAVIDA IMPACT: Fixes NCCL timeout and ALLREDUCE deadlock after epoch 1
+        # SHIRG IMPACT: Enables stable multi-epoch training on 8 GPUs
+        
+        # Initialize accelerator and wandb if needed
+        if self.use_wandb and self.accelerator.is_main_process:
+            import wandb
+            wandb.init(
+                project="shirg-lora-training",
+                name=f"{self.config.selection_method}-{self.config.per_device_train_batch_size}bs",
+                config=self.config.to_dict(),
+            )
+        
+        # Prepare datasets and model
+        self.prepare_datasets()
+        self.setup_model()
+        
+        # Setup optimizer and scheduler
+        self.setup_optimizer()
+        
+        # Prepare with accelerator
+        # Check if we're in distributed mode with NO_DEVICE_MAP
+        if os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1':
+            # Don't let accelerator handle model when device_map is disabled
+            if not self.skip_validation:
+                self.train_dataloader, self.val_dataloader = \
+                    self.accelerator.prepare(self.train_dataloader, self.val_dataloader)
+            else:
+                self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
+            # Model and optimizer are already set up correctly
+            print("📍 Using manual device placement (SHIRG_NO_DEVICE_MAP=1)")
+        else:
+            # Standard accelerator preparation
+            if not self.skip_validation:
+                self.model, self.optimizer, self.train_dataloader, self.val_dataloader = \
+                    self.accelerator.prepare(
+                        self.model, self.optimizer, self.train_dataloader, self.val_dataloader
+                    )
+            else:
+                self.model, self.optimizer, self.train_dataloader = \
+                    self.accelerator.prepare(
+                        self.model, self.optimizer, self.train_dataloader
+                    )
+        
+        # Training loop with proper epoch setting
+        from tqdm import tqdm
+        import numpy as np
+        
+        for epoch in range(self.config.num_train_epochs):
+            self.current_epoch = epoch
+            print(f"\n📅 Epoch {epoch + 1}/{self.config.num_train_epochs}")
+            
+            # CRITICAL: Set epoch on distributed samplers
+            if dist.is_initialized() and hasattr(self, 'train_sampler'):
+                self.train_sampler.set_epoch(epoch)
+                rank0_print(f"✅ Set training sampler epoch to {epoch}")
+                
+                if self.val_sampler is not None:
+                    self.val_sampler.set_epoch(epoch)
+                    rank0_print(f"✅ Set validation sampler epoch to {epoch}")
+            
+            # Training
+            self.model.train()
+            train_metrics = []
+            
+            progress_bar = tqdm(
+                self.train_dataloader,
+                desc=f"Training Epoch {epoch + 1}",
+                disable=not self.accelerator.is_local_main_process,
+            )
+            
+            for step, batch in enumerate(progress_bar):
+                metrics = self.training_step(batch)
+                train_metrics.append(metrics)
+                
+                # Update progress bar
+                progress_bar.set_postfix({
+                    "loss": f"{metrics['loss']:.4f}",
+                    "lr": f"{metrics['learning_rate']:.2e}",
+                    "dropout": f"{metrics['dropout_rate']:.2f}",
+                })
+                
+                # Log metrics
+                if self.global_step % self.config.logging_steps == 0:
+                    self.log_metrics(metrics, prefix="train")
+                
+                # Save checkpoint
+                if self.global_step % self.config.save_steps == 0:
+                    self.save_checkpoint()
+                
+                # Evaluate
+                if not self.skip_validation and self.global_step % self.config.eval_steps == 0:
+                    self.evaluate()
+            
+            # End of epoch evaluation
+            if not self.skip_validation:
+                self.evaluate()
+            
+            # Save epoch checkpoint
+            self.save_checkpoint(is_epoch_end=True)
+        
+        print("✅ Training complete!")
+        
+        # Save final model
+        self.save_checkpoint(is_final=True)
+        
+        # Cleanup
+        if self.use_wandb and self.accelerator.is_main_process:
+            wandb.finish()
 
 
 def main():
