@@ -470,17 +470,18 @@ class SHIRGEvaluationPipeline:
             if col.endswith('_mean') or col.endswith('_std'):
                 continue
             
-            # Look for columns with pattern: dataset_name_metric
-            # Find the last underscore to split dataset name from metric
-            last_underscore = col.rfind('_')
-            if last_underscore > 0:
-                potential_dataset = col[:last_underscore]
-                potential_metric = col[last_underscore + 1:]
-                
-                # Check if this looks like a valid metric name
-                metric_names = ['relaxed_accuracy', 'exact_match', 'accuracy', 'anls', 'vqa_accuracy', 'token_f1']
-                if potential_metric in metric_names:
-                    dataset_metrics[potential_dataset][potential_metric] = col
+            # Parse dataset-specific columns
+            # These have format: Dataset_metric or Dataset-Name_metric
+            # Valid metrics we're looking for
+            metric_names = ['relaxed_accuracy', 'exact_match', 'accuracy', 'anls', 'vqa_accuracy', 'token_f1']
+            
+            # Try to match against each metric type
+            for metric in metric_names:
+                if col.endswith('_' + metric):
+                    # Extract dataset name by removing the metric suffix
+                    dataset_name = col[:-len('_' + metric)]
+                    dataset_metrics[dataset_name][metric] = col
+                    break
         
         # Check if we found any dataset-specific metrics
         if not dataset_metrics:
