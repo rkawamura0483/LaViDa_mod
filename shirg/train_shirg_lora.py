@@ -490,59 +490,66 @@ class ShirgLoraTrainer:
         """Prepare training and validation datasets"""
         print("📊 Preparing datasets...")
         
-        # Check if we should use real datasets
-        if self.data_dir and os.path.exists(self.data_dir):
-            print(f"🔍 Using real datasets from: {self.data_dir}")
-            from shirg.real_dataset_loader import RealVQADataset
-            
-            # Create real dataset loaders
-            self.train_dataset = RealVQADataset(
-                data_dir=self.data_dir,
-                split="train",
-                image_size=self.config.image_size,
-            )
-            
-            self.val_dataset = RealVQADataset(
-                data_dir=self.data_dir,
-                split="val",
-                image_size=self.config.image_size,
-                max_samples_per_dataset=1000,  # Smaller validation
-            )
-            
-            if len(self.train_dataset) == 0:
-                print("❌ No real training data found! Falling back to synthetic data...")
-                # Fall back to synthetic data
-                dataset_configs = {
-                    "chartqa": {"weight": 0.3, "max_samples": 10000},
-                    "docvqa": {"weight": 0.3, "max_samples": 10000},
-                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
-                }
-            else:
-                print(f"✅ Training samples: {len(self.train_dataset)}")
-                print(f"✅ Validation samples: {len(self.val_dataset)}")
-                return len(self.train_dataset)
-        
-        # SHIRG-FIX: [2025-07-30] - Remove synthetic data fallback completely
-        # ISSUE: Training was falling back to synthetic data when real data wasn't found
-        # SOLUTION: Fail properly and provide clear instructions for dataset setup
+        # SHIRG-FIX: [2025-07-30] - Use MixedVQADataset directly with proper paths
+        # ISSUE: RealVQADataset was causing confusion with paths
+        # SOLUTION: Use MixedVQADataset with correct data_dir for local data
         # LAVIDA IMPACT: None
-        # SHIRG IMPACT: Ensures training only uses real datasets
+        # SHIRG IMPACT: Properly loads datasets from the correct directory
         
-        print("\n❌ ERROR: No real datasets found for training!")
-        print("\n📚 Required datasets:")
-        print("   1. ChartQA - Available from HuggingFace (will auto-download)")
-        print("   2. VQA v2 - Run: python shirg/download_vqa_datasets.py --datasets vqa_v2")
-        print("   3. TextVQA, OCRVQA, InfoVQA - Available from HuggingFace (will auto-download)")
-        print("\n💡 To fix:")
-        print("   1. Ensure you have internet connection for HuggingFace downloads")
-        print("   2. Download VQA v2: python shirg/download_vqa_datasets.py --datasets vqa_v2")
-        print("   3. Set --data-dir if you have local dataset copies")
-        print("\n⚠️ Note: DocVQA doesn't have a train split, only validation/test")
+        # Default training configuration without DocVQA (no train split)
+        dataset_configs = {
+            "chartqa": {"weight": 0.20, "max_samples": 18000},
+            "textvqa": {"weight": 0.25, "max_samples": 35000},
+            "ocrvqa": {"weight": 0.35, "max_samples": 70000},
+            "infovqa": {"weight": 0.20, "max_samples": 24000},
+            "vqa_v2": {"weight": 0.40, "max_samples": 50000},
+        }
         
-        raise RuntimeError(
-            "No training data available. Please download required datasets first. "
-            "See instructions above."
+        # Create mixed datasets
+        self.train_dataset = MixedVQADataset(
+            split="train",
+            dataset_configs=dataset_configs,
+            image_size=self.config.image_size,
+            cache_dir=os.path.join(self.output_dir, "hf_cache"),  # HuggingFace cache
+            data_dir=self.data_dir,  # Local data directory
         )
+        
+        # Validation dataset with fewer samples
+        val_configs = {k: {"weight": v["weight"], "max_samples": 1000} 
+                      for k, v in dataset_configs.items()}
+        # Add DocVQA for validation only
+        val_configs["docvqa"] = {"weight": 0.20, "max_samples": 1000}
+        
+        self.val_dataset = MixedVQADataset(
+            split="validation",
+            dataset_configs=val_configs,
+            image_size=self.config.image_size,
+            cache_dir=os.path.join(self.output_dir, "hf_cache"),  # HuggingFace cache
+            data_dir=self.data_dir,  # Local data directory
+        )
+        
+        if len(self.train_dataset) == 0:
+            # SHIRG-FIX: [2025-07-30] - Remove synthetic data fallback completely
+            # ISSUE: Training was falling back to synthetic data when real data wasn't found
+            # SOLUTION: Fail properly and provide clear instructions for dataset setup
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: Ensures training only uses real datasets
+            
+            print("\n❌ ERROR: No real datasets found for training!")
+            print("\n📚 Required datasets:")
+            print("   1. ChartQA - Available from HuggingFace (will auto-download)")
+            print("   2. VQA v2 - Run: python shirg/download_vqa_datasets.py --datasets vqa_v2")
+            print("   3. TextVQA, OCRVQA, InfoVQA - Available from HuggingFace (will auto-download)")
+            print("\n💡 To fix:")
+            print("   1. Ensure you have internet connection for HuggingFace downloads")
+            print("   2. Download VQA v2: python shirg/download_vqa_datasets.py --datasets vqa_v2")
+            print("   3. Set --data-dir to your dataset directory (e.g., --data-dir ./data/vqa_datasets)")
+            print("\n⚠️ Note: DocVQA doesn't have a train split, only validation/test")
+            
+            raise RuntimeError(
+                "No training data available. Please download required datasets first. "
+                "See instructions above."
+            )
         
         print(f"✅ Training samples: {len(self.train_dataset)}")
         print(f"✅ Validation samples: {len(self.val_dataset)}")
