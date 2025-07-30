@@ -1026,19 +1026,34 @@ class LaViDaModelRunner:
                 # SOLUTION: Load generation parameters from dataset YAML configurations
                 # RESEARCH IMPACT: Ensures fair evaluation matching official benchmarks
                 # LAVIDA IMPACT: Uses exact same generation settings as paper evaluation
+                
+                # SHIRG-FIX: 2025-07-30 - Dynamic block_length calculation
+                # ISSUE: block_length must divide max_new_tokens evenly
+                # SOLUTION: Calculate block_length dynamically based on max_new_tokens
+                # LAVIDA IMPACT: Ensures generation works with different max_new_tokens values
+                # SHIRG IMPACT: Enables evaluation across all datasets
+                max_tokens = gen_kwargs.get('max_new_tokens', 32)
+                # Use block_length=32 for most cases, but ensure it divides max_new_tokens
+                block_length = min(32, max_tokens)
+                # Further ensure it divides evenly
+                while max_tokens % block_length != 0 and block_length > 1:
+                    block_length = block_length // 2
+                
+                print(f"   🔧 Using max_new_tokens={max_tokens}, block_length={block_length}")
+                
                 result = self.baseline_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
                     do_sample=gen_kwargs.get('do_sample', False),        # From dataset config or deterministic default
                     temperature=gen_kwargs.get('temperature', 0),        # From dataset config or 0 for greedy
-                    max_new_tokens=gen_kwargs.get('max_new_tokens', 32), # From dataset config or default 32
-                    block_length=64,        # LaViDa diffusion block size
-                    step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
-                    tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
-                    prefix_lm=True,         # LaViDa prefix caching
-                    verbose=True,           # Set to True to get (cont, hist) tuple
-                    schedule='shift'        # LaViDa diffusion schedule
+                    max_new_tokens=max_tokens,                           # From dataset config or default 32
+                    block_length=block_length,                           # Dynamic block size that divides max_new_tokens
+                    step_ratio=0.5,                                      # LaViDa diffusion steps (32 steps)
+                    tokenizer=self.baseline_tokenizer,                   # LaViDa requires tokenizer
+                    prefix_lm=True,                                      # LaViDa prefix caching
+                    verbose=True,                                        # Set to True to get (cont, hist) tuple
+                    schedule='shift'                                     # LaViDa diffusion schedule
                 )
                 
                 # Handle LaViDa return format - should now be (cont, hist) tuple
@@ -1282,19 +1297,34 @@ class LaViDaModelRunner:
                 gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
                 
                 # Use identical LaViDa generation parameters as baseline
+                
+                # SHIRG-FIX: 2025-07-30 - Dynamic block_length calculation
+                # ISSUE: block_length must divide max_new_tokens evenly
+                # SOLUTION: Calculate block_length dynamically based on max_new_tokens
+                # LAVIDA IMPACT: Ensures generation works with different max_new_tokens values
+                # SHIRG IMPACT: Enables evaluation across all datasets
+                max_tokens = gen_kwargs.get('max_new_tokens', 32)
+                # Use block_length=32 for most cases, but ensure it divides max_new_tokens
+                block_length = min(32, max_tokens)
+                # Further ensure it divides evenly
+                while max_tokens % block_length != 0 and block_length > 1:
+                    block_length = block_length // 2
+                
+                print(f"   🔧 Using max_new_tokens={max_tokens}, block_length={block_length}")
+                
                 result = self.shirg_model.generate(
                     input_ids,
                     images=images_for_generate,
                     image_sizes=image_sizes,
                     do_sample=gen_kwargs.get('do_sample', False),        # From dataset config or deterministic default
                     temperature=gen_kwargs.get('temperature', 0),        # From dataset config or 0 for greedy
-                    max_new_tokens=gen_kwargs.get('max_new_tokens', 32), # From dataset config or default 32
-                    block_length=64,     # LaViDa diffusion block size
-                    step_ratio=0.5,      # LaViDa diffusion steps
+                    max_new_tokens=max_tokens,                           # From dataset config or default 32
+                    block_length=block_length,                           # Dynamic block size that divides max_new_tokens
+                    step_ratio=0.5,                                      # LaViDa diffusion steps
                     tokenizer=self.shirg_tokenizer,
-                    prefix_lm=True,      # LaViDa prefix caching
-                    verbose=True,        # Set to True to get (cont, hist) tuple
-                    schedule='shift'     # LaViDa diffusion schedule
+                    prefix_lm=True,                                      # LaViDa prefix caching
+                    verbose=True,                                        # Set to True to get (cont, hist) tuple
+                    schedule='shift'                                     # LaViDa diffusion schedule
                 )
                 
                 # Handle LaViDa return format - should now be (cont, hist) tuple
