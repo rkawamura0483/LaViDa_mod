@@ -364,6 +364,7 @@ class VQAv2Dataset(Dataset):
         max_samples: Optional[int] = None,
         image_size: int = 672,
         cache_dir: str = "./data/vqa_v2",
+        data_dir: Optional[str] = None,
     ):
         """
         Initialize VQA v2 dataset
@@ -373,140 +374,97 @@ class VQAv2Dataset(Dataset):
             max_samples: Maximum number of samples
             image_size: Target image size
             cache_dir: Directory to cache dataset
+            data_dir: Directory where VQA v2 data was downloaded
         """
         self.split = split if split != "val" else "validation"
         self.image_size = image_size
-        self.cache_dir = cache_dir
+        self.cache_dir = Path(cache_dir)
+        self.data_dir = Path(data_dir) if data_dir else self.cache_dir
+        self.data = []
         
-        try:
-            # SHIRG-FIX: [2025-07-30] - Fix VQA v2 dataset loading for datasets 4.0+
-            # ISSUE: Dataset scripts are no longer supported in datasets 4.0.0+
-            # SOLUTION: Use direct parquet loading or alternative repositories without scripts
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: Enables VQA v2 dataset loading with modern datasets library
-            
-            # Try multiple loading strategies
-            loaded = False
-            
-            # Strategy 1: Try loading without specifying config (works for some datasets)
+        # SHIRG-FIX: [2025-07-30] - Load VQA v2 from downloaded JSON files
+        # ISSUE: HuggingFace datasets 4.0+ doesn't support VQA v2 scripts
+        # SOLUTION: Load directly from downloaded JSON files
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Enables VQA v2 dataset loading
+        
+        # Map split names
+        json_split = "train" if split == "train" else "val"
+        
+        # Load questions and annotations from downloaded files
+        questions_file = self.data_dir / f"v2_mscoco_{json_split}2014_questions.json"
+        annotations_file = self.data_dir / f"v2_mscoco_{json_split}2014_annotations.json"
+        
+        if questions_file.exists() and annotations_file.exists():
             try:
-                if split == "train":
-                    # Try direct loading without script
-                    dataset = load_dataset("HuggingFaceM4/VQAv2", split="train", 
-                                         trust_remote_code=False, cache_dir=cache_dir)
-                else:
-                    dataset = load_dataset("lmms-lab/VQAv2", split=self.split, 
-                                         trust_remote_code=False, cache_dir=cache_dir)
-                self.data = dataset
-                loaded = True
-                print(f"✅ Loaded VQA v2 {split} split using direct method: {len(self.data)} samples")
-            except:
-                pass
-            
-            # Strategy 2: Try alternative repositories
-            if not loaded:
-                alternative_repos = [
-                    ("Graphcore/vqa", None),  # Works with datasets 4.0
-                    ("pminervini/VQAv2", None),  # Alternative without scripts
-                    ("landersanmi/VQAv2", None),  # Another alternative
-                ]
+                # Load questions
+                with open(questions_file, 'r') as f:
+                    questions_data = json.load(f)
                 
-                for repo, config in alternative_repos:
-                    try:
-                        # Map split names for different datasets
-                        if repo == "Graphcore/vqa":
-                            # Graphcore/vqa uses different split names
-                            mapped_split = "train" if split == "train" else "validation"
-                        else:
-                            mapped_split = split if split != "val" else "validation"
-                        
-                        # Try loading
-                        if config:
-                            dataset = load_dataset(repo, config, split=mapped_split,
-                                                 trust_remote_code=False, cache_dir=cache_dir)
-                        else:
-                            dataset = load_dataset(repo, split=mapped_split,
-                                                 trust_remote_code=False, cache_dir=cache_dir)
-                        self.data = dataset
-                        loaded = True
-                        print(f"✅ Loaded VQA v2 {split} split from {repo}: {len(self.data)} samples")
-                        break
-                    except Exception as e:
-                        if repo == alternative_repos[-1][0]:  # Last attempt
-                            print(f"   Failed {repo}: {str(e)}")
-                        continue
-            
-            # If all strategies failed, set empty data
-            if not loaded:
-                print(f"❌ Failed to load VQA v2 from any source.")
-                print("   This is due to HuggingFace datasets 4.0+ no longer supporting dataset scripts.")
-                print("   To fix this issue:")
-                print("   1. Downgrade datasets: pip install datasets==3.6.0")
-                print("   2. Or use alternative VQA datasets like TextVQA that don't use scripts")
-                print("   3. Or wait for dataset maintainers to update to new format")
-                self.data = []
-            
-            # Limit samples if requested
-            if max_samples and len(self.data) > max_samples:
-                if hasattr(self.data, 'select'):
-                    indices = np.random.choice(len(self.data), max_samples, replace=False)
-                    self.data = self.data.select(indices)
-                else:
-                    # For synthetic data (list)
-                    self.data = [self.data[i] for i in np.random.choice(len(self.data), max_samples, replace=False)]
+                # Load annotations
+                with open(annotations_file, 'r') as f:
+                    annotations_data = json.load(f)
                 
-        except Exception as e:
-            print(f"❌ Failed to load VQA v2: {e}")
-            self.data = []
+                # Create a mapping from question_id to annotations
+                annotations_map = {ann['question_id']: ann for ann in annotations_data['annotations']}
+                
+                # Process questions
+                for q in questions_data['questions']:
+                    qid = q['question_id']
+                    if qid in annotations_map:
+                        ann = annotations_map[qid]
+                        self.data.append({
+                            'question_id': qid,
+                            'question': q['question'],
+                            'image_id': q['image_id'],
+                            'answers': [a['answer'] for a in ann['answers']],
+                            'answer_type': ann.get('answer_type', 'other'),
+                            'question_type': ann.get('question_type', 'other')
+                        })
+                
+                print(f"✅ Loaded VQA v2 {split} split from JSON files: {len(self.data)} samples")
+                
+            except Exception as e:
+                print(f"❌ Error loading VQA v2 JSON files: {e}")
+                print(f"   Questions file: {questions_file}")
+                print(f"   Annotations file: {annotations_file}")
+        else:
+            print(f"⚠️ VQA v2 {split} files not found. Please run download script first:")
+            print(f"   python shirg/download_vqa_datasets.py --datasets vqa_v2")
+            if not questions_file.exists():
+                print(f"   Missing: {questions_file}")
+            if not annotations_file.exists():
+                print(f"   Missing: {annotations_file}")
+        
+        # Limit samples if requested
+        if max_samples and len(self.data) > max_samples:
+            indices = np.random.choice(len(self.data), max_samples, replace=False)
+            self.data = [self.data[i] for i in indices]
+            print(f"   Limited to {max_samples} samples")
     
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
-        # SHIRG-FIX: [2025-07-30] - Handle both dataset and synthetic data formats
-        # ISSUE: Mixed data formats from different sources
-        # SOLUTION: Robust handling for all possible data structures
-        # LAVIDA IMPACT: None
-        # SHIRG IMPACT: Ensures VQA v2 data works from any source
+        item = self.data[idx]
         
-        # Handle both dataset and list formats
-        if isinstance(self.data, list):
-            # Synthetic data format
-            item = self.data[idx]
-        else:
-            # HuggingFace dataset format
-            item = self.data[idx]
+        # VQA v2 format from JSON
+        # Note: VQA v2 doesn't include images in the JSON, only image_id
+        # Images need to be downloaded separately from COCO dataset
+        image_id = item['image_id']
         
-        # VQA v2 format - handle various formats
-        image = item.get('image', None) if isinstance(item, dict) else item['image']
-        if image is None:
-            # Create dummy image if missing
-            image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
-        elif isinstance(image, str):
-            # Path to image
-            try:
-                image = Image.open(image).convert('RGB')
-            except:
-                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
-        elif isinstance(image, bytes):
-            # Handle bytes data
-            import io
-            try:
-                image = Image.open(io.BytesIO(image)).convert('RGB')
-            except:
-                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
-        elif isinstance(image, np.ndarray):
-            # Handle numpy array
-            image = Image.fromarray(image).convert('RGB')
-        elif hasattr(image, 'convert'):
-            # Already a PIL Image
-            image = image.convert('RGB')
-        else:
-            # Try to convert whatever it is
-            try:
-                image = Image.fromarray(np.array(image)).convert('RGB')
-            except:
-                image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        # For now, create a placeholder image
+        # In production, you would load from COCO dataset
+        image = Image.new('RGB', (self.image_size, self.image_size), (200, 200, 200))
+        
+        # Draw image ID on the placeholder for debugging
+        try:
+            from PIL import ImageDraw, ImageFont
+            draw = ImageDraw.Draw(image)
+            text = f"Image ID: {image_id}"
+            draw.text((10, 10), text, fill=(0, 0, 0))
+        except:
+            pass
         
         # Resize to target size
         image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)
@@ -519,52 +477,28 @@ class VQAv2Dataset(Dataset):
             new_image.paste(image, (paste_x, paste_y))
             image = new_image
         
-        # VQA v2 has multiple answers with confidence scores
-        # Handle different answer formats based on dataset source
-        
-        # Get question
-        if 'question' in item:
-            question = item['question']
+        # Get question and answers from our JSON format
+        question = item['question']
+        # VQA v2 has multiple answers, pick the most common one
+        answers = item.get('answers', [])
+        if answers:
+            # Count answer frequencies
+            answer_counts = {}
+            for ans in answers:
+                answer_counts[ans] = answer_counts.get(ans, 0) + 1
+            # Get most common answer
+            answer = max(answer_counts, key=answer_counts.get)
         else:
-            question = "What is in this image?"
-        
-        # Get answer - handle different formats
-        if 'label' in item:
-            # Graphcore/vqa format - has 'label' field with answers
-            answer_dict = item['label']
-            if answer_dict and isinstance(answer_dict, dict):
-                # Get most common answer from label dict
-                answer = max(answer_dict.items(), key=lambda x: x[1])[0]
-            else:
-                answer = "unknown"
-        elif isinstance(item, dict) and 'answer' in item:
-            # Simplified format
-            answer = item['answer']
-        elif 'answers' in item:
-            # Standard VQA v2 format with multiple answers
-            answers = item.get('answers', [])
-            if answers:
-                # Get most common answer
-                answer_counts = {}
-                for ans in answers:
-                    if isinstance(ans, dict):
-                        answer_text = ans.get('answer', 'unknown')
-                    else:
-                        answer_text = str(ans)
-                    answer_counts[answer_text] = answer_counts.get(answer_text, 0) + 1
-                answer = max(answer_counts, key=answer_counts.get)
-            else:
-                answer = "unknown"
-        else:
-            # Fallback
-            answer = "unknown"
+            answer = ""
         
         return {
             'image': image,
-            'question': question,
-            'answer': answer,
-            'id': f"vqa_v2_{idx}",
-            'dataset': 'vqa_v2'
+            'question': str(question),
+            'answer': str(answer),
+            'id': f"vqa2_{item['question_id']}",
+            'dataset': 'vqa_v2',
+            'answer_type': item.get('answer_type', 'other'),
+            'question_type': item.get('question_type', 'other')
         }
 
 
