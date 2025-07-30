@@ -17,10 +17,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import math
+import os
 from typing import Optional, Tuple, Union, List
 
 from .siglip_base import SigLipVisionConfig
 from llava.utils import rank0_print
+
+# SHIRG-FIX: 2025-07-30 - Control debug output with environment variable
+# ISSUE: Excessive debug output makes training logs hard to read
+# SOLUTION: Only print debug messages when SHIRG_DEBUG=1
+# USAGE: export SHIRG_DEBUG=0 to disable, export SHIRG_DEBUG=1 to enable
+_DEBUG_ENABLED = os.environ.get('SHIRG_DEBUG', '0') == '1'
+
+def debug_print(msg):
+    """Print debug message only if SHIRG_DEBUG=1"""
+    if _DEBUG_ENABLED:
+        rank0_print(msg)
 
 
 class SigLipShirgExtensions:

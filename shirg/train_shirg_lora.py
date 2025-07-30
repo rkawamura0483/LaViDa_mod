@@ -143,13 +143,18 @@ class ShirgLoraTrainer:
         """Setup LaViDa model with SHIRG and LoRA"""
         print("🔧 Setting up LaViDa-SHIRG model with LoRA...")
         
+        # SHIRG-FIX: 2025-07-30 - Control debug output with environment variable
+        # ISSUE: Excessive debug output makes training logs hard to read  
+        # SOLUTION: Use SHIRG_DEBUG environment variable to control debug output
+        debug_mode = os.environ.get('SHIRG_DEBUG', '0') == '1'
+        
         # Create SHIRG wrapper
         self.wrapper = LaViDaSHIRGWrapper(
             model_path=self.model_path,
             shirg_config={
                 'target_tokens': 980,
                 'alpha': 0.3,  # Enable SHIRG
-                'debug': False,
+                'debug': debug_mode,  # Control debug with env var
             },
             selection_method=self.config.shirg_method,
             selection_params={

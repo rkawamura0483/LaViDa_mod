@@ -16,6 +16,11 @@ export TOKENIZERS_PARALLELISM=false
 # Set OMP threads to avoid CPU oversubscription
 export OMP_NUM_THREADS=4
 
+# SHIRG-FIX: 2025-07-30 - Disable excessive debug output
+# ISSUE: Too much debug output makes training logs hard to read
+# SOLUTION: Set SHIRG_DEBUG=0 to disable debug prints
+export SHIRG_DEBUG=0
+
 # SHIRG-FIX: 2025-07-30 - Ensure spawn method for CUDA multiprocessing
 # ISSUE: Fork method causes "Cannot re-initialize CUDA" errors in DataLoader
 # SOLUTION: Python will use spawn method (set in training scripts)
