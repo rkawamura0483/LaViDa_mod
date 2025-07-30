@@ -67,14 +67,33 @@ class SigLipShirgExtensions:
                 else:
                     raise ValueError(f"SHIRG-Fovea expects 2 views, got tensor with {pixel_values.shape[0]} views")
             elif torch.is_tensor(pixel_values) and len(pixel_values.shape) == 5:
+                # SHIRG-FIX: 2025-07-30 - Handle batch processing for training
+                # ISSUE: SHIRG-Fovea was designed for B=1 but training needs B>1
+                # SOLUTION: Process each batch item separately and combine results
+                # LAVIDA IMPACT: None - maintains same output format
+                # SHIRG IMPACT: Enables batch training with proper gradient flow
+                
                 # Handle [B, num_views, C, H, W] format
                 B, num_views = pixel_values.shape[:2]
-                if num_views == 2 and B == 1:
-                    rank0_print(f"SHIRG-1FOVEAL: Converting 5D tensor {pixel_values.shape} to list of 2 views")
-                    pixel_values = pixel_values.squeeze(0)  # Remove batch dimension
-                    pixel_values = [pixel_values[i] for i in range(2)]
+                if num_views == 2:
+                    if B == 1:
+                        rank0_print(f"SHIRG-1FOVEAL: Converting 5D tensor {pixel_values.shape} to list of 2 views")
+                        pixel_values = pixel_values.squeeze(0)  # Remove batch dimension
+                        pixel_values = [pixel_values[i] for i in range(2)]
+                    else:
+                        # Batch processing: process each item separately
+                        rank0_print(f"SHIRG-BATCH: Processing batch of {B} items with 2 views each")
+                        batch_results = []
+                        for b in range(B):
+                            # Extract views for this batch item
+                            batch_views = [pixel_values[b, 0], pixel_values[b, 1]]
+                            # Process this item
+                            result = self.forward_with_shirg(batch_views, text_embeddings[b:b+1] if text_embeddings is not None else None)
+                            batch_results.append(result)
+                        # Concatenate batch results
+                        return torch.cat(batch_results, dim=0)
                 else:
-                    raise ValueError(f"SHIRG-Fovea expects [1, 2, C, H, W], got {pixel_values.shape}")
+                    raise ValueError(f"SHIRG-Fovea expects 2 views, got {num_views} views in shape {pixel_values.shape}")
             
             # Step 1: Extract multiview tokens (1 global + 1 foveal)
             global_pooled, foveal_features = self.extract_multiview_tokens(pixel_values)

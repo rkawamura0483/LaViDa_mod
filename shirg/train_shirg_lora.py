@@ -39,7 +39,22 @@ from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 from shirg.shirg_token_dropout import ShirgTokenDropout, ShirgDropoutScheduler
 from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
 from shirg.dataset_loaders import create_data_loaders, MixedVQADataset
-from llava.train.llava_trainer import rank0_print
+
+# SHIRG-FIX: 2025-07-30 - Avoid importing llava_trainer which requires tyro
+# ISSUE: llava_trainer imports trl which requires tyro module
+# SOLUTION: Define rank0_print locally to avoid the import chain
+# LAVIDA IMPACT: None - just a utility function
+# SHIRG IMPACT: Allows training without installing extra dependencies
+
+def rank0_print(msg):
+    """Print only on rank 0 for distributed training"""
+    try:
+        from torch.distributed import get_rank, is_initialized
+        if is_initialized() and get_rank() != 0:
+            return
+    except:
+        pass
+    print(msg)
 
 # Import HuggingFace components
 from transformers import (
