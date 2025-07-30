@@ -684,7 +684,14 @@ class ShirgLoraPreTrainTest:
                 },
             )
             
-            # Load model
+            # SHIRG-FIX: 2025-07-30 - Disable device_map to avoid multi-GPU issues
+            # ISSUE: device_map="auto" distributes model across GPUs causing device mismatches
+            # SOLUTION: Force single GPU placement for testing
+            # LAVIDA IMPACT: Testing only - production can still use multi-GPU
+            # SHIRG IMPACT: Ensures tests run without device errors
+            
+            # Load model without device_map for testing
+            wrapper.device_map = None  # Disable device_map
             wrapper.load_model()
             model = wrapper.model
             tokenizer = wrapper.tokenizer

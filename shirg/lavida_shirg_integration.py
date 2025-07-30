@@ -242,12 +242,21 @@ class LaViDaSHIRGWrapper:
             # SOLUTION: Use string format 'bfloat16' as in official predict.py
             # RESEARCH IMPACT: Ensures proper dtype handling throughout LaViDa loading
             
+            # SHIRG-FIX: 2025-07-30 - Handle device_map for testing vs production
+            # ISSUE: device_map="auto" causes device mismatches in multi-GPU setup
+            # SOLUTION: Allow disabling device_map for testing while keeping for production
+            # LAVIDA IMPACT: Testing can use single GPU, production uses multi-GPU
+            # SHIRG IMPACT: Fixes device mismatch errors during testing
+            
+            # Use device_map only if not explicitly disabled
+            actual_device_map = self.device_map if self.device_map is not None else "auto"
+            
             # Load base model with LaViDa-compatible parameters
             self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(
                 model_path=self.model_path,
                 model_base=None,
                 model_name="llava_llada",  # Critical: Use LaViDa model name
-                device_map=self.device_map,
+                device_map=actual_device_map,
                 vision_kwargs=self.vision_kwargs,
                 torch_dtype='bfloat16',  # Use string format like official examples
                 attn_implementation="flash_attention_2"

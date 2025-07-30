@@ -277,14 +277,21 @@ class SigLipShirgExtensions:
         
         # SHIRG-FIX: 2025-07-30 - Handle distributed model device placement
         # ISSUE: When using accelerate with device_map="auto", vision_tower may be distributed across GPUs
-        # SOLUTION: Move input to the first device of the vision tower model
+        # SOLUTION: Check if model has accelerate hooks and handle device placement accordingly
         # LAVIDA IMPACT: Ensures compatibility with multi-GPU setups
         # SHIRG IMPACT: Fixes device mismatch errors during forward pass
         
-        # Get the device of the first parameter in vision_tower
-        vision_tower_device = next(self.vision_tower.parameters()).device
-        if global_view.device != vision_tower_device:
-            global_view = global_view.to(vision_tower_device)
+        # Handle device placement for distributed models
+        if hasattr(self.vision_tower, '_hf_hook') and hasattr(self.vision_tower._hf_hook, 'execution_device'):
+            # Model is distributed with accelerate - get the execution device
+            vision_tower_device = self.vision_tower._hf_hook.execution_device
+            if global_view.device != vision_tower_device:
+                global_view = global_view.to(vision_tower_device)
+        else:
+            # Standard device placement
+            vision_tower_device = next(self.vision_tower.parameters()).device
+            if global_view.device != vision_tower_device:
+                global_view = global_view.to(vision_tower_device)
         
         # Process through vision tower
         image_forward_outs = self.vision_tower(global_view, output_hidden_states=True)
@@ -336,14 +343,21 @@ class SigLipShirgExtensions:
         
         # SHIRG-FIX: 2025-07-30 - Handle distributed model device placement for foveal view
         # ISSUE: Foveal view also needs proper device placement for distributed models
-        # SOLUTION: Move foveal view to vision tower's device before processing
+        # SOLUTION: Check if model has accelerate hooks and handle device placement accordingly
         # LAVIDA IMPACT: Ensures compatibility with multi-GPU setups
         # SHIRG IMPACT: Fixes device mismatch errors during foveal processing
         
-        # Get the device of the first parameter in vision_tower
-        vision_tower_device = next(self.vision_tower.parameters()).device
-        if foveal_view.device != vision_tower_device:
-            foveal_view = foveal_view.to(vision_tower_device)
+        # Handle device placement for distributed models
+        if hasattr(self.vision_tower, '_hf_hook') and hasattr(self.vision_tower._hf_hook, 'execution_device'):
+            # Model is distributed with accelerate - get the execution device
+            vision_tower_device = self.vision_tower._hf_hook.execution_device
+            if foveal_view.device != vision_tower_device:
+                foveal_view = foveal_view.to(vision_tower_device)
+        else:
+            # Standard device placement
+            vision_tower_device = next(self.vision_tower.parameters()).device
+            if foveal_view.device != vision_tower_device:
+                foveal_view = foveal_view.to(vision_tower_device)
         
         # Process through vision tower
         image_forward_outs = self.vision_tower(foveal_view, output_hidden_states=True)

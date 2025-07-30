@@ -371,43 +371,119 @@ class ShirgLoraTrainer:
             self.model.config.enable_shirg = True
             self.model.config.shirg_3view_mode = True  # Enable 2-view mode
         
-        # Process images
-        try:
-            from llava.mm_utils import process_images
-            image_tensors = process_images(images, self.wrapper.image_processor, self.model.config)
-            rank0_print(f"SHIRG-COLLATE: Processed {len(images)} images, result shape: {image_tensors.shape if hasattr(image_tensors, 'shape') else 'list'}")
-        except Exception as e:
-            # Fallback if LaViDa processing fails
-            print(f"⚠️ LaViDa image processing failed: {e}")
-            # Convert PIL images to tensors manually
-            from torchvision import transforms
-            transform = transforms.Compose([
-                transforms.Resize((self.config.image_size, self.config.image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            image_tensors = torch.stack([transform(img) for img in images])
+        # SHIRG-FIX: 2025-07-30 - Keep images as PIL for LaViDa
+        # ISSUE: LaViDa expects PIL images, not tensors
+        # SOLUTION: Don't process images here - model will handle it
+        # LAVIDA IMPACT: Matches expected input format
+        # SHIRG IMPACT: Allows proper SHIRG processing inside model
         
-        # Process text
-        conversations = []
+        # LaViDa expects PIL images - don't convert to tensors
+        # The model's encode_images method will handle the processing
+        
+        # SHIRG-FIX: 2025-07-30 - Use LaViDa conversation format for proper training
+        # ISSUE: Simple concatenation doesn't follow LaViDa's expected format
+        # SOLUTION: Use LaViDa conversation templates like in real_ocr_vqa_model_runner
+        # LAVIDA IMPACT: Ensures proper training format with correct tokenization
+        # SHIRG IMPACT: Allows model to learn properly with LaViDa's format
+        
+        # Import required LaViDa components
+        from llava.conversation import conv_templates
+        from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
+        from llava.mm_utils import tokenizer_image_token
+        import copy
+        
+        # Process each conversation using LaViDa format
+        input_ids_list = []
+        labels_list = []
+        
         for question, answer in zip(questions, answers):
-            conv = f"{question}\n{answer}"
-            conversations.append(conv)
+            # Use LaViDa conversation template
+            conv_template = "llada"
+            conv = copy.deepcopy(conv_templates[conv_template])
+            
+            # Format question with image token
+            formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+            conv.append_message(conv.roles[0], formatted_question)
+            conv.append_message(conv.roles[1], answer)
+            
+            # Get prompt
+            prompt = conv.get_prompt()
+            
+            # Tokenize with image token handling
+            input_ids = tokenizer_image_token(
+                prompt, 
+                self.tokenizer, 
+                IMAGE_TOKEN_INDEX, 
+                return_tensors="pt"
+            )
+            
+            # Create labels - mask everything except the answer
+            labels = input_ids.clone()
+            
+            # Find where the answer starts (after the assistant role)
+            # LaViDa expects -100 for masked tokens
+            answer_start_token = self.tokenizer.encode(conv.roles[1], add_special_tokens=False)[0]
+            answer_start_idx = None
+            
+            for i, token_id in enumerate(input_ids):
+                if token_id == answer_start_token:
+                    answer_start_idx = i
+                    break
+            
+            if answer_start_idx is not None:
+                # Mask everything before the answer
+                labels[:answer_start_idx + 1] = -100
+            else:
+                # If we can't find the answer start, mask the prompt part
+                # This is a fallback - find the image token and mask everything up to it
+                prompt_len = len(self.tokenizer.encode(formatted_question, add_special_tokens=False))
+                labels[:prompt_len] = -100
+            
+            input_ids_list.append(input_ids)
+            labels_list.append(labels)
         
-        # Tokenize
-        encodings = self.tokenizer(
-            conversations,
-            padding=True,
-            truncation=True,
-            max_length=self.config.max_seq_length,
-            return_tensors="pt",
-        )
+        # Pad sequences
+        max_length = max(ids.shape[0] for ids in input_ids_list)
+        max_length = min(max_length, self.config.max_seq_length)
+        
+        # Pad and create tensors
+        padded_input_ids = []
+        padded_labels = []
+        attention_masks = []
+        
+        for input_ids, labels in zip(input_ids_list, labels_list):
+            # Truncate if needed
+            if input_ids.shape[0] > max_length:
+                input_ids = input_ids[:max_length]
+                labels = labels[:max_length]
+            
+            # Pad
+            padding_length = max_length - input_ids.shape[0]
+            if padding_length > 0:
+                # Pad input_ids with pad_token_id
+                pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+                input_ids = torch.cat([input_ids, torch.full((padding_length,), pad_token_id, dtype=input_ids.dtype)])
+                # Pad labels with -100 (ignore index)
+                labels = torch.cat([labels, torch.full((padding_length,), -100, dtype=labels.dtype)])
+                # Create attention mask
+                attention_mask = torch.cat([torch.ones(len(input_ids) - padding_length), torch.zeros(padding_length)])
+            else:
+                attention_mask = torch.ones(len(input_ids))
+            
+            padded_input_ids.append(input_ids)
+            padded_labels.append(labels)
+            attention_masks.append(attention_mask)
+        
+        # Stack into batch
+        batch_input_ids = torch.stack(padded_input_ids)
+        batch_labels = torch.stack(padded_labels)
+        batch_attention_mask = torch.stack(attention_masks)
         
         return {
-            "images": image_tensors,
-            "input_ids": encodings["input_ids"],
-            "attention_mask": encodings["attention_mask"],
-            "labels": encodings["input_ids"].clone(),  # For language modeling
+            "images": images,  # Keep as PIL images - model expects this
+            "input_ids": batch_input_ids,
+            "attention_mask": batch_attention_mask,
+            "labels": batch_labels,
             "ids": ids,
         }
     
