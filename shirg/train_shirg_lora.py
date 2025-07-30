@@ -587,6 +587,14 @@ class ShirgLoraTrainer:
             # Use spawn method for CUDA compatibility
             mp_context = mp.get_context('spawn')
         
+        # SHIRG-FIX: 2025-07-30 - Disable persistent workers to prevent memory leaks
+        # ISSUE: persistent_workers=True causes gradual memory accumulation over 500+ steps
+        # SOLUTION: Set persistent_workers=False unless explicitly enabled
+        # LAVIDA IMPACT: Slight performance overhead but prevents memory leaks
+        # SHIRG IMPACT: Fixes NCCL timeout caused by worker memory accumulation
+        use_persistent_workers = (use_multiprocessing and 
+                                 os.environ.get('SHIRG_ENABLE_PERSISTENT_WORKERS', '0') == '1')
+        
         # Create dataloaders
         self.train_dataloader = DataLoader(
             self.train_dataset,
@@ -596,7 +604,7 @@ class ShirgLoraTrainer:
             pin_memory=self.config.dataloader_pin_memory,
             collate_fn=self.collate_fn,
             multiprocessing_context=mp_context if use_multiprocessing else None,
-            persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
+            persistent_workers=use_persistent_workers,  # Disabled by default to prevent memory leaks
         )
         
         if not self.skip_validation:
@@ -608,7 +616,7 @@ class ShirgLoraTrainer:
                 pin_memory=self.config.dataloader_pin_memory,
                 collate_fn=self.collate_fn,
                 multiprocessing_context=mp_context if use_multiprocessing else None,
-                persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
+                persistent_workers=use_persistent_workers,  # Disabled by default to prevent memory leaks
             )
         else:
             self.val_dataloader = None  # No validation dataloader when skipping validation
@@ -853,12 +861,12 @@ class ShirgLoraTrainer:
             self.scheduler.step()
         self.optimizer.zero_grad()
         
-        # SHIRG-FIX: 2025-07-30 - Synchronize after optimizer step in DDP
-        # ISSUE: Async operations can cause race conditions leading to segfaults
-        # SOLUTION: Force synchronization in distributed training
-        # LAVIDA IMPACT: Ensures gradient synchronization across GPUs
-        # SHIRG IMPACT: Prevents segfaults in multi-GPU training
-        if dist.is_initialized():
+        # SHIRG-FIX: 2025-07-30 - Reduce distributed barrier frequency to prevent NCCL timeouts
+        # ISSUE: dist.barrier() on every step causes NCCL timeouts when one GPU delays
+        # SOLUTION: Only sync every 100 steps or at critical points (checkpointing)
+        # LAVIDA IMPACT: Reduced synchronization overhead, better performance
+        # SHIRG IMPACT: Prevents NCCL timeout errors during long training runs
+        if dist.is_initialized() and (self.global_step % 100 == 0 or self.global_step % self.config.save_steps == 0):
             dist.barrier()
         
         # Update global step
