@@ -36,62 +36,121 @@ In multi-GPU setups, components can end up on different devices:
 
 We created an enhanced fix that addresses both issues:
 
-### 1. Created `fix_lora_gradients.py`
+### 1. Created Enhanced Fix: `fix_lora_gradients_enhanced.py`
 
-This module provides:
+This enhanced module provides:
+- `diagnose_device_mismatch()`: Identifies components on different devices
+- `ensure_model_on_single_device()`: Moves all components to same device
+- `ensure_lora_parameters_trainable_enhanced()`: Fixes both gradient and device issues
+- `verify_gradient_flow_enhanced()`: Enhanced verification with device checks
+- `apply_comprehensive_fix()`: One-step fix for trainer instances
+
+Key features:
+- Diagnoses and fixes device placement issues
+- Ensures all LoRA parameters are trainable
+- Handles meta tensors and buffer placement
+- Provides detailed debugging information
+
+### 2. Original Fix: `fix_lora_gradients.py`
+
+The original module (kept for compatibility) provides:
 - `ensure_lora_parameters_trainable()`: Finds all LoRA parameters and ensures `requires_grad=True`
 - `verify_lora_gradients()`: Tests that gradients flow properly
 - `apply_lora_gradient_fix_to_trainer()`: Applies fix to trainer instances
 
-### 2. Updated Training Scripts
+### 3. Updated Training Scripts
 
-Added the fix to `train_shirg_lora.py` after LoRA application:
+Updated both single and multi-GPU training scripts to use enhanced fix:
 
+**train_shirg_lora.py**:
 ```python
 # After applying LoRA with PEFT
-from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
-unfrozen_count = ensure_lora_parameters_trainable(self.model)
+from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
+
+results = ensure_lora_parameters_trainable_enhanced(
+    self.model,
+    device=target_device,
+    fix_device_mismatch=True
+)
 ```
 
-### 3. Testing
+**train_shirg_lora_multi_gpu.py**:
+```python
+# Apply comprehensive fix for multi-GPU
+from shirg.fix_lora_gradients_enhanced import apply_comprehensive_fix
 
-Created test scripts to verify the fix:
-- `test_gradient_fix.py`: Comprehensive test of gradient flow
-- `test_gradient_fix.sh`: Simple bash script to run the test
+apply_comprehensive_fix(self, force_device=f"cuda:{local_rank}")
+```
+
+Also fixed collate_fn to ensure tensors are created on correct device.
+
+### 4. Testing
+
+Created test scripts to verify the fixes:
+- `test_gradient_fix.py`: Tests original gradient fix
+- `test_gradient_fix.sh`: Bash script for original test
+- `test_enhanced_gradient_fix.py`: Tests enhanced fix with device checks
+- `test_enhanced_gradient_fix.sh`: Bash script for enhanced test
 
 ## How to Use
 
 1. **For Training**: The fix is automatically applied in `train_shirg_lora.py` and `train_shirg_lora_multi_gpu.py`
 
-2. **For Testing**: Run the gradient fix test:
+2. **For Testing**: Run the enhanced gradient fix test:
    ```bash
+   # Test enhanced fix (recommended)
+   bash shirg/test_enhanced_gradient_fix.sh
+   
+   # Test original fix
    bash shirg/test_gradient_fix.sh
    ```
 
-3. **For Custom Code**: Apply the fix after PEFT:
+3. **For Custom Code**: Apply the enhanced fix after PEFT:
    ```python
    from peft import get_peft_model
-   from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
+   from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
    
    # Apply LoRA
    model = get_peft_model(model, lora_config)
    
-   # Fix frozen LoRA parameters
-   ensure_lora_parameters_trainable(model)
+   # Fix both gradient and device issues
+   results = ensure_lora_parameters_trainable_enhanced(
+       model,
+       fix_device_mismatch=True
+   )
+   
+   # Or use the comprehensive fix for trainers
+   from shirg.fix_lora_gradients_enhanced import apply_comprehensive_fix
+   apply_comprehensive_fix(trainer)
    ```
 
 ## Technical Details
 
-### What the Fix Does
+### What the Enhanced Fix Does
 
-1. Iterates through all model parameters
-2. Identifies LoRA parameters (containing "lora" in name)
-3. Ensures `param.requires_grad = True` for all LoRA parameters
-4. Reports how many parameters were fixed
+1. **Device Diagnosis & Fix**:
+   - Diagnoses components on different devices
+   - Moves all parameters and buffers to target device
+   - Handles special cases like vision tower and projector
+   - Clears GPU cache after moving components
+
+2. **Gradient Fix**:
+   - Iterates through all model parameters
+   - Identifies LoRA parameters (containing "lora" in name)
+   - Ensures `param.requires_grad = True` for all LoRA parameters
+   - Reports detailed statistics
+
+3. **Additional Checks**:
+   - Detects meta tensors that need materialization
+   - Verifies vision tower configuration
+   - Checks SHIRG settings
+   - Provides comprehensive debugging output
 
 ### Why It Works
 
+- Addresses both frozen parameters AND device placement issues
 - LoRA parameters need to be trainable even if base model is frozen
+- All components must be on same device for gradient computation
 - The fix runs AFTER PEFT creates LoRA parameters
 - Only affects LoRA parameters, not base model weights
 - Maintains memory efficiency while enabling training
@@ -110,3 +169,43 @@ After applying the fix, you should see:
 - **Memory**: No additional memory usage (only LoRA parameters are trainable)
 - **Performance**: No impact on inference speed
 - **Compatibility**: Works with both single and multi-GPU setups
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+1. **Still getting zero gradients after fix**:
+   - Ensure `SHIRG_NO_DEVICE_MAP=1` is set before model loading
+   - Check that enhanced fix is being used (not just basic fix)
+   - Verify all batch tensors are on same device as model
+
+2. **Device mismatch errors persist**:
+   - Use `apply_comprehensive_fix()` which handles collate_fn
+   - Check tokenizer output device (may need manual .to(device))
+   - Ensure image processing happens on correct device
+
+3. **Out of Memory (OOM) errors**:
+   - Reduce batch size
+   - Use gradient accumulation
+   - Enable gradient checkpointing
+   - Use mixed precision training (bf16)
+
+4. **Multi-GPU specific issues**:
+   - Ensure DDP is applied AFTER the fix
+   - Each GPU should fix its local model copy
+   - Use force_device parameter in multi-GPU setups
+
+### Debugging Commands
+
+```python
+# Check device placement
+from shirg.fix_lora_gradients_enhanced import diagnose_device_mismatch
+device_map = diagnose_device_mismatch(model)
+print(f"Components on devices: {list(device_map.keys())}")
+
+# Verify gradient flow
+from shirg.fix_lora_gradients_enhanced import verify_gradient_flow_enhanced
+success, results = verify_gradient_flow_enhanced(model, dummy_batch)
+print(f"Gradient flow: {success}")
+print(f"Stats: {results['gradient_stats']}")
+```

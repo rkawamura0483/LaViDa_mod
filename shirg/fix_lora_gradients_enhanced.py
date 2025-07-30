@@ -220,7 +220,10 @@ def ensure_lora_parameters_trainable_enhanced(
             vision_tower = base_model.get_vision_tower()
             if vision_tower is not None:
                 # Check if vision tower has proper device
-                vision_device = next(vision_tower.parameters()).device if any(vision_tower.parameters()) else None
+                try:
+                    vision_device = next(vision_tower.parameters()).device
+                except StopIteration:
+                    vision_device = None
                 if vision_device:
                     print(f"   Vision tower on: {vision_device}")
                     

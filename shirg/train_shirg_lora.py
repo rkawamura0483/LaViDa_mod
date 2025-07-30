@@ -297,44 +297,69 @@ class ShirgLoraTrainer:
         # LAVIDA IMPACT: None - only affects LoRA training
         # SHIRG IMPACT: Fixes zero gradient issue enabling proper LoRA training
         
-        # SHIRG-FIX: 2025-07-30 - Use enhanced fix for device mismatch
-        # ISSUE: Device mismatch between components causes gradient flow failure
-        # SOLUTION: Use enhanced fix that handles both gradient and device issues
-        # LAVIDA IMPACT: Ensures all components on same device
-        # SHIRG IMPACT: Fixes zero gradient issue in multi-GPU training
+        # SHIRG-FIX: 2025-07-30 - Use aggressive fix for gradient flow
+        # ISSUE: LoRA adapters on frozen modules don't receive gradients
+        # SOLUTION: Use aggressive fix that unfreezes base modules with LoRA
+        # LAVIDA IMPACT: Some base vision tower modules become trainable
+        # SHIRG IMPACT: Enables proper gradient flow for LoRA training
         try:
-            from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
+            # First try aggressive fix
+            from shirg.fix_lora_gradients_aggressive import fix_lora_gradients_aggressive
             
-            # Apply comprehensive fix
-            target_device = None
-            if hasattr(self, 'accelerator') and self.accelerator.device:
-                target_device = self.accelerator.device
-            elif torch.cuda.is_available():
-                target_device = torch.device("cuda:0")
-            
-            results = ensure_lora_parameters_trainable_enhanced(
+            rank0_print("🔧 Applying AGGRESSIVE LoRA gradient fix...")
+            results = fix_lora_gradients_aggressive(
                 self.model,
-                device=target_device,
-                fix_device_mismatch=True
+                unfreeze_base_modules=True,  # Key: unfreeze base modules that have LoRA
+                force_lora_gradients=True,
+                debug=True
             )
             
-            if results['unfrozen_params'] > 0 or results['moved_components'] > 0:
-                rank0_print(f"🔧 LoRA Gradient Fix Applied:")
-                rank0_print(f"   - Fixed {results['unfrozen_params']} frozen LoRA parameters")
-                rank0_print(f"   - Moved {results['moved_components']} components to {target_device}")
-                rank0_print(f"   - Total LoRA parameters: {results['total_lora_params']}")
+            if results['gradient_flow_enabled']:
+                rank0_print(f"✅ Aggressive fix applied successfully!")
+                rank0_print(f"   - LoRA parameters fixed: {results['lora_params_fixed']}")
+                rank0_print(f"   - Base modules unfrozen: {results['base_modules_unfrozen']}")
                 # Print updated trainable parameters
                 self.model.print_trainable_parameters()
+            else:
+                rank0_print("⚠️ Aggressive fix did not fully enable gradient flow")
                 
         except ImportError:
-            # Fallback to original fix if enhanced version not available
-            rank0_print("⚠️ Enhanced gradient fix not available, using basic fix")
-            from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
-            unfrozen_count = ensure_lora_parameters_trainable(self.model)
-            if unfrozen_count > 0:
-                rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
-                # Print updated trainable parameters
-                self.model.print_trainable_parameters()
+            rank0_print("⚠️ Aggressive fix not available, trying enhanced fix")
+            
+            # Try enhanced fix
+            try:
+                from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
+                
+                # Apply comprehensive fix
+                target_device = None
+                if hasattr(self, 'accelerator') and self.accelerator.device:
+                    target_device = self.accelerator.device
+                elif torch.cuda.is_available():
+                    target_device = torch.device("cuda:0")
+                
+                results = ensure_lora_parameters_trainable_enhanced(
+                    self.model,
+                    device=target_device,
+                    fix_device_mismatch=True
+                )
+                
+                if results['unfrozen_params'] > 0 or results['moved_components'] > 0:
+                    rank0_print(f"🔧 Enhanced LoRA Gradient Fix Applied:")
+                    rank0_print(f"   - Fixed {results['unfrozen_params']} frozen LoRA parameters")
+                    rank0_print(f"   - Moved {results['moved_components']} components to {target_device}")
+                    rank0_print(f"   - Total LoRA parameters: {results['total_lora_params']}")
+                    # Print updated trainable parameters
+                    self.model.print_trainable_parameters()
+                    
+            except ImportError:
+                # Fallback to original fix
+                rank0_print("⚠️ Enhanced gradient fix not available, using basic fix")
+                from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
+                unfrozen_count = ensure_lora_parameters_trainable(self.model)
+                if unfrozen_count > 0:
+                    rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
+                    # Print updated trainable parameters
+                    self.model.print_trainable_parameters()
         
         # Setup token dropout
         self.token_dropout = ShirgTokenDropout(
