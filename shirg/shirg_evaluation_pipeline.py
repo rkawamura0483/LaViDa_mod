@@ -437,6 +437,70 @@ class SHIRGEvaluationPipeline:
         
         print(f"   Time: {result.get('elapsed_time', 0):.1f}s")
     
+    def _print_per_dataset_summary(self, summary_df: pd.DataFrame):
+        """Print per-dataset average metrics"""
+        print("\n" + "=" * 80)
+        print("📊 PER-DATASET AVERAGE METRICS")
+        print("=" * 80)
+        
+        # Find all dataset-specific metric columns
+        dataset_metrics = defaultdict(lambda: defaultdict(list))
+        
+        for col in summary_df.columns:
+            # Look for columns with pattern: dataset_name_metric
+            parts = col.split('_')
+            if len(parts) >= 2:
+                # Check if this is a dataset-specific metric
+                for dataset_name in ['DocVQA', 'InfoVQA', 'ChartQA', 'TextVQA', 'OCRVQA']:
+                    if col.startswith(dataset_name + '_'):
+                        metric_name = col.replace(dataset_name + '_', '')
+                        dataset_metrics[dataset_name][metric_name] = col
+                        break
+        
+        # Print metrics for each dataset
+        for dataset_name in sorted(dataset_metrics.keys()):
+            print(f"\n{dataset_name}:")
+            print("-" * 40)
+            
+            # Create a table for this dataset
+            dataset_data = []
+            for _, row in summary_df.iterrows():
+                row_data = {'Configuration': row['config_name']}
+                
+                # Add each metric for this dataset
+                for metric_name, col_name in dataset_metrics[dataset_name].items():
+                    if col_name in row and pd.notna(row[col_name]):
+                        row_data[metric_name] = f"{row[col_name]:.3f}"
+                    else:
+                        row_data[metric_name] = "N/A"
+                
+                dataset_data.append(row_data)
+            
+            if dataset_data:
+                dataset_df = pd.DataFrame(dataset_data)
+                print(dataset_df.to_string(index=False))
+                
+                # Find best configuration for this dataset (if anls exists)
+                anls_col = dataset_metrics[dataset_name].get('anls')
+                if anls_col and anls_col in summary_df.columns:
+                    valid_rows = summary_df[summary_df[anls_col].notna()]
+                    if not valid_rows.empty:
+                        best_idx = valid_rows[anls_col].idxmax()
+                        best_config = summary_df.loc[best_idx]
+                        print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
+                        
+                        # Calculate improvement over baseline for this dataset
+                        baseline_df = summary_df[summary_df['config_name'] == 'baseline']
+                        if not baseline_df.empty and anls_col in baseline_df.columns:
+                            baseline_val = baseline_df.iloc[0][anls_col]
+                            if pd.notna(baseline_val) and baseline_val > 0:
+                                for _, row in valid_rows.iterrows():
+                                    if row['config_name'] != 'baseline':
+                                        improvement = (row[anls_col] - baseline_val) / baseline_val * 100
+                                        print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
+        
+        print("\n" + "=" * 80)
+
     def _print_final_summary(self, summary_df: pd.DataFrame):
         """Print final comparison summary"""
         print("\n" + "=" * 80)
@@ -502,6 +566,9 @@ class SHIRGEvaluationPipeline:
                     if row['config_name'] != 'baseline':
                         improvement = (row['anls_mean'] - baseline['anls_mean']) / baseline['anls_mean'] * 100
                         print(f"   {row['config_name']}: {improvement:+.1f}% over baseline")
+        
+        # Print per-dataset summary
+        self._print_per_dataset_summary(summary_df)
         
         print("\n" + "=" * 80)
 
@@ -683,6 +750,8 @@ def main():
     parser = argparse.ArgumentParser(description='SHIRG Evaluation Pipeline')
     parser.add_argument('--config', type=str, default='all',
                       help='Configuration to run (all, baseline, shirg_base, shirg_entropy, shirg_edge, shirg_full, etc.)')
+    parser.add_argument('--baseline-only', action='store_true',
+                      help='Run only the baseline configuration')
     parser.add_argument('--method', type=str, default=None,
                       choices=['base', 'entropy', 'edge', 'full'],
                       help='Custom selection method (overrides config)')
@@ -720,8 +789,15 @@ def main():
         samples = samples[:args.samples]
         print(f"📊 Using first {args.samples} samples")
     
+    # Handle baseline-only flag
+    if args.baseline_only:
+        # Run only baseline configuration
+        pipeline = SHIRGEvaluationPipeline()
+        baseline_config = {"baseline": pipeline.parameter_configs["baseline"]}
+        results_df = run_multi_config_evaluation(samples, baseline_config)
+    
     # Handle custom configuration
-    if args.method:
+    elif args.method:
         # Create custom configuration based on command-line args
         custom_config = {
             "custom": {

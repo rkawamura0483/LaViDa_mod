@@ -38,6 +38,13 @@ class ChartQADataset(Dataset):
             image_size: Target image size for resizing
             cache_dir: Directory to cache dataset
         """
+        # SHIRG-FIX: [2025-07-30] - Handle validation split name mapping
+        # ISSUE: ChartQA uses 'val' not 'validation' for validation split
+        # SOLUTION: Map 'validation' to 'val' for ChartQA compatibility
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Enables proper validation dataset loading
+        if split == "validation":
+            split = "val"
         self.split = split
         self.image_size = image_size
         self.cache_dir = cache_dir
@@ -392,8 +399,19 @@ class VQAv2Dataset(Dataset):
         json_split = "train" if split == "train" else "val"
         
         # Load questions and annotations from downloaded files
+        # SHIRG-FIX: [2025-07-30] - Handle multiple VQA v2 filename formats
+        # ISSUE: VQA v2 files may have "OpenEnded" in the filename
+        # SOLUTION: Try both filename formats
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Handles different VQA v2 download sources
+        
+        # Try standard format first
         questions_file = self.data_dir / f"v2_mscoco_{json_split}2014_questions.json"
         annotations_file = self.data_dir / f"v2_mscoco_{json_split}2014_annotations.json"
+        
+        # If standard format doesn't exist, try OpenEnded format
+        if not questions_file.exists():
+            questions_file = self.data_dir / f"v2_OpenEnded_mscoco_{json_split}2014_questions.json"
         
         if questions_file.exists() and annotations_file.exists():
             try:

@@ -522,33 +522,26 @@ class ShirgLoraTrainer:
                 print(f"✅ Validation samples: {len(self.val_dataset)}")
                 return len(self.train_dataset)
         
-        # If we get here, use synthetic data
-        print("⚠️ Using synthetic data...")
-        # Dataset configuration from research
-        dataset_configs = {
-            "chartqa": {"weight": 0.3, "max_samples": 10000},
-            "docvqa": {"weight": 0.3, "max_samples": 10000},
-            "vqa_v2": {"weight": 0.4, "max_samples": 10000},
-        }
+        # SHIRG-FIX: [2025-07-30] - Remove synthetic data fallback completely
+        # ISSUE: Training was falling back to synthetic data when real data wasn't found
+        # SOLUTION: Fail properly and provide clear instructions for dataset setup
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Ensures training only uses real datasets
         
-        # Create mixed datasets using proper loaders
-        self.train_dataset = MixedVQADataset(
-            split="train",
-            dataset_configs=dataset_configs,
-            image_size=self.config.image_size,
-            cache_dir=os.path.join(self.output_dir, "data_cache"),
-            data_dir=self.data_dir,  # Pass real data directory
-        )
+        print("\n❌ ERROR: No real datasets found for training!")
+        print("\n📚 Required datasets:")
+        print("   1. ChartQA - Available from HuggingFace (will auto-download)")
+        print("   2. VQA v2 - Run: python shirg/download_vqa_datasets.py --datasets vqa_v2")
+        print("   3. TextVQA, OCRVQA, InfoVQA - Available from HuggingFace (will auto-download)")
+        print("\n💡 To fix:")
+        print("   1. Ensure you have internet connection for HuggingFace downloads")
+        print("   2. Download VQA v2: python shirg/download_vqa_datasets.py --datasets vqa_v2")
+        print("   3. Set --data-dir if you have local dataset copies")
+        print("\n⚠️ Note: DocVQA doesn't have a train split, only validation/test")
         
-        # Validation dataset with fewer samples
-        val_configs = {k: {"weight": v["weight"], "max_samples": 1000} 
-                      for k, v in dataset_configs.items()}
-        self.val_dataset = MixedVQADataset(
-            split="validation",
-            dataset_configs=val_configs,
-            image_size=self.config.image_size,
-            cache_dir=os.path.join(self.output_dir, "data_cache"),
-            data_dir=self.data_dir,  # Pass real data directory
+        raise RuntimeError(
+            "No training data available. Please download required datasets first. "
+            "See instructions above."
         )
         
         print(f"✅ Training samples: {len(self.train_dataset)}")
