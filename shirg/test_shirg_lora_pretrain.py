@@ -592,18 +592,18 @@ class ShirgLoraPreTrainTest:
                 
                 # Process image the same way as real_ocr_vqa_model_runner.py
                 from llava.mm_utils import process_images
-                image_processor = model.get_model().get_vision_tower().image_processor
+                image_processor = vision_tower.image_processor
                 
                 # Process with SHIRG configuration
-                image_tensor = process_images([shirg_pil_image], image_processor, model.config)
+                image_tensor = process_images([shirg_pil_image], image_processor, vision_config)
                 
                 # Handle list format for SHIRG 2-view processing
                 if isinstance(image_tensor, list):
                     # SHIRG multi-view: convert each tensor in list
-                    image_tensor = [t.to(dtype=torch.bfloat16, device=model.device) for t in image_tensor]
+                    image_tensor = [t.to(dtype=torch.bfloat16, device=vision_tower.device) for t in image_tensor]
                     print(f"   📐 SHIRG image tensors: {len(image_tensor)} views with shapes {[t.shape for t in image_tensor]}")
                 else:
-                    image_tensor = image_tensor.to(dtype=torch.bfloat16, device=model.device)
+                    image_tensor = image_tensor.to(dtype=torch.bfloat16, device=vision_tower.device)
                     print(f"   📐 SHIRG image tensor: {image_tensor.shape}")
                 
                 with torch.no_grad():
@@ -1200,6 +1200,9 @@ class ShirgLoraPreTrainTest:
         result = {"passed": True, "details": {}}
         
         try:
+            # Import LaViDa availability check
+            from shirg.lavida_shirg_integration import LAVIDA_AVAILABLE
+            
             # Skip if LaViDa not available
             if not LAVIDA_AVAILABLE:
                 print(f"   ⚠️ Skipping training step test - LaViDa not available")
