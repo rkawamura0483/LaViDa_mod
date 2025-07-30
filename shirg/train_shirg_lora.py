@@ -496,20 +496,19 @@ class ShirgLoraTrainer:
         # LAVIDA IMPACT: None
         # SHIRG IMPACT: Properly loads datasets from the correct directory
         
-        # SHIRG-FIX: [2025-07-30] - Include VQA v2 with COCO image handling
-        # ISSUE: VQA v2 requires COCO images to be extracted from zip files
-        # SOLUTION: VQA v2 loader now checks for extracted COCO images
+        # SHIRG-FIX: [2025-07-30] - Use only datasets with integrated images
+        # ISSUE: VQA v2 requires separate COCO image download and extraction
+        # SOLUTION: Use only datasets that include images directly (no placeholders)
         # LAVIDA IMPACT: None
-        # SHIRG IMPACT: Training can use VQA v2 if COCO images are extracted
+        # SHIRG IMPACT: Training uses only real images, no synthetic data
         
-        # Default training configuration optimized for available datasets
-        # Note: DocVQA has no train split, VQA v2 will use placeholders if COCO not extracted
+        # Default training configuration - only datasets with real images
+        # Note: DocVQA has no train split, VQA v2 excluded due to separate image requirement
         dataset_configs = {
-            "chartqa": {"weight": 0.20, "max_samples": 18000},   # Chart understanding
-            "textvqa": {"weight": 0.25, "max_samples": 35000},   # Scene text reading
+            "chartqa": {"weight": 0.25, "max_samples": 18000},   # Chart understanding
+            "textvqa": {"weight": 0.30, "max_samples": 35000},   # Scene text reading
             "ocrvqa": {"weight": 0.25, "max_samples": 70000},    # Book cover OCR
-            "infovqa": {"weight": 0.15, "max_samples": 24000},   # Infographic understanding
-            "vqa_v2": {"weight": 0.15, "max_samples": 50000},    # General VQA (if COCO available)
+            "infovqa": {"weight": 0.20, "max_samples": 24000},   # Infographic understanding
         }
         
         # Create mixed datasets
@@ -543,15 +542,18 @@ class ShirgLoraTrainer:
             # SHIRG IMPACT: Ensures training only uses real datasets
             
             print("\n❌ ERROR: No real datasets found for training!")
-            print("\n📚 Required datasets:")
-            print("   1. ChartQA - Available from HuggingFace (will auto-download)")
-            print("   2. VQA v2 - Run: python shirg/download_vqa_datasets.py --datasets vqa_v2")
-            print("   3. TextVQA, OCRVQA, InfoVQA - Available from HuggingFace (will auto-download)")
+            print("\n📚 Training will use these datasets (auto-download from HuggingFace):")
+            print("   1. ChartQA - Chart understanding")
+            print("   2. TextVQA - Scene text reading") 
+            print("   3. OCRVQA - Book cover OCR")
+            print("   4. InfoVQA - Infographic understanding")
             print("\n💡 To fix:")
             print("   1. Ensure you have internet connection for HuggingFace downloads")
-            print("   2. Download VQA v2: python shirg/download_vqa_datasets.py --datasets vqa_v2")
-            print("   3. Set --data-dir to your dataset directory (e.g., --data-dir ./data/vqa_datasets)")
-            print("\n⚠️ Note: DocVQA doesn't have a train split, only validation/test")
+            print("   2. Set --data-dir if you have local dataset copies")
+            print("   3. Check write permissions in the output directory")
+            print("\n⚠️ Notes:")
+            print("   - DocVQA only has validation/test splits (no training data)")
+            print("   - VQA v2 excluded (requires separate COCO image download)")
             
             raise RuntimeError(
                 "No training data available. Please download required datasets first. "
