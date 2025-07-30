@@ -341,10 +341,10 @@ class ShirgLoraTrainer:
                 results = apply_selective_gradient_flow(self.model, debug=True)
                 
                 if results['success']:
-                rank0_print(f"✅ Selective gradient flow enabled!")
-                rank0_print(f"   - Modules with LoRA: {results['modules_with_lora']}")
-                rank0_print(f"   - Base params enabled: {results['base_params_enabled']}")
-                rank0_print(f"   - Vision tower fixed: {results['vision_tower_fixed']}")
+                    rank0_print(f"✅ Selective gradient flow enabled!")
+                    rank0_print(f"   - Modules with LoRA: {results['modules_with_lora']}")
+                    rank0_print(f"   - Base params enabled: {results['base_params_enabled']}")
+                    rank0_print(f"   - Vision tower fixed: {results['vision_tower_fixed']}")
                 
                 # Verify the setup
                 verify_results = verify_selective_gradient_flow(self.model, debug=True)
