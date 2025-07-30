@@ -694,14 +694,13 @@ class MixedVQADataset(Dataset):
             print(f"     --fp16 --gradient-checkpointing")
             
         elif dataset_configs is None:
-            else:
-                # For validation/test, include all datasets
-                dataset_configs = {
-                    "chartqa": {"weight": 0.3, "max_samples": 10000},
-                    "docvqa": {"weight": 0.3, "max_samples": 10000},
-                    "vqa_v2": {"weight": 0.4, "max_samples": 10000},
-                }
-        
+            # For validation/test, include all datasets
+            dataset_configs = {
+                "chartqa": {"weight": 0.3, "max_samples": 10000},
+                "docvqa": {"weight": 0.3, "max_samples": 10000},
+                "vqa_v2": {"weight": 0.4, "max_samples": 10000},
+            }
+    
         self.datasets = {}
         self.weights = []
         self.dataset_names = []
