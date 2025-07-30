@@ -70,8 +70,11 @@ class ChartQADataset(Dataset):
         # SOLUTION: Properly handle all possible image formats
         # LAVIDA IMPACT: None
         # SHIRG IMPACT: Robust image loading for all datasets
-        image = item['image']
-        if isinstance(image, str):
+        image = item.get('image', None)
+        if image is None:
+            # Create a dummy image if missing
+            image = Image.new('RGB', (self.image_size, self.image_size), (128, 128, 128))
+        elif isinstance(image, str):
             # If image is a path, load it
             image = Image.open(image).convert('RGB')
         elif isinstance(image, bytes):
@@ -103,10 +106,53 @@ class ChartQADataset(Dataset):
             new_image.paste(image, (paste_x, paste_y))
             image = new_image
         
+        # SHIRG-FIX: [2025-07-30] - Handle different field names across datasets
+        # ISSUE: ChartQA may use 'query' instead of 'question'
+        # SOLUTION: Check for multiple possible field names
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Robust field handling for all VQA datasets
+        
+        # SHIRG-FIX: [2025-07-30] - ChartQA uses 'query' and 'label' fields
+        # ISSUE: ChartQA uses 'query' not 'question', and 'label' not 'answer'
+        # SOLUTION: Use correct field names for ChartQA
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Correctly loads ChartQA dataset
+        
+        # ChartQA uses 'query' field for questions
+        question = item.get('query', None)
+        if question is None:
+            # Fallback to other possible field names
+            for field in ['question', 'Question', 'text', 'input']:
+                if field in item:
+                    question = item[field]
+                    break
+        
+        if question is None:
+            # Debug: print available keys for the first few items
+            if idx < 5:
+                print(f"⚠️ ChartQA item {idx} keys: {list(item.keys())}")
+            question = "What is shown in this chart?"
+        
+        # ChartQA uses 'label' field for answers
+        answer = item.get('label', None)
+        if answer is None:
+            # Fallback to other possible field names
+            for field in ['answer', 'answers', 'response', 'output']:
+                if field in item:
+                    answer = item[field]
+                    break
+        
+        if answer is None:
+            answer = "Unknown"
+        
+        # Handle list of answers
+        if isinstance(answer, list) and len(answer) > 0:
+            answer = answer[0]
+        
         return {
             'image': image,
-            'question': item['question'],
-            'answer': item['answer'],
+            'question': str(question),
+            'answer': str(answer),
             'id': f"chartqa_{idx}",
             'dataset': 'chartqa'
         }
@@ -203,17 +249,43 @@ class DocVQADataset(Dataset):
             new_image.paste(image, (paste_x, paste_y))
             image = new_image
         
-        # DocVQA may have multiple answers
-        answers = item.get('answers', [])
-        if isinstance(answers, list) and len(answers) > 0:
-            answer = answers[0]  # Take first answer for training
-        else:
-            answer = str(answers)
+        # SHIRG-FIX: [2025-07-30] - Handle different field names across datasets
+        # ISSUE: DocVQA may use different field names
+        # SOLUTION: Check for multiple possible field names
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Robust field handling for all VQA datasets
+        
+        # Get question - try multiple field names
+        question = None
+        for field in ['question', 'query', 'Question', 'text', 'input']:
+            if field in item:
+                question = item[field]
+                break
+        
+        if question is None:
+            # Debug: print available keys for the first few items
+            if idx < 5:
+                print(f"⚠️ DocVQA item {idx} keys: {list(item.keys())}")
+            question = "What text is shown in this document?"
+        
+        # Get answer - DocVQA may have multiple answers
+        answer = None
+        for field in ['answer', 'answers', 'label', 'response', 'output']:
+            if field in item:
+                answers = item[field]
+                if isinstance(answers, list) and len(answers) > 0:
+                    answer = answers[0]  # Take first answer for training
+                else:
+                    answer = str(answers)
+                break
+        
+        if answer is None:
+            answer = "Unknown"
         
         return {
             'image': image,
-            'question': item['question'],
-            'answer': answer,
+            'question': str(question),
+            'answer': str(answer),
             'id': f"docvqa_{idx}",
             'dataset': 'docvqa'
         }
@@ -575,12 +647,35 @@ class OCRVQADataset(Dataset):
         except Exception as e:
             print(f"❌ Failed to load OCR-VQA: {e}")
             self.data = []
+        
+        # SHIRG-FIX: [2025-07-30] - Flatten OCR-VQA multiple Q&A pairs
+        # ISSUE: OCR-VQA has multiple questions per image (5 Q&A pairs)
+        # SOLUTION: Flatten to individual Q&A samples at init time
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Increases effective dataset size by 5x
+        self.flattened_data = []
+        for item in self.data:
+            questions = item.get('questions', [])
+            answers = item.get('answers', [])
+            if questions and answers:
+                # Create one sample per Q&A pair
+                for q, a in zip(questions, answers):
+                    self.flattened_data.append({
+                        'image': item['image'],
+                        'question': q,
+                        'answer': a,
+                        'image_id': item.get('image_id', ''),
+                        'title': item.get('title', ''),
+                        'authorName': item.get('authorName', ''),
+                    })
+        
+        print(f"   Flattened to {len(self.flattened_data)} Q&A pairs")
     
     def __len__(self):
-        return len(self.data)
+        return len(self.flattened_data) if self.flattened_data else 0
     
     def __getitem__(self, idx):
-        item = self.data[idx]
+        item = self.flattened_data[idx]
         
         # OCR-VQA format - handle image data
         image = item.get('image', None)
@@ -618,11 +713,11 @@ class OCRVQADataset(Dataset):
             new_image.paste(image, (paste_x, paste_y))
             image = new_image
         
-        # OCR-VQA has questions about book metadata
+        # Use pre-flattened Q&A data
         return {
             'image': image,
-            'question': item.get('question', 'What text is visible in this image?'),
-            'answer': item.get('answer', ''),
+            'question': str(item['question']),
+            'answer': str(item['answer']),
             'id': f"ocrvqa_{idx}",
             'dataset': 'ocrvqa'
         }
@@ -719,10 +814,24 @@ class InfoVQADataset(Dataset):
             new_image.paste(image, (paste_x, paste_y))
             image = new_image
         
+        # SHIRG-FIX: [2025-07-30] - InfoVQA uses 'query' field
+        # ISSUE: InfoVQA uses 'query' not 'question'
+        # SOLUTION: Use correct field names for InfoVQA
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Correctly loads InfoVQA dataset
+        
+        # InfoVQA uses 'query' field for questions
+        question = item.get('query', None)
+        if question is None:
+            question = item.get('question', 'What information is shown in this infographic?')
+        
+        # InfoVQA uses 'answer' field
+        answer = item.get('answer', '')
+        
         return {
             'image': image,
-            'question': item.get('question', 'What information is shown in this infographic?'),
-            'answer': item.get('answer', ''),
+            'question': str(question),
+            'answer': str(answer),
             'id': f"infovqa_{idx}",
             'dataset': 'infovqa'
         }

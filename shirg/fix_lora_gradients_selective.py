@@ -21,6 +21,12 @@ import gc
 def find_modules_with_lora(model: nn.Module) -> Dict[str, Any]:
     """
     Find all modules that have LoRA adapters and their base modules
+    
+    SHIRG-FIX: [2025-07-30] - Handle DDP-wrapped models
+    ISSUE: DDP wrapping changes module paths by adding 'module.' prefix
+    SOLUTION: Unwrap DDP models and handle both wrapped/unwrapped paths
+    LAVIDA IMPACT: None
+    SHIRG IMPACT: Fixes inconsistent gradient flow in distributed training
     """
     modules_info = {
         'lora_modules': {},  # module_path -> lora_params
@@ -29,13 +35,26 @@ def find_modules_with_lora(model: nn.Module) -> Dict[str, Any]:
         'base_param_names': set()
     }
     
+    # Check if model is wrapped in DDP
+    actual_model = model
+    is_ddp = False
+    if hasattr(model, 'module'):
+        # DDP wrapped model
+        actual_model = model.module
+        is_ddp = True
+    
     # First, find all LoRA parameters
     for name, param in model.named_parameters():
         if 'lora' in name.lower():
             modules_info['lora_param_names'].add(name)
             
+            # Remove DDP prefix if present
+            clean_name = name
+            if is_ddp and name.startswith('module.'):
+                clean_name = name[7:]  # Remove 'module.' prefix
+            
             # Extract base module path
-            parts = name.split('.')
+            parts = clean_name.split('.')
             base_path = []
             for i, part in enumerate(parts):
                 if 'lora' in part.lower():
@@ -50,9 +69,9 @@ def find_modules_with_lora(model: nn.Module) -> Dict[str, Any]:
     # Now find the actual base modules
     for base_path in modules_info['lora_modules']:
         try:
-            # Navigate to the module
+            # Navigate to the module (use actual_model to avoid DDP wrapper)
             parts = base_path.split('.')
-            module = model
+            module = actual_model
             for part in parts:
                 if hasattr(module, part):
                     module = getattr(module, part)
@@ -70,8 +89,10 @@ def find_modules_with_lora(model: nn.Module) -> Dict[str, Any]:
                     if 'lora' not in param_name.lower():
                         full_name = f"{base_path}.{param_name}"
                         modules_info['base_param_names'].add(full_name)
-        except:
-            pass
+        except Exception as e:
+            # Debug logging for troubleshooting
+            if 'vision_tower' in base_path:
+                print(f"⚠️ Failed to find module for path: {base_path}, error: {e}")
     
     return modules_info
 
@@ -121,8 +142,19 @@ def apply_selective_gradient_flow(
     results['base_params_enabled'] = enabled_count
     
     # Step 3: Special handling for vision tower
-    if hasattr(model, 'get_model'):
-        base_model = model.get_model()
+    # SHIRG-FIX: [2025-07-30] - Handle DDP-wrapped models for vision tower
+    # ISSUE: DDP wrapping changes model structure access
+    # SOLUTION: Unwrap DDP model when accessing vision tower
+    # LAVIDA IMPACT: None
+    # SHIRG IMPACT: Ensures vision tower gradient flow works in distributed training
+    
+    # Get the actual model (unwrap DDP if needed)
+    actual_model = model
+    if hasattr(model, 'module'):
+        actual_model = model.module
+    
+    if hasattr(actual_model, 'get_model'):
+        base_model = actual_model.get_model()
         if hasattr(base_model, 'get_vision_tower'):
             vision_tower = base_model.get_vision_tower()
             if vision_tower is not None:

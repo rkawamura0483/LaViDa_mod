@@ -167,36 +167,6 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             
             rank0_print(f"✅ Optimizer recreated with only LoRA parameters")
         
-        # SHIRG-FIX: 2025-07-30 - Apply selective gradient flow for multi-GPU
-        # ISSUE: PEFT LoRA requires gradient flow through base modules
-        # SOLUTION: Enable requires_grad on base modules but only optimize LoRA params
-        # LAVIDA IMPACT: Base modules stay frozen but allow gradient flow
-        # SHIRG IMPACT: Enables proper LoRA gradient computation
-        try:
-            from shirg.fix_lora_gradients_selective import (
-                apply_selective_gradient_flow,
-                get_lora_parameters_only,
-                verify_selective_gradient_flow,
-                apply_memory_optimizations
-            )
-            
-            # Apply selective gradient flow fix
-            rank0_print(f"🔧 Applying selective gradient flow fix...")
-            results = apply_selective_gradient_flow(self.model, debug=True)
-            
-            if results['success']:
-                rank0_print(f"✅ Selective gradient flow enabled")
-                rank0_print(f"   Base params with grad=True: {results['base_params_enabled']}")
-                rank0_print(f"   LoRA params found: {results['lora_params_found']}")
-            else:
-                rank0_print(f"⚠️ Selective gradient flow fix failed")
-            
-            # Apply memory optimizations for multi-GPU
-            apply_memory_optimizations(self.model, self.config.__dict__)
-            
-        except ImportError:
-            rank0_print("⚠️ Selective gradient fix not available")
-        
         # SHIRG-FIX: 2025-07-30 - Handle multi-GPU setup for 8 GPU training
         # ISSUE: Need proper handling for distributed model with device_map
         # SOLUTION: Check if model uses device_map and handle appropriately
@@ -248,6 +218,45 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 rank0_print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")
             else:
                 rank0_print(f"✅ Model already wrapped with DDP")
+        
+        # SHIRG-FIX: 2025-07-30 - Apply selective gradient flow AFTER DDP wrapping
+        # ISSUE: PEFT LoRA requires gradient flow through base modules
+        # SOLUTION: Enable requires_grad on base modules but only optimize LoRA params
+        # LAVIDA IMPACT: Base modules stay frozen but allow gradient flow
+        # SHIRG IMPACT: Fixes inconsistent gradient flow in distributed training
+        if dist.is_initialized():
+            try:
+                from shirg.fix_lora_gradients_selective import (
+                    apply_selective_gradient_flow,
+                    get_lora_parameters_only,
+                    verify_selective_gradient_flow,
+                    apply_memory_optimizations
+                )
+                
+                # Apply selective gradient flow fix AFTER DDP wrapping
+                rank0_print(f"\n🔧 Applying selective gradient flow fix (post-DDP)...")
+                results = apply_selective_gradient_flow(self.model, debug=(dist.get_rank() == 0))
+                
+                if results['success']:
+                    rank0_print(f"✅ Selective gradient flow enabled")
+                    rank0_print(f"   Base params with grad=True: {results['base_params_enabled']}")
+                    rank0_print(f"   LoRA params found: {results['lora_params_found']}")
+                    rank0_print(f"   Vision tower fixed: {results['vision_tower_fixed']}")
+                else:
+                    rank0_print(f"⚠️ Selective gradient flow fix failed")
+                
+                # Apply memory optimizations for multi-GPU
+                apply_memory_optimizations(self.model, self.config.__dict__)
+                
+                # Verify the setup
+                verify_results = verify_selective_gradient_flow(self.model, debug=(dist.get_rank() == 0))
+                if not verify_results['setup_correct']:
+                    rank0_print("⚠️ Setup verification failed - check optimizer configuration")
+                
+            except ImportError:
+                rank0_print("⚠️ Selective gradient fix not available")
+            except Exception as e:
+                rank0_print(f"⚠️ Error applying selective gradient flow: {e}")
     
     def save_checkpoint(self, *args, **kwargs):
         """Only save checkpoints from rank 0"""
