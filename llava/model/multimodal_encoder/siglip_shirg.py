@@ -275,6 +275,17 @@ class SigLipShirgExtensions:
         if len(global_view.shape) == 3:
             global_view = global_view.unsqueeze(0)
         
+        # SHIRG-FIX: 2025-07-30 - Handle distributed model device placement
+        # ISSUE: When using accelerate with device_map="auto", vision_tower may be distributed across GPUs
+        # SOLUTION: Move input to the first device of the vision tower model
+        # LAVIDA IMPACT: Ensures compatibility with multi-GPU setups
+        # SHIRG IMPACT: Fixes device mismatch errors during forward pass
+        
+        # Get the device of the first parameter in vision_tower
+        vision_tower_device = next(self.vision_tower.parameters()).device
+        if global_view.device != vision_tower_device:
+            global_view = global_view.to(vision_tower_device)
+        
         # Process through vision tower
         image_forward_outs = self.vision_tower(global_view, output_hidden_states=True)
         global_features = image_forward_outs.hidden_states[-1]  # [B, 1024, D] for 448²
@@ -322,6 +333,17 @@ class SigLipShirgExtensions:
         # Add batch dimension if needed
         if len(foveal_view.shape) == 3:
             foveal_view = foveal_view.unsqueeze(0)
+        
+        # SHIRG-FIX: 2025-07-30 - Handle distributed model device placement for foveal view
+        # ISSUE: Foveal view also needs proper device placement for distributed models
+        # SOLUTION: Move foveal view to vision tower's device before processing
+        # LAVIDA IMPACT: Ensures compatibility with multi-GPU setups
+        # SHIRG IMPACT: Fixes device mismatch errors during foveal processing
+        
+        # Get the device of the first parameter in vision_tower
+        vision_tower_device = next(self.vision_tower.parameters()).device
+        if foveal_view.device != vision_tower_device:
+            foveal_view = foveal_view.to(vision_tower_device)
         
         # Process through vision tower
         image_forward_outs = self.vision_tower(foveal_view, output_hidden_states=True)

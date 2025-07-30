@@ -719,6 +719,13 @@ class LlavaMetaForCausalLM(ABC):
                         if "nobase" in mm_patch_merge_type:
                             pass
                         else:
+                            # SHIRG-FIX: 2025-07-30 - Ensure base_image_feature and image_feature are on same device
+                            # ISSUE: Device mismatch when concatenating base and image features
+                            # SOLUTION: Move base_image_feature to image_feature's device
+                            # LAVIDA IMPACT: Fixes multi-GPU compatibility  
+                            # SHIRG IMPACT: Enables 8-GPU training without errors
+                            if base_image_feature.device != image_feature.device:
+                                base_image_feature = base_image_feature.to(image_feature.device)
                             image_feature = torch.cat((base_image_feature, image_feature), dim=0)
                         # DEBUG: Log shape after spatial_unpad processing
                         print(f"SPATIAL-UNPAD-DEBUG: Multi-patch processed shape: {image_feature.shape}")
@@ -728,7 +735,15 @@ class LlavaMetaForCausalLM(ABC):
                     else:  # single image operations
                         image_feature = image_feature[0]
                         if "unpad" in mm_patch_merge_type:
-                            image_feature = torch.cat((image_feature, self.model.image_newline[None]), dim=0)
+                            # SHIRG-FIX: 2025-07-30 - Ensure image_newline is on same device as image_feature
+                            # ISSUE: Device mismatch when concatenating image_feature and image_newline
+                            # SOLUTION: Move image_newline to image_feature's device
+                            # LAVIDA IMPACT: Fixes multi-GPU compatibility
+                            # SHIRG IMPACT: Enables 8-GPU training without errors
+                            image_newline = self.model.image_newline[None]
+                            if image_newline.device != image_feature.device:
+                                image_newline = image_newline.to(image_feature.device)
+                            image_feature = torch.cat((image_feature, image_newline), dim=0)
                         # DEBUG: Log shape after single image processing
                         print(f"SPATIAL-UNPAD-DEBUG: Single image processed shape: {image_feature.shape}")
                         new_image_features.append(image_feature)
@@ -777,6 +792,13 @@ class LlavaMetaForCausalLM(ABC):
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
                 cur_input_embeds_1 = self.get_model().embed_tokens(cur_input_ids)
+                # SHIRG-FIX: 2025-07-30 - Ensure tensors are on same device before concatenation
+                # ISSUE: cur_input_embeds_1 and cur_image_features may be on different devices in multi-GPU setup
+                # SOLUTION: Move cur_image_features to the same device as cur_input_embeds_1
+                # LAVIDA IMPACT: Fixes multi-GPU compatibility
+                # SHIRG IMPACT: Enables training on 8 GPUs without device errors
+                if cur_image_features.device != cur_input_embeds_1.device:
+                    cur_image_features = cur_image_features.to(cur_input_embeds_1.device)
                 cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
                 new_input_embeds.append(cur_input_embeds)
                 new_labels.append(labels[batch_idx])
