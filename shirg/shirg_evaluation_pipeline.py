@@ -214,8 +214,10 @@ class SHIRGEvaluationPipeline:
         
         results = []
         start_time = time.time()
+        sample_times = []  # Track individual sample times
         
         for idx, sample in enumerate(dataset_samples):
+            sample_start_time = time.time()
             try:
                 # Extract image path and question from sample format
                 if isinstance(sample.get('image_path'), str):
@@ -301,6 +303,10 @@ class SHIRGEvaluationPipeline:
                 # Evaluate using dataset-specific metrics
                 eval_scores = self.evaluate_single_sample(prediction, ground_truth_list, dataset_type)
                 
+                # Calculate sample inference time
+                sample_elapsed = time.time() - sample_start_time
+                sample_times.append(sample_elapsed)
+                
                 # Store result (keep original ground_truth format for JSON output)
                 result = {
                     'config': config_name,
@@ -309,6 +315,7 @@ class SHIRGEvaluationPipeline:
                     'question': question,
                     'prediction': prediction,
                     'ground_truth': ground_truth,  # Keep original format
+                    'inference_time': sample_elapsed,
                     **eval_scores
                 }
                 results.append(result)
@@ -356,13 +363,34 @@ class SHIRGEvaluationPipeline:
         
         # Get all metric columns (excluding metadata columns)
         metric_columns = [col for col in metrics_df.columns if col not in 
-                         ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error']]
+                         ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error', 'inference_time']]
+        
+        # Calculate timing statistics
+        # SHIRG-FIX: 2025-07-30 - Add detailed timing statistics
+        # ISSUE: Need more detailed timing information beyond just average
+        # SOLUTION: Calculate min, max, std, and percentiles for sample times
+        # RESEARCH IMPACT: Enables performance analysis and outlier detection
+        if sample_times:
+            avg_time = np.mean(sample_times)
+            std_time = np.std(sample_times)
+            min_time = np.min(sample_times)
+            max_time = np.max(sample_times)
+            median_time = np.median(sample_times)
+            p95_time = np.percentile(sample_times, 95)
+        else:
+            avg_time = std_time = min_time = max_time = median_time = p95_time = 0
         
         aggregated = {
             'config_name': config_name,
             'description': config['description'],
             'num_samples': len(results),
-            'elapsed_time': elapsed_time
+            'elapsed_time': elapsed_time,
+            'avg_time_per_sample': avg_time,
+            'std_time_per_sample': std_time,
+            'min_time_per_sample': min_time,
+            'max_time_per_sample': max_time,
+            'median_time_per_sample': median_time,
+            'p95_time_per_sample': p95_time
         }
         
         # Aggregate each metric found in the results
@@ -441,7 +469,7 @@ class SHIRGEvaluationPipeline:
             
             # Add all available metrics for this sample
             metric_keys = [k for k in result.keys() if k not in 
-                          ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error']]
+                          ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error', 'inference_time']]
             for metric in metric_keys:
                 sample_data['metrics'][metric] = result[metric]
             
@@ -517,7 +545,9 @@ class SHIRGEvaluationPipeline:
         
         for col in summary_df.columns:
             # Skip non-metric columns
-            if col in ['config_name', 'description', 'num_samples', 'elapsed_time']:
+            if col in ['config_name', 'description', 'num_samples', 'elapsed_time', 'avg_time_per_sample', 
+                      'std_time_per_sample', 'min_time_per_sample', 'max_time_per_sample', 
+                      'median_time_per_sample', 'p95_time_per_sample']:
                 continue
             
             # Skip aggregate metric columns
@@ -613,6 +643,10 @@ class SHIRGEvaluationPipeline:
             print(f"   Token F1: {result['token_f1_mean']:.3f} (±{result.get('token_f1_std', 0):.3f})")
         
         print(f"   Time: {result.get('elapsed_time', 0):.1f}s")
+        print(f"   Per-sample timing: avg={result.get('avg_time_per_sample', 0):.2f}s, " +
+              f"std={result.get('std_time_per_sample', 0):.2f}s, " +
+              f"min={result.get('min_time_per_sample', 0):.2f}s, " +
+              f"max={result.get('max_time_per_sample', 0):.2f}s")
     
     def _print_per_dataset_summary(self, summary_df: pd.DataFrame):
         """Print per-dataset average metrics"""
@@ -628,7 +662,9 @@ class SHIRGEvaluationPipeline:
         # Extract dataset names dynamically from column names
         for col in summary_df.columns:
             # Skip non-metric columns
-            if col in ['config_name', 'description', 'num_samples', 'elapsed_time']:
+            if col in ['config_name', 'description', 'num_samples', 'elapsed_time', 'avg_time_per_sample', 
+                      'std_time_per_sample', 'min_time_per_sample', 'max_time_per_sample', 
+                      'median_time_per_sample', 'p95_time_per_sample']:
                 continue
             
             # Skip aggregate metric columns (those ending with _mean or _std)
@@ -764,6 +800,10 @@ class SHIRGEvaluationPipeline:
         if 'elapsed_time' in summary_df.columns:
             available_cols.append('elapsed_time')
             format_funcs['elapsed_time'] = lambda x: f'{x:.1f}s'
+            
+        if 'avg_time_per_sample' in summary_df.columns:
+            available_cols.append('avg_time_per_sample')
+            format_funcs['avg_time_per_sample'] = lambda x: f'{x:.2f}s'
         
         display_df = summary_df[available_cols].copy()
         
@@ -780,7 +820,9 @@ class SHIRGEvaluationPipeline:
         if 'token_f1_mean' in display_df.columns:
             col_names['token_f1_mean'] = 'Token F1'
         if 'elapsed_time' in display_df.columns:
-            col_names['elapsed_time'] = 'Time'
+            col_names['elapsed_time'] = 'Total Time'
+        if 'avg_time_per_sample' in display_df.columns:
+            col_names['avg_time_per_sample'] = 'Avg Time/Sample'
         
         display_df = display_df.rename(columns=col_names)
         
