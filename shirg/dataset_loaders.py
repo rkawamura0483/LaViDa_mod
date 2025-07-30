@@ -710,11 +710,11 @@ class OCRVQADataset(Dataset):
         if not self.flattened_data:
             try:
                 # SHIRG-FIX: [2025-07-30] - Add OCR-VQA for training
-            # ISSUE: Need OCR-focused dataset for text reading capabilities
-            # SOLUTION: Use howard-hou/OCR-VQA which has train/val/test splits
-            # LAVIDA IMPACT: None
-            # SHIRG IMPACT: Provides book cover OCR samples (1M QA pairs)
-            dataset = load_dataset("howard-hou/OCR-VQA", split=self.split, cache_dir=cache_dir)
+                # ISSUE: Need OCR-focused dataset for text reading capabilities
+                # SOLUTION: Use howard-hou/OCR-VQA which has train/val/test splits
+                # LAVIDA IMPACT: None
+                # SHIRG IMPACT: Provides book cover OCR samples (1M QA pairs)
+                dataset = load_dataset("howard-hou/OCR-VQA", split=self.split, cache_dir=cache_dir)
             self.data = dataset
             
             # Limit samples if requested
