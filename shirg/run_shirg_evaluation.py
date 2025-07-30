@@ -35,6 +35,7 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
 
 @dataclass
 class EvaluationConfig:
@@ -125,7 +126,6 @@ class SHIRGFixedEvaluator:
     def load_model(self, model_config: Dict[str, Any]):
         """Load model with specified configuration"""
         try:
-            from shirg.lavida_shirg_integration import LaViDaSHIRGWrapper
             
             logger.info(f"Loading model with config: {model_config}")
             

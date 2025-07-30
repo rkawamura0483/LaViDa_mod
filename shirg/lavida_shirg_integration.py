@@ -305,8 +305,11 @@ class LaViDaSHIRGWrapper:
         
         # Add SHIRG configuration to model config
         self.model.config.use_shirg = True
+        self.model.config.enable_shirg = True  # Both flags needed for SHIRG
         self.model.config.shirg_target_tokens = self.shirg_config['target_tokens']
         self.model.config.shirg_alpha = self.shirg_config['alpha']
+        self.model.config.shirg_selection_method = self.selection_method
+        self.model.config.shirg_selection_params = self.selection_params
         
         print("✅ Applied LaViDa configuration fixes")
     
@@ -467,9 +470,6 @@ class LaViDaSHIRGWrapper:
                                 traceback.print_exc()
                             # Fallback to standard processing
                             return self._original_encode_images(images)
-                    else:
-                        # Baseline: use standard encode_images
-                        return self._original_encode_images(images)
                     else:
                         # Baseline: use standard encode_images
                         return self._original_encode_images(images)
