@@ -797,7 +797,7 @@ class OCRVQAResultAnalyzer:
             
             # For SHIRG 2-view mode, create a different visualization
             return self._create_shirg_2view_visualization(
-                sample_name, image, baseline_result, shirg_result, question, viz_dir
+                sample_name, image, baseline_result, shirg_result, question, viz_dir, model_runner
             )
             canvas = Image.new('RGB', (canvas_width, canvas_height), 'white')
             
@@ -1158,7 +1158,7 @@ class OCRVQAResultAnalyzer:
         except Exception as e:
             return f"Error generating summary report: {str(e)}"
     
-    def _create_shirg_2view_visualization(self, sample_name, image, baseline_result, shirg_result, question, viz_dir):
+    def _create_shirg_2view_visualization(self, sample_name, image, baseline_result, shirg_result, question, viz_dir, model_runner=None):
         """Create SHIRG 2-view visualization showing global (256) + foveal (724) token selection"""
         
         # SHIRG-2VIEW-FIX: 2025-07-30 - Create proper visualization for SHIRG 2-view mode
