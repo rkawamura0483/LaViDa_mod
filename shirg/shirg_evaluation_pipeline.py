@@ -545,11 +545,14 @@ def integrate_with_existing_evaluation():
     dataset_loader = OCRVQADatasetLoader()
     
     # Load dataset samples
-    samples = dataset_loader.get_real_ocr_vqa_samples()
+    samples_dict = dataset_loader.get_real_ocr_vqa_samples()
     
-    if not samples:
+    if not samples_dict:
         print("❌ No dataset samples loaded")
         return None
+    
+    # Convert dictionary to list for processing
+    samples = list(samples_dict.values())
     
     # Run evaluation with multiple configurations
     results_df = run_multi_config_evaluation(samples)
@@ -585,11 +588,14 @@ def main():
     # Load dataset
     from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader
     dataset_loader = OCRVQADatasetLoader()
-    samples = dataset_loader.get_real_ocr_vqa_samples()
+    samples_dict = dataset_loader.get_real_ocr_vqa_samples()
     
-    if not samples:
+    if not samples_dict:
         print("❌ No dataset samples loaded")
         return
+    
+    # Convert dictionary to list for processing
+    samples = list(samples_dict.values())
     
     # Limit samples if requested
     if args.samples:
