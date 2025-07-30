@@ -695,7 +695,17 @@ class DreamPrefixLMCache(Cache):
     
 
     
-import deepspeed
+# SHIRG-FIX: 2025-07-30 - Make deepspeed optional for SHIRG testing
+# ISSUE: deepspeed import prevents model loading when deepspeed not installed
+# SOLUTION: Make deepspeed import optional
+# LAVIDA IMPACT: Model can load without deepspeed
+# SHIRG IMPACT: Allows SHIRG testing without deepspeed dependency
+try:
+    import deepspeed
+    DEEPSPEED_AVAILABLE = True
+except ImportError:
+    DEEPSPEED_AVAILABLE = False
+    
 class DreamBaseModel(DreamPreTrainedModel):#
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`DreamDecoderLayer`]
@@ -787,17 +797,33 @@ class DreamBaseModel(DreamPreTrainedModel):#
                 all_hidden_states += (hidden_states,)
 
             if self.gradient_checkpointing and self.training:
-                layer_outputs = deepspeed.checkpointing.checkpoint(
-                    decoder_layer,
-                    hidden_states,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    use_cache,
-                    cache_position,
-                    position_embeddings,
-                )
+                if DEEPSPEED_AVAILABLE:
+                    layer_outputs = deepspeed.checkpointing.checkpoint(
+                        decoder_layer,
+                        hidden_states,
+                        attention_mask,
+                        position_ids,
+                        past_key_values,
+                        output_attentions,
+                        use_cache,
+                        cache_position,
+                        position_embeddings,
+                    )
+                else:
+                    # Fallback to PyTorch checkpointing
+                    from torch.utils.checkpoint import checkpoint
+                    layer_outputs = checkpoint(
+                        decoder_layer,
+                        hidden_states,
+                        attention_mask,
+                        position_ids,
+                        past_key_values,
+                        output_attentions,
+                        use_cache,
+                        cache_position,
+                        position_embeddings,
+                        use_reentrant=False,
+                    )
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,

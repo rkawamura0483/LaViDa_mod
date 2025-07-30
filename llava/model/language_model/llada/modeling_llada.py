@@ -175,20 +175,32 @@ def ensure_finite_(x: torch.Tensor, check_neg_inf: bool = True, check_pos_inf: b
     if check_pos_inf:
         x.masked_fill_(x == float("inf"), torch.finfo(x.dtype).max)
 
-import deepspeed
+# SHIRG-FIX: 2025-07-30 - Make deepspeed optional for SHIRG testing
+# ISSUE: deepspeed import prevents LaViDa from loading when deepspeed not installed
+# SOLUTION: Make deepspeed import optional and fallback to torch checkpointing
+# LAVIDA IMPACT: Uses torch checkpointing when deepspeed not available
+# SHIRG IMPACT: Allows SHIRG testing without deepspeed dependency
+try:
+    import deepspeed
+    DEEPSPEED_AVAILABLE = True
+except ImportError:
+    DEEPSPEED_AVAILABLE = False
+
 def activation_checkpoint_function(cfg: ModelConfig):
     preserve_rng_state = (
         (cfg.attention_dropout == 0.0) and (cfg.embedding_dropout == 0.0) and (cfg.residual_dropout == 0.0)
     )
     from torch.utils.checkpoint import checkpoint
 
-    # return partial(
-    #     checkpoint,
-    #     preserve_rng_state=preserve_rng_state,
-    #     use_reentrant=False,
-    # )
-    # raise NotImplementedError()
-    return deepspeed.checkpointing.checkpoint
+    if DEEPSPEED_AVAILABLE:
+        return deepspeed.checkpointing.checkpoint
+    else:
+        # Fallback to PyTorch checkpointing when deepspeed not available
+        return partial(
+            checkpoint,
+            preserve_rng_state=preserve_rng_state,
+            use_reentrant=False,
+        )
 
 
 class BufferCache(dict, MutableMapping[str, torch.Tensor]):
