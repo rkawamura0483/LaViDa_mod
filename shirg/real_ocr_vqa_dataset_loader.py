@@ -306,8 +306,18 @@ class OCRVQADatasetLoader:
                                     
                                     if 'answers' in example:
                                         answers = example['answers']
+                                        # SHIRG-FIX: 2025-07-30 - Handle VQAv2 nested answer format
+                                        # ISSUE: VQAv2 answers can be in nested dict format with 'answer' key
+                                        # SOLUTION: Check for dict format and extract 'answer' field
+                                        # RESEARCH IMPACT: Ensures proper ground truth extraction for evaluation
                                         if isinstance(answers, list) and len(answers) > 0:
-                                            ground_truth = answers[0]
+                                            # Check if answers[0] is a dict with 'answer' key (VQAv2 format)
+                                            if isinstance(answers[0], dict) and 'answer' in answers[0]:
+                                                ground_truth = answers[0]['answer']
+                                            else:
+                                                ground_truth = answers[0]
+                                        elif isinstance(answers, dict) and 'answer' in answers:
+                                            ground_truth = answers['answer']
                                         elif isinstance(answers, str):
                                             ground_truth = answers
                                     elif 'answer' in example:

@@ -281,34 +281,61 @@ class SHIRGEvaluationPipeline:
                 if dataset_type == "InfographicVQA":
                     dataset_type = "InfoVQA"
                 
-                # Evaluate using dataset-specific metrics
-                eval_scores = self.evaluate_single_sample(prediction, ground_truth, dataset_type)
+                # SHIRG-FIX: 2025-07-30 - Ensure ground_truth is always a list for evaluation
+                # ISSUE: evaluate_single_sample expects references as list, but ground_truth might be string
+                # SOLUTION: Convert ground_truth to list if it's a string
+                # RESEARCH IMPACT: Ensures consistent evaluation metric calculation
+                if isinstance(ground_truth, str):
+                    ground_truth_list = [ground_truth] if ground_truth else []
+                elif isinstance(ground_truth, list):
+                    ground_truth_list = ground_truth
+                else:
+                    ground_truth_list = [str(ground_truth)] if ground_truth is not None else []
                 
-                # Store result
+                # Evaluate using dataset-specific metrics
+                eval_scores = self.evaluate_single_sample(prediction, ground_truth_list, dataset_type)
+                
+                # Store result (keep original ground_truth format for JSON output)
                 result = {
                     'config': config_name,
                     'sample_id': sample.get('question_id', idx),
                     'dataset': sample.get('dataset_name', 'unknown'),
                     'question': question,
                     'prediction': prediction,
-                    'ground_truth': ground_truth,
+                    'ground_truth': ground_truth,  # Keep original format
                     **eval_scores
                 }
                 results.append(result)
                 
             except Exception as e:
-                print(f"   ⚠️ Error processing sample {idx}: {e}")
-                # Add failed result
+                # SHIRG-FIX: 2025-07-30 - Improved error handling and debugging
+                # ISSUE: Error just shows "0" which doesn't help debugging
+                # SOLUTION: Add detailed error information and traceback
+                # RESEARCH IMPACT: Helps debug evaluation pipeline issues
+                import traceback
+                error_msg = f"{type(e).__name__}: {str(e)}"
+                print(f"   ⚠️ Error processing sample {idx}: {error_msg}")
+                traceback.print_exc()
+                
+                # Try to extract ground truth safely
+                try:
+                    gt = sample.get('ground_truth', None)
+                    if gt is None:
+                        gt = sample.get('answers', sample.get('answer', ''))
+                except:
+                    gt = ''
+                
+                # Add failed result with detailed error
                 result = {
                     'config': config_name,
                     'sample_id': sample.get('question_id', idx),
                     'dataset': sample.get('dataset_name', 'unknown'),
                     'prediction': '',
-                    'ground_truth': sample.get('ground_truth', sample.get('answers', [sample.get('answer', '')])),
+                    'ground_truth': gt,
                     'anls': 0.0,
                     'exact_match': 0.0,
                     'token_f1': 0.0,
-                    'error': str(e)
+                    'error': error_msg
                 }
                 results.append(result)
             
