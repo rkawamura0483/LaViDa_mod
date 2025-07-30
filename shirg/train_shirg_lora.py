@@ -362,41 +362,41 @@ class ShirgLoraTrainer:
                     
             except ImportError:
                 rank0_print("⚠️ Aggressive fix not available, trying enhanced fix")
-            
-            # Try enhanced fix
-            try:
-                from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
                 
-                # Apply comprehensive fix
-                target_device = None
-                if hasattr(self, 'accelerator') and self.accelerator.device:
-                    target_device = self.accelerator.device
-                elif torch.cuda.is_available():
-                    target_device = torch.device("cuda:0")
-                
-                results = ensure_lora_parameters_trainable_enhanced(
-                    self.model,
-                    device=target_device,
-                    fix_device_mismatch=True
-                )
-                
-                if results['unfrozen_params'] > 0 or results['moved_components'] > 0:
-                    rank0_print(f"🔧 Enhanced LoRA Gradient Fix Applied:")
-                    rank0_print(f"   - Fixed {results['unfrozen_params']} frozen LoRA parameters")
-                    rank0_print(f"   - Moved {results['moved_components']} components to {target_device}")
-                    rank0_print(f"   - Total LoRA parameters: {results['total_lora_params']}")
-                    # Print updated trainable parameters
-                    self.model.print_trainable_parameters()
+                # Try enhanced fix
+                try:
+                    from shirg.fix_lora_gradients_enhanced import ensure_lora_parameters_trainable_enhanced
                     
-            except ImportError:
-                # Fallback to original fix
-                rank0_print("⚠️ Enhanced gradient fix not available, using basic fix")
-                from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
-                unfrozen_count = ensure_lora_parameters_trainable(self.model)
-                if unfrozen_count > 0:
-                    rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
-                    # Print updated trainable parameters
-                    self.model.print_trainable_parameters()
+                    # Apply comprehensive fix
+                    target_device = None
+                    if hasattr(self, 'accelerator') and self.accelerator.device:
+                        target_device = self.accelerator.device
+                    elif torch.cuda.is_available():
+                        target_device = torch.device("cuda:0")
+                    
+                    results = ensure_lora_parameters_trainable_enhanced(
+                        self.model,
+                        device=target_device,
+                        fix_device_mismatch=True
+                    )
+                    
+                    if results['unfrozen_params'] > 0 or results['moved_components'] > 0:
+                        rank0_print(f"🔧 Enhanced LoRA Gradient Fix Applied:")
+                        rank0_print(f"   - Fixed {results['unfrozen_params']} frozen LoRA parameters")
+                        rank0_print(f"   - Moved {results['moved_components']} components to {target_device}")
+                        rank0_print(f"   - Total LoRA parameters: {results['total_lora_params']}")
+                        # Print updated trainable parameters
+                        self.model.print_trainable_parameters()
+                        
+                except ImportError:
+                    # Fallback to original fix
+                    rank0_print("⚠️ Enhanced gradient fix not available, using basic fix")
+                    from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
+                    unfrozen_count = ensure_lora_parameters_trainable(self.model)
+                    if unfrozen_count > 0:
+                        rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
+                        # Print updated trainable parameters
+                        self.model.print_trainable_parameters()
         else:
             # Gradient fix disabled for DDP compatibility
             rank0_print("⚠️ Gradient flow fix disabled for DDP compatibility")
