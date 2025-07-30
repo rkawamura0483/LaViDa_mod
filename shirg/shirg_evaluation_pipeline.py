@@ -421,10 +421,21 @@ class SHIRGEvaluationPipeline:
     def _print_config_summary(self, result: Dict):
         """Print summary for a single configuration"""
         print(f"\n📊 {result['config_name']} Results:")
-        print(f"   ANLS: {result['anls_mean']:.3f} (±{result['anls_std']:.3f})")
-        print(f"   Exact Match: {result['exact_match_mean']:.3f}")
-        print(f"   Token F1: {result['token_f1_mean']:.3f} (±{result['token_f1_std']:.3f})")
-        print(f"   Time: {result['elapsed_time']:.1f}s")
+        
+        # SHIRG-FIX: 2025-07-30 - Handle missing metric fields gracefully
+        # ISSUE: Some metrics might not be calculated for all datasets
+        # SOLUTION: Check if fields exist before accessing them
+        # RESEARCH IMPACT: Allows evaluation to complete even with partial metrics
+        if 'anls_mean' in result:
+            print(f"   ANLS: {result['anls_mean']:.3f} (±{result.get('anls_std', 0):.3f})")
+        
+        if 'exact_match_mean' in result:
+            print(f"   Exact Match: {result['exact_match_mean']:.3f}")
+        
+        if 'token_f1_mean' in result:
+            print(f"   Token F1: {result['token_f1_mean']:.3f} (±{result.get('token_f1_std', 0):.3f})")
+        
+        print(f"   Time: {result.get('elapsed_time', 0):.1f}s")
     
     def _print_final_summary(self, summary_df: pd.DataFrame):
         """Print final comparison summary"""
@@ -432,31 +443,65 @@ class SHIRGEvaluationPipeline:
         print("🏆 SHIRG EVALUATION SUMMARY")
         print("=" * 80)
         
-        # Select key columns for display
-        display_cols = ['config_name', 'anls_mean', 'exact_match_mean', 'token_f1_mean', 'elapsed_time']
-        display_df = summary_df[display_cols].copy()
+        # SHIRG-FIX: 2025-07-30 - Handle missing columns in summary display
+        # ISSUE: Some metric columns might not exist for all evaluations
+        # SOLUTION: Only include columns that exist in the dataframe
+        # RESEARCH IMPACT: Ensures summary display works with partial metrics
+        
+        # Select key columns for display (only if they exist)
+        available_cols = ['config_name']
+        format_funcs = {}
+        
+        if 'anls_mean' in summary_df.columns:
+            available_cols.append('anls_mean')
+            format_funcs['anls_mean'] = '{:.3f}'.format
+            
+        if 'exact_match_mean' in summary_df.columns:
+            available_cols.append('exact_match_mean')
+            format_funcs['exact_match_mean'] = '{:.3f}'.format
+            
+        if 'token_f1_mean' in summary_df.columns:
+            available_cols.append('token_f1_mean')
+            format_funcs['token_f1_mean'] = '{:.3f}'.format
+            
+        if 'elapsed_time' in summary_df.columns:
+            available_cols.append('elapsed_time')
+            format_funcs['elapsed_time'] = lambda x: f'{x:.1f}s'
+        
+        display_df = summary_df[available_cols].copy()
         
         # Format numeric columns
-        display_df['anls_mean'] = display_df['anls_mean'].map('{:.3f}'.format)
-        display_df['exact_match_mean'] = display_df['exact_match_mean'].map('{:.3f}'.format)
-        display_df['token_f1_mean'] = display_df['token_f1_mean'].map('{:.3f}'.format)
-        display_df['elapsed_time'] = display_df['elapsed_time'].map('{:.1f}s'.format)
+        for col, fmt_func in format_funcs.items():
+            display_df[col] = display_df[col].map(fmt_func)
         
         # Rename columns for display
-        display_df.columns = ['Configuration', 'ANLS', 'Exact Match', 'Token F1', 'Time']
+        col_names = {'config_name': 'Configuration'}
+        if 'anls_mean' in display_df.columns:
+            col_names['anls_mean'] = 'ANLS'
+        if 'exact_match_mean' in display_df.columns:
+            col_names['exact_match_mean'] = 'Exact Match'
+        if 'token_f1_mean' in display_df.columns:
+            col_names['token_f1_mean'] = 'Token F1'
+        if 'elapsed_time' in display_df.columns:
+            col_names['elapsed_time'] = 'Time'
+        
+        display_df = display_df.rename(columns=col_names)
         
         print(display_df.to_string(index=False))
         
-        # Find best configuration
-        best_anls = summary_df.loc[summary_df['anls_mean'].idxmax()]
-        print(f"\n🥇 Best ANLS: {best_anls['config_name']} ({best_anls['anls_mean']:.3f})")
-        
-        # Calculate improvement over baseline
-        baseline = summary_df[summary_df['config_name'] == 'baseline'].iloc[0]
-        for _, row in summary_df.iterrows():
-            if row['config_name'] != 'baseline':
-                improvement = (row['anls_mean'] - baseline['anls_mean']) / baseline['anls_mean'] * 100
-                print(f"   {row['config_name']}: {improvement:+.1f}% over baseline")
+        # Find best configuration (if ANLS metric exists)
+        if 'anls_mean' in summary_df.columns:
+            best_anls = summary_df.loc[summary_df['anls_mean'].idxmax()]
+            print(f"\n🥇 Best ANLS: {best_anls['config_name']} ({best_anls['anls_mean']:.3f})")
+            
+            # Calculate improvement over baseline
+            baseline_df = summary_df[summary_df['config_name'] == 'baseline']
+            if not baseline_df.empty:
+                baseline = baseline_df.iloc[0]
+                for _, row in summary_df.iterrows():
+                    if row['config_name'] != 'baseline':
+                        improvement = (row['anls_mean'] - baseline['anls_mean']) / baseline['anls_mean'] * 100
+                        print(f"   {row['config_name']}: {improvement:+.1f}% over baseline")
         
         print("\n" + "=" * 80)
 
