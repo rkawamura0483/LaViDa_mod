@@ -20,6 +20,7 @@ import requests
 from io import BytesIO
 import random
 import copy
+from dataset_eval_configs import DatasetEvalConfig
 
 # SHIRG-FIX: 2025-07-28 - Add missing rank0_print function
 # ISSUE: NameError: name 'rank0_print' is not defined on line 865
@@ -59,7 +60,7 @@ except ImportError as e:
 class LaViDaModelRunner:
     """Handles LaViDa model loading, inference operations, and GPU memory management"""
     
-    def __init__(self, selection_method='base', selection_params=None):
+    def __init__(self, selection_method='base', selection_params=None, prompt_style='extractive'):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Baseline LaViDa model components (original encoder)
@@ -80,10 +81,14 @@ class LaViDaModelRunner:
         self.pretrained_path = "KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
         self.model_name = "llava_llada"
         self.conv_template_name = "llada"
+        self.prompt_style = prompt_style
         
         # SHIRG selection method configuration
         self.selection_method = selection_method
         self.selection_params = selection_params or {}
+        
+        # Initialize dataset evaluation config loader
+        self.eval_config_loader = DatasetEvalConfig('./')
     
     def _load_baseline_model(self):
         """Load baseline LaViDa model with original SigLIP encoder"""
@@ -360,9 +365,9 @@ class LaViDaModelRunner:
                 # Prepare input
                 if self.baseline_tokenizer is not None:
                     try:
-                        input_ids = self._prepare_input_ids(question, self.baseline_tokenizer)
+                        input_ids = self._prepare_input_ids(question, self.baseline_tokenizer, dataset_type)
                         if input_ids is not None:
-                            result = self._run_baseline_inference(image, input_ids, question, sample_name)
+                            result = self._run_baseline_inference(image, input_ids, question, sample_name, dataset_type)
                             baseline_results[sample_name] = result
                             print(f"   ✅ Baseline result: {result.get('response', 'No response')[:100]}...")
                         else:
@@ -444,8 +449,8 @@ class LaViDaModelRunner:
                 
                 # Prepare input
                 if self.shirg_tokenizer is not None:
-                    input_ids = self._prepare_input_ids(question, self.shirg_tokenizer)
-                    result = self._run_shirg_inference(shirg_image, input_ids, question, sample_name)
+                    input_ids = self._prepare_input_ids(question, self.shirg_tokenizer, dataset_type)
+                    result = self._run_shirg_inference(shirg_image, input_ids, question, sample_name, dataset_type)
                     shirg_results[sample_name] = result
                     print(f"   ✅ SHIRG result: {result.get('response', 'No response')[:100]}...")
                 else:
@@ -781,7 +786,7 @@ class LaViDaModelRunner:
             print(f"   ❌ Sample {sample_id}: Image validation failed: {e}")
             return None
     
-    def _prepare_input_ids(self, question, tokenizer):
+    def _prepare_input_ids(self, question, tokenizer, dataset_type=None):
         """Prepare input IDs for inference following EXACT original LaViDa pattern"""
         try:
             # LAVIDA-EXACT-FIX: 2025-07-29 - Use EXACT original LaViDa conversation pattern
@@ -807,9 +812,23 @@ class LaViDaModelRunner:
                 conv_template_name = "llada"  # Exact same as original
                 
                 print(f"   📝 Using LaViDa conversation template: {conv_template_name}")
+                print(f"   📝 Prompt style: {self.prompt_style}")
                 
-                # Build question exactly like original predict.py
-                formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+                # Build question based on prompt style and dataset
+                if self.prompt_style == 'extractive' and dataset_type:
+                    # DATASET-SPECIFIC-PROMPT-FIX: 2025-01-30 - Use dataset-specific prompts from YAML
+                    # ISSUE: Different datasets need different prompts and generation settings
+                    # SOLUTION: Load exact prompts from lmms-eval YAML configurations
+                    # RESEARCH IMPACT: Ensures fair comparison with proper evaluation protocol
+                    # LAVIDA IMPACT: Matches exactly how LaViDa was evaluated in the paper
+                    formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + self.eval_config_loader.format_question_with_prompts(question, dataset_type)
+                    print(f"   📝 Using {dataset_type} specific prompts")
+                elif self.prompt_style == 'extractive':
+                    # Default extractive format if no dataset type specified
+                    formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question + "\nAnswer the question using a single word or phrase."
+                else:
+                    # Use original conversational format
+                    formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question
                 
                 # DEEPCOPY-FIX: 2025-07-29 - Handle problematic tokenizer in conversation template
                 # ISSUE: copy.deepcopy fails if conversation template has problematic tokenizer
@@ -886,7 +905,12 @@ class LaViDaModelRunner:
                     )
                     
                     # Build conversation following original pattern
-                    formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question
+                    if self.prompt_style == 'extractive' and dataset_type:
+                        formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + self.eval_config_loader.format_question_with_prompts(question, dataset_type)
+                    elif self.prompt_style == 'extractive':
+                        formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question + "\nAnswer the question using a single word or phrase."
+                    else:
+                        formatted_question = DEFAULT_IMAGE_TOKEN + "\n" + question
                     conv.append_message(conv.roles[0], formatted_question)
                     conv.append_message(conv.roles[1], None)
                     prompt_question = conv.get_prompt()
@@ -903,7 +927,12 @@ class LaViDaModelRunner:
                     
                     # Final fallback: Simple LaViDa-compatible prompt
                     try:
-                        simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + question
+                        if self.prompt_style == 'extractive' and dataset_type:
+                            simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + self.eval_config_loader.format_question_with_prompts(question, dataset_type)
+                        elif self.prompt_style == 'extractive':
+                            simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + question + "\nAnswer the question using a single word or phrase."
+                        else:
+                            simple_prompt = DEFAULT_IMAGE_TOKEN + "\n" + question
                         input_ids = tokenizer_image_token(simple_prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors="pt").unsqueeze(0).to(self.device)
                         return input_ids
                     except Exception as simple_error:
@@ -932,14 +961,14 @@ class LaViDaModelRunner:
             dummy_tokens = torch.tensor([[1, 2, 3]], dtype=torch.long)
             return dummy_tokens.to(self.device)
     
-    def _run_baseline_inference(self, image, input_ids, question, sample_id="baseline_sample"):
+    def _run_baseline_inference(self, image, input_ids, question, sample_id="baseline_sample", dataset_type=None):
         """Run inference with baseline LaViDa model"""
         start_time = time.time()
         
         try:
             # If input_ids is None, prepare it using the proper LaViDa method
             if input_ids is None:
-                input_ids = self._prepare_input_ids(question, self.baseline_tokenizer)
+                input_ids = self._prepare_input_ids(question, self.baseline_tokenizer, dataset_type)
             
             # Ensure input_ids is on the correct device
             if input_ids is not None:
@@ -988,18 +1017,22 @@ class LaViDaModelRunner:
                 # Get image sizes (required for LaViDa)
                 image_sizes = [image.size if hasattr(image, 'size') else (384, 384)]
                                 
+                # Get dataset-specific generation parameters
+                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
+                
                 # GENERATION-FIX: 2025-07-29 - Improved generation parameters for better OCR responses
-                # ISSUE: Short responses (7 characters) suggest generation parameter issues
-                # SOLUTION: Use better generation parameters for OCR tasks
-                # RESEARCH IMPACT: Enables proper OCR response generation for validation
-                # LAVIDA IMPACT: Maintains LaViDa diffusion generation while improving response quality
+                # DATASET-SPECIFIC-GENERATION: 2025-01-30 - Use dataset-specific generation parameters
+                # ISSUE: Different datasets need different max_new_tokens (e.g., ChartQA: 16, DocVQA: 32)
+                # SOLUTION: Load generation parameters from dataset YAML configurations
+                # RESEARCH IMPACT: Ensures fair evaluation matching official benchmarks
+                # LAVIDA IMPACT: Uses exact same generation settings as paper evaluation
                 result = self.baseline_model.generate(
                     input_ids,
                     images=image_tensor,
                     image_sizes=image_sizes,
-                    do_sample=False,        # Deterministic for reproducible results
-                    temperature=0.1,        # Low temperature for focused responses
-                    max_new_tokens=64,     # Increased for longer OCR responses
+                    do_sample=gen_kwargs.get('do_sample', False),        # From dataset config or deterministic default
+                    temperature=gen_kwargs.get('temperature', 0),        # From dataset config or 0 for greedy
+                    max_new_tokens=gen_kwargs.get('max_new_tokens', 32), # From dataset config or default 32
                     block_length=64,        # LaViDa diffusion block size
                     step_ratio=0.5,         # LaViDa diffusion steps (32 steps)
                     tokenizer=self.baseline_tokenizer,  # LaViDa requires tokenizer
@@ -1106,14 +1139,14 @@ class LaViDaModelRunner:
                 'error': str(e)
             }
     
-    def _run_shirg_inference(self, image, input_ids, question, sample_id="shirg_sample"):
+    def _run_shirg_inference(self, image, input_ids, question, sample_id="shirg_sample", dataset_type=None):
         """Run inference with SHIRG-enabled LaViDa model"""
         start_time = time.time()
         
         try:
             # If input_ids is None, prepare it using the proper LaViDa method
             if input_ids is None:
-                input_ids = self._prepare_input_ids(question, self.shirg_tokenizer)
+                input_ids = self._prepare_input_ids(question, self.shirg_tokenizer, dataset_type)
             
             # Ensure input_ids is on the correct device
             if input_ids is not None:
@@ -1245,14 +1278,17 @@ class LaViDaModelRunner:
                     print(f"      - images shape: {images_for_generate.shape}")
                 print(f"      - image_sizes: {image_sizes}")
                 
+                # Get dataset-specific generation parameters
+                gen_kwargs = self.eval_config_loader.get_generation_kwargs(dataset_type) if dataset_type else {}
+                
                 # Use identical LaViDa generation parameters as baseline
                 result = self.shirg_model.generate(
                     input_ids,
                     images=images_for_generate,
                     image_sizes=image_sizes,
-                    do_sample=False,
-                    temperature=0.1,
-                    max_new_tokens=64,  # Same as baseline (increased for better OCR responses)
+                    do_sample=gen_kwargs.get('do_sample', False),        # From dataset config or deterministic default
+                    temperature=gen_kwargs.get('temperature', 0),        # From dataset config or 0 for greedy
+                    max_new_tokens=gen_kwargs.get('max_new_tokens', 32), # From dataset config or default 32
                     block_length=64,     # LaViDa diffusion block size
                     step_ratio=0.5,      # LaViDa diffusion steps
                     tokenizer=self.shirg_tokenizer,

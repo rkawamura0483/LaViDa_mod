@@ -26,7 +26,7 @@ from real_ocr_vqa_dataset_loader import OCRVQADatasetLoader, OCRVQAResultAnalyze
 class RealOCRVQAValidator:
     """Main validator orchestrating dataset loading, model inference, and result analysis"""
     
-    def __init__(self, selection_method='base', selection_params=None):
+    def __init__(self, selection_method='base', selection_params=None, prompt_style='extractive'):
         """
         Initialize validator with SHIRG selection method configuration
         
@@ -38,14 +38,19 @@ class RealOCRVQAValidator:
                 - radial_sigma: σ for radial weighting (default: 0.65)
                 - merge_threshold: Similarity threshold (default: 0.9)
                 - merge_similar: Enable token merging (default: False)
+            prompt_style: Prompt style for VQA evaluation ('extractive' or 'conversational')
+                - 'extractive': Adds "\nAnswer the question using a single word or phrase."
+                - 'conversational': Uses default LaViDa conversation style
         """
         self.selection_method = selection_method
         self.selection_params = selection_params or {}
+        self.prompt_style = prompt_style
         
-        # Initialize components with selection method
+        # Initialize components with selection method and prompt style
         self.model_runner = LaViDaModelRunner(
             selection_method=selection_method,
-            selection_params=selection_params
+            selection_params=selection_params,
+            prompt_style=prompt_style
         )
         self.dataset_loader = OCRVQADatasetLoader()
         self.result_analyzer = OCRVQAResultAnalyzer()
@@ -109,14 +114,15 @@ class RealOCRVQAValidator:
         
         return all_results
 
-def run_validation_with_method(method='base', params=None):
+def run_validation_with_method(method='base', params=None, prompt_style='extractive'):
     """Run validation with specific selection method"""
     print(f"\n{'='*60}")
     print(f"🧪 Running validation with method: {method.upper()}")
     print(f"   Parameters: {params}")
+    print(f"   Prompt style: {prompt_style}")
     print(f"{'='*60}\n")
     
-    validator = RealOCRVQAValidator(selection_method=method, selection_params=params)
+    validator = RealOCRVQAValidator(selection_method=method, selection_params=params, prompt_style=prompt_style)
     results = validator.run_real_ocr_vqa_validation()
     
     print(f"\n🎉 Baseline vs SHIRG-{method.upper()} comparison complete!")
@@ -142,6 +148,9 @@ def main():
                       help='Enable token merging for similar tokens')
     parser.add_argument('--merge-threshold', type=float, default=0.9,
                       help='Similarity threshold for token merging')
+    parser.add_argument('--prompt-style', type=str, default='extractive',
+                      choices=['extractive', 'conversational'],
+                      help='Prompt style: extractive (for VQA metrics) or conversational (LaViDa default)')
     
     args = parser.parse_args()
     
@@ -162,7 +171,7 @@ def main():
         
         all_results = {}
         for method, params in methods_configs:
-            results = run_validation_with_method(method, params)
+            results = run_validation_with_method(method, params, prompt_style=args.prompt_style)
             all_results[method] = results
         
         # Compare results across methods
@@ -189,7 +198,7 @@ def main():
                 'merge_threshold': args.merge_threshold
             }
         
-        return run_validation_with_method(args.method, params)
+        return run_validation_with_method(args.method, params, prompt_style=args.prompt_style)
 
 if __name__ == "__main__":
     main()
