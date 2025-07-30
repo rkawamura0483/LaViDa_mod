@@ -458,18 +458,29 @@ class SHIRGEvaluationPipeline:
         dataset_metrics = defaultdict(lambda: defaultdict(list))
         
         # Debug: print all columns to see what we have
-        print(f"DEBUG: Available columns: {list(summary_df.columns)}")
+        # print(f"DEBUG: Available columns: {list(summary_df.columns)}")
         
+        # Extract dataset names dynamically from column names
         for col in summary_df.columns:
+            # Skip non-metric columns
+            if col in ['config_name', 'description', 'num_samples', 'elapsed_time']:
+                continue
+            
+            # Skip aggregate metric columns (those ending with _mean or _std)
+            if col.endswith('_mean') or col.endswith('_std'):
+                continue
+            
             # Look for columns with pattern: dataset_name_metric
-            parts = col.split('_')
-            if len(parts) >= 2:
-                # Check if this is a dataset-specific metric
-                for dataset_name in ['DocVQA', 'InfoVQA', 'ChartQA', 'TextVQA', 'OCRVQA', 'AI2D', 'ScienceQA']:
-                    if col.startswith(dataset_name + '_'):
-                        metric_name = col.replace(dataset_name + '_', '')
-                        dataset_metrics[dataset_name][metric_name] = col
-                        break
+            # Find the last underscore to split dataset name from metric
+            last_underscore = col.rfind('_')
+            if last_underscore > 0:
+                potential_dataset = col[:last_underscore]
+                potential_metric = col[last_underscore + 1:]
+                
+                # Check if this looks like a valid metric name
+                metric_names = ['relaxed_accuracy', 'exact_match', 'accuracy', 'anls', 'vqa_accuracy', 'token_f1']
+                if potential_metric in metric_names:
+                    dataset_metrics[potential_dataset][potential_metric] = col
         
         # Check if we found any dataset-specific metrics
         if not dataset_metrics:
@@ -478,6 +489,9 @@ class SHIRGEvaluationPipeline:
             print("- Dataset names in the data don't match expected patterns")
             print("- Consider checking the dataset names in your evaluation data")
         else:
+            # Count datasets with valid data
+            datasets_with_data = []
+            
             # Print metrics for each dataset
             for dataset_name in sorted(dataset_metrics.keys()):
                 print(f"\n{dataset_name}:")
@@ -499,26 +513,44 @@ class SHIRGEvaluationPipeline:
                 
                 if dataset_data:
                     dataset_df = pd.DataFrame(dataset_data)
-                    print(dataset_df.to_string(index=False))
                     
-                    # Find best configuration for this dataset (if anls exists)
-                    anls_col = dataset_metrics[dataset_name].get('anls')
-                    if anls_col and anls_col in summary_df.columns:
-                        valid_rows = summary_df[summary_df[anls_col].notna()]
-                        if not valid_rows.empty:
-                            best_idx = valid_rows[anls_col].idxmax()
-                            best_config = summary_df.loc[best_idx]
-                            print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
-                            
-                            # Calculate improvement over baseline for this dataset
-                            baseline_df = summary_df[summary_df['config_name'] == 'baseline']
-                            if not baseline_df.empty and anls_col in baseline_df.columns:
-                                baseline_val = baseline_df.iloc[0][anls_col]
-                                if pd.notna(baseline_val) and baseline_val > 0:
-                                    for _, row in valid_rows.iterrows():
-                                        if row['config_name'] != 'baseline':
-                                            improvement = (row[anls_col] - baseline_val) / baseline_val * 100
-                                            print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
+                    # Check if this dataset has any non-zero/non-N/A values
+                    has_valid_data = False
+                    for _, row in dataset_df.iterrows():
+                        for col in dataset_df.columns:
+                            if col != 'Configuration':
+                                val = row[col]
+                                if val != "N/A" and val != "0.000":
+                                    has_valid_data = True
+                                    break
+                        if has_valid_data:
+                            break
+                    
+                    # Only print if there's valid data
+                    if has_valid_data:
+                        datasets_with_data.append(dataset_name)
+                        print(dataset_df.to_string(index=False))
+                        
+                        # Find best configuration for this dataset (if anls exists)
+                        anls_col = dataset_metrics[dataset_name].get('anls')
+                        if anls_col and anls_col in summary_df.columns:
+                            valid_rows = summary_df[summary_df[anls_col].notna()]
+                            if not valid_rows.empty:
+                                # Only show best if ANLS > 0
+                                best_idx = valid_rows[anls_col].idxmax()
+                                best_config = summary_df.loc[best_idx]
+                                if best_config[anls_col] > 0:
+                                    print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
+                                    
+                                    # Calculate improvement over baseline for this dataset
+                                    baseline_df = summary_df[summary_df['config_name'] == 'baseline']
+                                    if not baseline_df.empty and anls_col in baseline_df.columns:
+                                        baseline_val = baseline_df.iloc[0][anls_col]
+                                        if pd.notna(baseline_val) and baseline_val > 0:
+                                            for _, row in valid_rows.iterrows():
+                                                if row['config_name'] != 'baseline' and row[anls_col] > 0:
+                                                    improvement = (row[anls_col] - baseline_val) / baseline_val * 100
+                                                    print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
         
         print("\n" + "=" * 80)
 
