@@ -1224,27 +1224,15 @@ class OCRVQAResultAnalyzer:
             # But we only have 256 tokens, which is 16×16
             actual_global_grid = 16  # sqrt(256)
             
-            # Create overlay for global view
-            overlay_global = Image.new('RGBA', (global_size, global_size), (0, 0, 0, 0))
-            overlay_draw_global = ImageDraw.Draw(overlay_global)
-            
-            # For global view, all 256 tokens are kept (shown in blue)
-            step = global_size // actual_global_grid
-            for y in range(actual_global_grid):
-                for x in range(actual_global_grid):
-                    px = x * step
-                    py = y * step
-                    overlay_draw_global.rectangle(
-                        [px, py, px + step - 1, py + step - 1],
-                        fill=(0, 100, 255, 60),  # Blue with transparency
-                        outline=(0, 50, 200, 120)
-                    )
-            
-            canvas.paste(overlay_global, (global_x, global_y), overlay_global)
+            # VISUALIZATION-FIX: 2025-07-30 - Show original image without overlay on left
+            # ISSUE: User wants to see original image without blue masking on left side
+            # SOLUTION: Remove overlay for global view, keep original image as-is
+            # RESEARCH IMPACT: Makes it easier to compare original vs token-selected view
+            # No overlay for global view - keep original image
             
             # Global view label
-            draw.text((global_x, global_y + global_size + 10), "Global View (384²)", fill='black', font=font_normal)
-            draw.text((global_x, global_y + global_size + 30), "256 tokens (all kept)", fill='blue', font=font_small)
+            draw.text((global_x, global_y + global_size + 10), "Original Image (384²)", fill='black', font=font_normal)
+            draw.text((global_x, global_y + global_size + 30), "No masking applied", fill='gray', font=font_small)
             
             # Foveal view (448×448 → 1024 tokens → 724 selected)
             foveal_x = global_x + global_size + 100
