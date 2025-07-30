@@ -18,6 +18,7 @@ import numpy as np
 import math
 import re
 import time
+from PIL import Image as PILImage
 import torch
 import torch.nn as nn
 from .multimodal_encoder.builder import build_vision_tower
@@ -384,7 +385,7 @@ class LlavaMetaForCausalLM(ABC):
         # SHIRG IMPACT: Allows proper SHIRG 2-view processing with PIL Images
         if type(images) is list or (hasattr(images, 'ndim') and images.ndim == 5):
             if type(images) is list:
-                from PIL import Image as PILImage
+                # PILImage is now imported at the top of the file
                 processed_images = []
                 for x in images:
                     if isinstance(x, PILImage.Image):

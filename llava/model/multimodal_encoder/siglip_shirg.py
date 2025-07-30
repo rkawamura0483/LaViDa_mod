@@ -257,9 +257,19 @@ class SigLipShirgExtensions:
         # Process global view: 448² → 1024 tokens → 2×2 pool → 256 tokens
         global_view = pixel_values[0]  # First view is global 448²
         
+        # SHIRG-FIX: 2025-07-30 - Handle multi-GPU device placement
+        # ISSUE: Model distributed across GPUs causing device mismatch
+        # SOLUTION: Get model device from first parameter and ensure tensors match
+        # LAVIDA IMPACT: None - just proper device handling
+        # SHIRG IMPACT: Fixes forward pass for distributed models
+        # Get the device from the vision tower model
+        model_device = next(self.vision_tower.parameters()).device
+        
         # Ensure proper device and dtype
         if global_view.dtype != tower_dtype:
             global_view = global_view.to(dtype=tower_dtype)
+        if global_view.device != model_device:
+            global_view = global_view.to(device=model_device)
         
         # Add batch dimension if needed
         if len(global_view.shape) == 3:
@@ -306,6 +316,8 @@ class SigLipShirgExtensions:
         # Ensure proper device and dtype
         if foveal_view.dtype != tower_dtype:
             foveal_view = foveal_view.to(dtype=tower_dtype)
+        if foveal_view.device != model_device:
+            foveal_view = foveal_view.to(device=model_device)
         
         # Add batch dimension if needed
         if len(foveal_view.shape) == 3:
@@ -445,7 +457,7 @@ class SigLipShirgExtensions:
             
             # 3. Radial reweighting
             σ = params.get('radial_sigma', 0.65)
-            radial_weight = self.compute_radial_weight(N, σ).to(view_tokens.device)
+            radial_weight = self.compute_radial_weight(N, σ, device=view_tokens.device)
             
             # Combined score
             raw_score = 0.4 * attn_scores + 0.25 * sim_scores - 0.1 * distance_penalty + 0.25 * edge_prior
@@ -565,25 +577,39 @@ class SigLipShirgExtensions:
         
         return distance_penalty
     
-    def compute_radial_weight(self, N, sigma):
+    def compute_radial_weight(self, N, sigma, device=None):
         """
         Compute radial weighting to de-bias center selection
         
         Args:
             N: Number of tokens (assumes square grid)
             sigma: Standard deviation for Gaussian weighting
+            device: Device to create tensors on (optional)
             
         Returns:
             radial_weight: [N] weight for each position
         """
+        # SHIRG-FIX: 2025-07-30 - Create tensors on correct device
+        # ISSUE: Tensors created without device specification default to CPU
+        # SOLUTION: Accept device parameter and create tensors on that device
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Prevents device mismatch errors in multi-GPU setups
+        
+        # Use CPU if device not specified (will be moved later)
+        device = device or torch.device('cpu')
+        
         # Assume square grid
         H = W = int(math.sqrt(N))
         if H * W != N:
             # Fallback: uniform weights
-            return torch.ones(N)
+            return torch.ones(N, device=device)
         
-        # Create spatial grid
-        y, x = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
+        # Create spatial grid on the specified device
+        y, x = torch.meshgrid(
+            torch.arange(H, device=device), 
+            torch.arange(W, device=device), 
+            indexing='ij'
+        )
         
         # Compute distance from center
         center_y, center_x = H / 2 - 0.5, W / 2 - 0.5
