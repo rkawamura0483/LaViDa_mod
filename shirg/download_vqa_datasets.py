@@ -193,8 +193,14 @@ class VQADatasetDownloader:
             
             counts = {}
             
-            # DocVQA has different split names
-            split_mapping = {"train": "train", "val": "validation", "test": "test"}
+            # SHIRG-FIX: [2025-07-30] - DocVQA only has validation and test splits
+            # ISSUE: DocVQA doesn't have a train split
+            # SOLUTION: Use validation split for training, or skip DocVQA for training
+            # LAVIDA IMPACT: None
+            # SHIRG IMPACT: DocVQA will only be used for validation/test
+            
+            # DocVQA only has validation and test splits
+            split_mapping = {"val": "validation", "test": "test"}
             
             for local_split, hf_split in split_mapping.items():
                 try:
@@ -227,6 +233,11 @@ class VQADatasetDownloader:
                     
                 except Exception as e:
                     print(f"⚠️ Could not download DocVQA {local_split}: {e}")
+            
+            # Note about missing train split
+            if not counts.get("train"):
+                print("ℹ️ Note: DocVQA doesn't have a train split. Use other datasets for training.")
+                counts["train"] = 0
             
             return counts
             

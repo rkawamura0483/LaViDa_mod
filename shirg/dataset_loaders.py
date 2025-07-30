@@ -252,9 +252,13 @@ class DocVQADataset(Dataset):
                 # SHIRG IMPACT: Uses only real DocVQA data
                 
                 # Map split names for HuggingFace dataset
-                hf_split = split
-                if split == "validation":
-                    hf_split = "val"  # Check if this mapping is needed
+                # DocVQA only has 'validation' and 'test' splits
+                if split == "train":
+                    print("⚠️ DocVQA doesn't have a train split. Skipping...")
+                    self.data = []
+                    return
+                    
+                hf_split = split  # validation and test map directly
                     
                 print(f"📥 Loading DocVQA {split} split from HuggingFace...")
                 dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=hf_split, cache_dir=cache_dir)
