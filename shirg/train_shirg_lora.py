@@ -291,6 +291,18 @@ class ShirgLoraTrainer:
         # Print trainable parameters
         self.model.print_trainable_parameters()
         
+        # SHIRG-FIX: 2025-07-30 - Fix LoRA gradient flow issue
+        # ISSUE: Vision tower frozen state prevents LoRA gradients
+        # SOLUTION: Ensure all LoRA parameters are trainable after PEFT application
+        # LAVIDA IMPACT: None - only affects LoRA training
+        # SHIRG IMPACT: Fixes zero gradient issue enabling proper LoRA training
+        from shirg.fix_lora_gradients import ensure_lora_parameters_trainable
+        unfrozen_count = ensure_lora_parameters_trainable(self.model)
+        if unfrozen_count > 0:
+            rank0_print(f"🔧 Fixed {unfrozen_count} frozen LoRA parameters")
+            # Print updated trainable parameters
+            self.model.print_trainable_parameters()
+        
         # Setup token dropout
         self.token_dropout = ShirgTokenDropout(
             dropout_rate=self.config.token_dropout_rate,

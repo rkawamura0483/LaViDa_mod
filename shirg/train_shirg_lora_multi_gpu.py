@@ -135,7 +135,7 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
     
     def setup_model(self):
         """Setup model with DDP wrapper"""
-        # Call parent method
+        # Call parent method (which includes the LoRA gradient fix)
         super().setup_model()
         
         # SHIRG-FIX: 2025-07-30 - Handle multi-GPU setup for 8 GPU training
