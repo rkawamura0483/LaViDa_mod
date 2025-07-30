@@ -277,6 +277,17 @@ class LaViDaSHIRGWrapper:
             # Apply critical configuration fixes (from implementation plan)
             self._apply_config_fixes()
             
+            # SHIRG-FIX: 2025-07-30 - Enable SHIRG 2-view mode immediately after model loading
+            # ISSUE: LaViDa creates 5 views by default, but SHIRG-Fovea expects 2 views
+            # SOLUTION: Set shirg_3view_mode=True in model config right after loading
+            # LAVIDA IMPACT: Changes image preprocessing from 5 views to 2 views when SHIRG is enabled
+            # SHIRG IMPACT: Fixes "expects 2 views, got 5 views" error during training
+            if self.shirg_config.get('alpha', 0) > 0:
+                print("🔧 Configuring SHIRG 2-view mode...")
+                self.model.config.enable_shirg = True
+                self.model.config.shirg_3view_mode = True  # Enable 2-view mode
+                print("   ✅ SHIRG 2-view mode enabled (shirg_3view_mode=True)")
+            
             # FIX: 2025-07-26 - Apply LaViDa-specific model setup from official examples
             # ISSUE: Missing tie_weights() and proper dtype setup causes generation errors
             # SOLUTION: Follow exact setup sequence from LaViDa's predict.py

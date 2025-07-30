@@ -426,7 +426,7 @@ def process_images(images, image_processor, model_cfg):
     
     if enable_shirg and shirg_3view_mode:
         # SHIRG 2-view mode: process as 1 global + 1 foveal
-        print("SHIRG-PREPROCESS: Using SHIRG 2-view processing (1×384² + 1×448²)")
+        print("SHIRG-PREPROCESS: Using SHIRG 2-view processing (2×448²)")
         for image in images:
             image = process_shirg_2view_image(image, image_processor)
             new_images.append(image)
