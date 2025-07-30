@@ -369,6 +369,7 @@ def process_shirg_2view_image(image, image_processor):
     processed_views = []
     
     # Process global view with standard 384x384 processor
+    print(f"SHIRG-DEBUG: Original processor size: {getattr(image_processor, 'size', 'unknown')}")
     processed_global = image_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_global)
     print(f"SHIRG-DEBUG: Global view shape: {processed_global.shape}")
@@ -385,6 +386,7 @@ def process_shirg_2view_image(image, image_processor):
         rescale_factor=image_processor.rescale_factor,
         data_format=image_processor.data_format
     )
+    print(f"SHIRG-DEBUG: Foveal processor size: {foveal_processor.size}")
     processed_foveal = foveal_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_foveal)
     print(f"SHIRG-DEBUG: Foveal view shape: {processed_foveal.shape}")
