@@ -302,43 +302,16 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             rank0_print("   Using PEFT's default gradient handling")
     
     def save_checkpoint(self, *args, **kwargs):
-        """Only save checkpoints from rank 0"""
-        # SHIRG-FIX: 2025-07-30 - Fix multi-GPU checkpoint synchronization
-        # ISSUE: Parent class wait_for_everyone() causes deadlock with rank-0-only saving
-        # SOLUTION: All ranks participate in checkpoint save, but only rank 0 writes
+        """Save checkpoints with proper multi-GPU coordination"""
+        # SHIRG-FIX: 2025-07-30 - Fix multi-GPU checkpoint synchronization correctly
+        # ISSUE: Mixing dist.barrier() with accelerator.wait_for_everyone() causes deadlock
+        # SOLUTION: All ranks must call parent save_checkpoint for accelerator synchronization
         # LAVIDA IMPACT: Prevents NCCL timeout during checkpoint saving
         # SHIRG IMPACT: Fixes crash at checkpoint-500 on 8 GPU training
         
-        if not dist.is_initialized():
-            # Single GPU mode - just save normally
-            super().save_checkpoint(*args, **kwargs)
-        else:
-            # Multi-GPU mode - coordinate across all ranks
-            rank = dist.get_rank()
-            
-            # All ranks wait here before save starts
-            dist.barrier()
-            
-            # Only rank 0 actually saves
-            if rank == 0:
-                try:
-                    super().save_checkpoint(*args, **kwargs)
-                    save_success = True
-                except Exception as e:
-                    print(f"❌ Checkpoint save failed: {e}")
-                    save_success = False
-            else:
-                save_success = True  # Other ranks assume success
-            
-            # All ranks wait here after save completes
-            dist.barrier()
-            
-            # Broadcast save status from rank 0 to all ranks
-            save_status = torch.tensor([1.0 if save_success else 0.0]).cuda()
-            dist.broadcast(save_status, src=0)
-            
-            if save_status.item() < 0.5:
-                raise RuntimeError("Checkpoint save failed on rank 0")
+        # CORRECT APPROACH: Let all ranks call the parent method
+        # The parent's accelerator already handles rank-specific saving
+        super().save_checkpoint(*args, **kwargs)
     
     def log_metrics(self, metrics, prefix=""):
         """Only log metrics from rank 0"""

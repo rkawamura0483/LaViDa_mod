@@ -1042,6 +1042,16 @@ class ShirgLoraTrainer:
         is_final: bool = False,
     ):
         """Save training checkpoint"""
+        # SHIRG-FIX: 2025-07-30 - Fix accelerator synchronization deadlock
+        # ISSUE: Early return prevents non-main processes from reaching wait_for_everyone()
+        # SOLUTION: All processes must reach wait_for_everyone() before any return
+        # LAVIDA IMPACT: Fixes multi-GPU training deadlock
+        # SHIRG IMPACT: Enables proper 8-GPU checkpoint saving
+        
+        # First, ensure all processes synchronize
+        self.accelerator.wait_for_everyone()
+        
+        # Then only main process continues with actual saving
         if not self.accelerator.is_main_process:
             return
         
@@ -1061,7 +1071,6 @@ class ShirgLoraTrainer:
         print(f"💾 Saving checkpoint to {checkpoint_dir}")
         
         # Save model state
-        self.accelerator.wait_for_everyone()
         unwrapped_model = self.accelerator.unwrap_model(self.model)
         
         # Save LoRA weights
