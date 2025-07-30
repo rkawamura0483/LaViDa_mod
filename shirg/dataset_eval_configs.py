@@ -11,16 +11,40 @@ from typing import Dict, Any, Optional
 class DatasetEvalConfig:
     """Loads and manages evaluation configurations for different datasets"""
     
-    # Map dataset types to their YAML config files
+    # Map dataset types to their YAML config files and evaluation metrics
     DATASET_CONFIG_MAP = {
-        "DocVQA": "eval/lmms_eval/tasks/docvqa/_default_template_docvqa_yaml",
-        "ChartQA": "eval/lmms_eval/tasks/chartqa/chartqa.yaml",
-        "InfoVQA": "eval/lmms_eval/tasks/infovqa/_default_template_infovqa_yaml", 
-        "TextVQA": "eval/lmms_eval/tasks/textvqa/textvqa_val.yaml",
-        "VQAv2": "eval/lmms_eval/tasks/vqav2/vqav2_val.yaml",
-        "MathVista": "eval/lmms_eval/tasks/mathvista/mathvista_testmini.yaml",
-        "MathVerse": "eval/lmms_eval/tasks/mathverse/mathverse_testmini.yaml",
-        "OCR-VQA": None  # No official lmms-eval config, will use DocVQA style
+        "DocVQA": {
+            "yaml": "eval/lmms_eval/tasks/docvqa/_default_template_docvqa_yaml",
+            "metrics": ["anls"]  # Average Normalized Levenshtein Similarity
+        },
+        "ChartQA": {
+            "yaml": "eval/lmms_eval/tasks/chartqa/chartqa.yaml",
+            "metrics": ["relaxed_accuracy"]  # Relaxed accuracy (±5% for numbers)
+        },
+        "InfoVQA": {
+            "yaml": "eval/lmms_eval/tasks/infovqa/_default_template_infovqa_yaml",
+            "metrics": ["anls"]  # Average Normalized Levenshtein Similarity
+        },
+        "TextVQA": {
+            "yaml": "eval/lmms_eval/tasks/textvqa/textvqa_val.yaml",
+            "metrics": ["accuracy"]  # VQA accuracy metric
+        },
+        "VQAv2": {
+            "yaml": "eval/lmms_eval/tasks/vqav2/vqav2_val.yaml",
+            "metrics": ["vqa_accuracy"]  # VQA v2 accuracy (3/10 human agreement)
+        },
+        "MathVista": {
+            "yaml": "eval/lmms_eval/tasks/mathvista/mathvista_testmini.yaml",
+            "metrics": ["accuracy", "gpt_eval"]  # Math accuracy
+        },
+        "MathVerse": {
+            "yaml": "eval/lmms_eval/tasks/mathverse/mathverse_testmini.yaml",
+            "metrics": ["accuracy", "gpt_eval"]  # Math accuracy
+        },
+        "OCR-VQA": {
+            "yaml": None,  # No official lmms-eval config
+            "metrics": ["accuracy"]  # Standard accuracy
+        }
     }
     
     # Default configurations if YAML not found
@@ -73,8 +97,10 @@ class DatasetEvalConfig:
         if dataset_type in self._config_cache:
             return self._config_cache[dataset_type]
         
-        # Get YAML path for dataset
-        yaml_path = self.DATASET_CONFIG_MAP.get(dataset_type)
+        # Get config info for dataset
+        dataset_info = self.DATASET_CONFIG_MAP.get(dataset_type, {})
+        yaml_path = dataset_info.get('yaml') if isinstance(dataset_info, dict) else None
+        metrics = dataset_info.get('metrics', ['accuracy']) if isinstance(dataset_info, dict) else ['accuracy']
         
         if yaml_path is None:
             # Use default config for datasets without specific config
@@ -118,6 +144,9 @@ class DatasetEvalConfig:
             
             print(f"📋 Loaded config for {dataset_type} from {yaml_path}")
         
+        # Add metrics to config
+        config['metrics'] = metrics
+        
         # Cache the config
         self._config_cache[dataset_type] = config
         
@@ -125,6 +154,7 @@ class DatasetEvalConfig:
         print(f"   Pre-prompt: '{config['pre_prompt']}'")
         print(f"   Post-prompt: '{config['post_prompt']}'")
         print(f"   Generation: {config['generation_kwargs']}")
+        print(f"   Metrics: {config['metrics']}")
         
         return config
     
@@ -137,6 +167,11 @@ class DatasetEvalConfig:
         """Get generation kwargs for a specific dataset"""
         config = self.get_dataset_config(dataset_type)
         return config.get("generation_kwargs", {})
+    
+    def get_metrics(self, dataset_type: str) -> List[str]:
+        """Get evaluation metrics for a specific dataset"""
+        config = self.get_dataset_config(dataset_type)
+        return config.get("metrics", ["accuracy"])
 
 
 # Test the configuration loader

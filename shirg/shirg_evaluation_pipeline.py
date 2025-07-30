@@ -49,6 +49,7 @@ sys.path.append('./')
 sys.path.append('./eval/')
 from lmms_eval.api.metrics import anls
 from lmms_eval.tasks._task_utils.vqa_eval_metric import EvalAIAnswerProcessor
+from lavida_evaluation_metrics import LaViDaEvaluationMetrics
 
 class SHIRGEvaluationPipeline:
     """
@@ -60,6 +61,7 @@ class SHIRGEvaluationPipeline:
     
     def __init__(self):
         self.processor = EvalAIAnswerProcessor()
+        self.evaluator = LaViDaEvaluationMetrics()  # Use official LaViDa metrics
         self.results_dir = Path("/content/shirg_evaluation_results")
         self.results_dir.mkdir(exist_ok=True)
         
@@ -134,9 +136,14 @@ class SHIRGEvaluationPipeline:
             }
         }
     
-    def evaluate_single_sample(self, prediction: str, references: List[str]) -> Dict[str, float]:
-        """Evaluate a single prediction against multiple reference answers"""
+    def evaluate_single_sample(self, prediction: str, references: List[str], dataset_type: str = None) -> Dict[str, float]:
+        """Evaluate a single prediction using dataset-specific metrics"""
         
+        # Use LaViDa's official evaluation metrics based on dataset type
+        if dataset_type:
+            return self.evaluator.evaluate_sample(prediction, references, dataset_type)
+        
+        # Fallback to generic metrics if no dataset type specified
         # Process prediction and references
         pred_processed = self.processor(prediction)
         refs_processed = [self.processor(ref) for ref in references]
@@ -256,8 +263,11 @@ class SHIRGEvaluationPipeline:
                 print(f"      Response: {prediction[:100]}...")
                 print(f"      Ground Truth: {ground_truth[0] if ground_truth else 'N/A'}")
                 
-                # Evaluate
-                eval_scores = self.evaluate_single_sample(prediction, ground_truth)
+                # Get dataset type for proper metric selection
+                dataset_type = sample.get('dataset_type', sample.get('dataset_name', 'unknown'))
+                
+                # Evaluate using dataset-specific metrics
+                eval_scores = self.evaluate_single_sample(prediction, ground_truth, dataset_type)
                 
                 # Store result
                 result = {
@@ -295,24 +305,30 @@ class SHIRGEvaluationPipeline:
         
         # Aggregate metrics
         metrics_df = pd.DataFrame(results)
+        
+        # Get all metric columns (excluding metadata columns)
+        metric_columns = [col for col in metrics_df.columns if col not in 
+                         ['config', 'sample_id', 'dataset', 'question', 'prediction', 'ground_truth', 'error']]
+        
         aggregated = {
             'config_name': config_name,
             'description': config['description'],
             'num_samples': len(results),
-            'elapsed_time': elapsed_time,
-            'anls_mean': metrics_df['anls'].mean(),
-            'anls_std': metrics_df['anls'].std(),
-            'exact_match_mean': metrics_df['exact_match'].mean(),
-            'token_f1_mean': metrics_df['token_f1'].mean(),
-            'token_f1_std': metrics_df['token_f1'].std()
+            'elapsed_time': elapsed_time
         }
+        
+        # Aggregate each metric found in the results
+        for metric in metric_columns:
+            if metric in metrics_df.columns:
+                aggregated[f'{metric}_mean'] = metrics_df[metric].mean()
+                aggregated[f'{metric}_std'] = metrics_df[metric].std()
         
         # Add per-dataset metrics
         for dataset in metrics_df['dataset'].unique():
             dataset_df = metrics_df[metrics_df['dataset'] == dataset]
-            aggregated[f'{dataset}_anls'] = dataset_df['anls'].mean()
-            aggregated[f'{dataset}_exact_match'] = dataset_df['exact_match'].mean()
-            aggregated[f'{dataset}_token_f1'] = dataset_df['token_f1'].mean()
+            for metric in metric_columns:
+                if metric in dataset_df.columns:
+                    aggregated[f'{dataset}_{metric}'] = dataset_df[metric].mean()
         
         # Save detailed results
         self._save_detailed_results(config_name, results, aggregated)
