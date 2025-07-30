@@ -257,10 +257,17 @@ class LlavaLladaForMaskedDiffusion(LLaDAModelLM,LlavaMetaForCausalLM):
                 prompt_len=prompt_len,
                 num_items_in_batch=num_items_in_batch,
             )
-            output['new_input_ids']=new_input_ids
-            output['labels'] = labels
-            output['final_masked_indices']=final_masked_indices
-            output['p_mask'] = p_mask
+            
+            # SHIRG-FIX: 2025-07-30 - Handle return_dict=False for DDP compatibility
+            # ISSUE: LaViDa tries to add fields to tuple when return_dict=False
+            # SOLUTION: Only add extra fields when return_dict=True
+            # LAVIDA IMPACT: Maintains LaViDa functionality while supporting DDP
+            # SHIRG IMPACT: Fixes training crash with distributed training
+            if return_dict:
+                output['new_input_ids']=new_input_ids
+                output['labels'] = labels
+                output['final_masked_indices']=final_masked_indices
+                output['p_mask'] = p_mask
             return output
 
     @torch.no_grad()
