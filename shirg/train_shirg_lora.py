@@ -224,6 +224,17 @@ class ShirgLoraTrainer:
             print("⚠️ Trying alternative module paths without 'model.' prefix...")
             self.config.target_modules = [m.replace('model.', '') for m in self.config.target_modules]
         
+        # SHIRG-FIX: 2025-07-30 - Ensure model is on GPU before applying LoRA
+        # ISSUE: Model components on different devices cause device mismatch
+        # SOLUTION: Move model to GPU before applying LoRA when device_map is disabled
+        # LAVIDA IMPACT: Ensures consistent device placement
+        # SHIRG IMPACT: Fixes device mismatch errors during training
+        
+        # Check if device_map is disabled (for LoRA training)
+        if os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1' and torch.cuda.is_available():
+            print("📍 Moving model to GPU before LoRA (device_map disabled)")
+            self.model = self.model.cuda()
+            
         # Apply LoRA with Extra-LoRA footprint
         lora_config = self.config.to_peft_config()
         try:
@@ -585,11 +596,26 @@ class ShirgLoraTrainer:
         num_training_steps = self.prepare_datasets() * self.config.num_train_epochs
         self.setup_optimizer_scheduler(num_training_steps)
         
-        # Prepare for distributed training
-        self.model, self.optimizer, self.train_dataloader, self.val_dataloader = \
-            self.accelerator.prepare(
-                self.model, self.optimizer, self.train_dataloader, self.val_dataloader
-            )
+        # SHIRG-FIX: 2025-07-30 - Handle accelerator preparation carefully
+        # ISSUE: Accelerator may conflict with manual device placement
+        # SOLUTION: Only prepare dataloaders, handle model separately
+        # LAVIDA IMPACT: Maintains proper device placement
+        # SHIRG IMPACT: Fixes device conflicts during distributed training
+        
+        # Check if we're in distributed mode with NO_DEVICE_MAP
+        if os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1':
+            # Don't let accelerator handle model when device_map is disabled
+            # This prevents conflicts with our manual device placement
+            self.train_dataloader, self.val_dataloader = \
+                self.accelerator.prepare(self.train_dataloader, self.val_dataloader)
+            # Model and optimizer are already set up correctly
+            print("📍 Using manual device placement (SHIRG_NO_DEVICE_MAP=1)")
+        else:
+            # Standard accelerator preparation
+            self.model, self.optimizer, self.train_dataloader, self.val_dataloader = \
+                self.accelerator.prepare(
+                    self.model, self.optimizer, self.train_dataloader, self.val_dataloader
+                )
         
         # Training loop
         for epoch in range(self.config.num_train_epochs):

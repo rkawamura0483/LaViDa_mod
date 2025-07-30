@@ -692,7 +692,15 @@ class ShirgLoraPreTrainTest:
             
             # Check if we should use multi-GPU testing
             use_multi_gpu = os.environ.get('SHIRG_TEST_MULTI_GPU', 'false').lower() == 'true'
-            if use_multi_gpu and torch.cuda.device_count() > 1:
+            # SHIRG-FIX: 2025-07-30 - Always respect SHIRG_NO_DEVICE_MAP
+            # ISSUE: Test needs to respect the NO_DEVICE_MAP setting
+            # SOLUTION: Check environment variable for device_map control
+            # LAVIDA IMPACT: Consistent device placement behavior
+            # SHIRG IMPACT: Fixes device conflicts in testing
+            if os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1':
+                print(f"   📍 SHIRG_NO_DEVICE_MAP=1: Disabling device_map for testing")
+                wrapper.device_map = None
+            elif use_multi_gpu and torch.cuda.device_count() > 1:
                 print(f"   🌐 Testing with multi-GPU setup ({torch.cuda.device_count()} GPUs)")
                 # Use default device_map="auto" for multi-GPU
                 # Don't override device_map
@@ -909,37 +917,61 @@ class ShirgLoraPreTrainTest:
             # Check gradient flow in detail
             print(f"\n   Checking gradient flow through model components:")
             
+            # SHIRG-FIX: 2025-07-30 - Enhanced gradient debugging
+            # ISSUE: Need to understand why gradients are zero
+            # SOLUTION: Check all parameters and their gradient status
+            # LAVIDA IMPACT: None - just debugging
+            # SHIRG IMPACT: Helps diagnose gradient flow issues
+            
+            # First, list all LoRA parameters
+            print(f"\n   All LoRA parameters:")
+            lora_params = []
+            for name, param in model.named_parameters():
+                if "lora" in name.lower() and param.requires_grad:
+                    lora_params.append(name)
+                    print(f"      - {name} (shape: {param.shape}, device: {param.device})")
+            
+            print(f"\n   Total LoRA parameters: {len(lora_params)}")
+            
             # Check vision tower gradients
             vision_grads = []
             vision_lora_grads = []
             for name, param in model.named_parameters():
                 if "vision_tower" in name:
-                    if param.requires_grad and param.grad is not None:
-                        if "lora" in name:
-                            vision_lora_grads.append(name)
+                    if param.requires_grad:
+                        if param.grad is not None:
+                            if "lora" in name:
+                                vision_lora_grads.append((name, param.grad.norm().item()))
+                            else:
+                                vision_grads.append((name, param.grad.norm().item()))
                         else:
-                            vision_grads.append(name)
+                            if "lora" in name:
+                                print(f"      ⚠️ No gradient for {name}")
                             
-            print(f"   Vision tower LoRA gradients: {len(vision_lora_grads)}")
+            print(f"\n   Vision tower LoRA gradients: {len(vision_lora_grads)}")
             if vision_lora_grads:
-                for name in vision_lora_grads[:3]:  # Show first 3
-                    print(f"      - {name}")
+                for name, grad_norm in vision_lora_grads[:3]:  # Show first 3
+                    print(f"      - {name} (norm: {grad_norm:.6f})")
                     
             # Check projector gradients
             projector_grads = []
             projector_lora_grads = []
             for name, param in model.named_parameters():
                 if "mm_projector" in name:
-                    if param.requires_grad and param.grad is not None:
-                        if "lora" in name:
-                            projector_lora_grads.append(name)
+                    if param.requires_grad:
+                        if param.grad is not None:
+                            if "lora" in name:
+                                projector_lora_grads.append((name, param.grad.norm().item()))
+                            else:
+                                projector_grads.append((name, param.grad.norm().item()))
                         else:
-                            projector_grads.append(name)
+                            if "lora" in name:
+                                print(f"      ⚠️ No gradient for {name}")
                             
-            print(f"   Projector LoRA gradients: {len(projector_lora_grads)}")
+            print(f"\n   Projector LoRA gradients: {len(projector_lora_grads)}")
             if projector_lora_grads:
-                for name in projector_lora_grads[:3]:  # Show first 3
-                    print(f"      - {name}")
+                for name, grad_norm in projector_lora_grads[:3]:  # Show first 3
+                    print(f"      - {name} (norm: {grad_norm:.6f})")
                     
             # Check LLM gradients
             llm_grads = []
@@ -963,16 +995,28 @@ class ShirgLoraPreTrainTest:
             
             # Verify gradient magnitudes
             grad_norms = []
+            zero_grad_params = []
             for name, param in model.named_parameters():
-                if "lora" in name and param.requires_grad and param.grad is not None:
-                    grad_norm = param.grad.norm().item()
-                    grad_norms.append(grad_norm)
+                if "lora" in name and param.requires_grad:
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        grad_norms.append(grad_norm)
+                        if grad_norm == 0.0:
+                            zero_grad_params.append(name)
+                    else:
+                        zero_grad_params.append(name + " (None)")
                     
             if grad_norms:
-                print(f"   Gradient norm statistics:")
+                print(f"\n   Gradient norm statistics:")
                 print(f"      - Mean: {np.mean(grad_norms):.6f}")
                 print(f"      - Max: {np.max(grad_norms):.6f}")
                 print(f"      - Min: {np.min(grad_norms):.6f}")
+                print(f"      - Non-zero gradients: {sum(1 for g in grad_norms if g > 0)}/{len(grad_norms)}")
+                
+            if zero_grad_params:
+                print(f"\n   ⚠️ Parameters with zero/no gradients: {len(zero_grad_params)}")
+                for param in zero_grad_params[:5]:  # Show first 5
+                    print(f"      - {param}")
                 
             # Check if gradients are flowing properly
             if len(all_lora_grads) == 0:
