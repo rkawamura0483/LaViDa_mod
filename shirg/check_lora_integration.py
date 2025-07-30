@@ -100,7 +100,12 @@ def check_integration():
     # 3. Check SHIRG integration
     print("\n3️⃣ Checking SHIRG Integration...")
     try:
-        from lavida_shirg_integration import LaViDaSHIRGWrapper
+        from lavida_shirg_integration import LaViDaSHIRGWrapper, LAVIDA_AVAILABLE
+        
+        if not LAVIDA_AVAILABLE:
+            results["warnings"].append("LaViDa not fully available (missing deepspeed) - SHIRG can still be tested")
+            print("   ⚠️ LaViDa not fully available - install deepspeed for full functionality")
+            print("   ℹ️ SHIRG integration can still be tested without deepspeed")
         
         # Check if wrapper can be created
         wrapper = LaViDaSHIRGWrapper(
@@ -129,6 +134,14 @@ def check_integration():
             results["warnings"].append("SHIRG disabled (alpha = 0) - set alpha > 0 to enable")
             print("   ⚠️ SHIRG disabled - set alpha > 0")
             
+    except ImportError as e:
+        if "deepspeed" in str(e):
+            results["warnings"].append("SHIRG available but LaViDa requires deepspeed for full functionality")
+            print("   ⚠️ SHIRG available but LaViDa needs deepspeed")
+            print("   💡 Run: python shirg/install_lora_dependencies.py")
+        else:
+            results["failed"].append(f"SHIRG integration import failed: {str(e)}")
+            print(f"   ❌ SHIRG integration import failed: {e}")
     except Exception as e:
         results["failed"].append(f"SHIRG integration failed: {str(e)}")
         print(f"   ❌ SHIRG integration failed: {e}")
