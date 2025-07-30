@@ -107,7 +107,8 @@ class LaViDaEvaluationMetrics:
         
         return {
             'relaxed_accuracy': relaxed_acc,
-            'exact_match': exact_match
+            'exact_match': exact_match,
+            'accuracy': relaxed_acc  # Use relaxed accuracy as the main metric
         }
     
     def _evaluate_vqav2(self, prediction: str, references: List[str]) -> Dict[str, float]:
@@ -118,20 +119,29 @@ class LaViDaEvaluationMetrics:
         # Process prediction
         pred_processed = self.processor(prediction)
         
+        # Handle VQAv2's special reference format
+        # References might be a dict with 'answer' field or a list of strings
+        processed_refs = []
+        for ref in references:
+            if isinstance(ref, dict) and 'answer' in ref:
+                processed_refs.append(self.processor(ref['answer']))
+            elif isinstance(ref, str):
+                processed_refs.append(self.processor(ref))
+        
         # For our case with limited references, we use a simplified version
         # In the full VQAv2 eval, this would consider answer frequencies
         accuracy = 0.0
         
         # Check if prediction matches any reference
-        for ref in references:
-            ref_processed = self.processor(ref)
+        for ref_processed in processed_refs:
             if pred_processed.lower() == ref_processed.lower():
                 accuracy = 1.0
                 break
         
         return {
             'vqa_accuracy': accuracy,
-            'exact_match': accuracy
+            'exact_match': accuracy,
+            'accuracy': accuracy  # Add generic accuracy for compatibility
         }
     
     def _evaluate_textvqa(self, prediction: str, references: List[str]) -> Dict[str, float]:

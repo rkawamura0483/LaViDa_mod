@@ -264,7 +264,17 @@ class SHIRGEvaluationPipeline:
                 print(f"      Ground Truth: {ground_truth[0] if ground_truth else 'N/A'}")
                 
                 # Get dataset type for proper metric selection
-                dataset_type = sample.get('dataset_type', sample.get('dataset_name', 'unknown'))
+                # SHIRG-FIX: 2025-07-30 - Extract dataset type from full dataset name
+                # ISSUE: Dataset names include org prefix (e.g., "lmms-lab/DocVQA")
+                # SOLUTION: Extract the actual dataset name after the slash
+                # LAVIDA IMPACT: None - just data processing
+                # SHIRG IMPACT: Enables proper metric selection for evaluation
+                dataset_name = sample.get('dataset_type', sample.get('dataset_name', 'unknown'))
+                # Extract dataset type from full name (e.g., "lmms-lab/DocVQA" -> "DocVQA")
+                if '/' in dataset_name:
+                    dataset_type = dataset_name.split('/')[-1]
+                else:
+                    dataset_type = dataset_name
                 
                 # Evaluate using dataset-specific metrics
                 eval_scores = self.evaluate_single_sample(prediction, ground_truth, dataset_type)
