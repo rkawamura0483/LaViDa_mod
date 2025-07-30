@@ -730,15 +730,29 @@ class ShirgLoraTrainer:
             dropout_rate = self.dropout_scheduler.get_dropout_rate(self.global_step)
             self.token_dropout.dropout_rate = dropout_rate
         
+        # SHIRG-FIX: 2025-07-30 - Handle LaViDa's custom output format
+        # ISSUE: LaViDa returns extra fields (new_input_ids, etc.) that break DDP
+        # SOLUTION: Extract loss directly without relying on output object reconstruction
+        # LAVIDA IMPACT: Works with LaViDa's custom output format
+        # SHIRG IMPACT: Enables training to proceed past forward pass
+        
         # Forward pass
         outputs = self.model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             images=batch["images"],
             labels=batch["labels"],
+            return_dict=False,  # Avoid DDP serialization issues with custom output format
         )
         
-        loss = outputs.loss
+        # Extract loss from outputs (handles tuple, dict, and object formats)
+        if isinstance(outputs, tuple):
+            # With return_dict=False, loss is the first element
+            loss = outputs[0]
+        elif isinstance(outputs, dict):
+            loss = outputs.get('loss', outputs.get('lm_loss', None))
+        else:
+            loss = outputs.loss
         
         # Backward pass
         self.accelerator.backward(loss)
@@ -781,9 +795,18 @@ class ShirgLoraTrainer:
                 attention_mask=batch["attention_mask"],
                 images=batch["images"],
                 labels=batch["labels"],
+                return_dict=False,  # Avoid DDP serialization issues
             )
         
-        loss = outputs.loss
+        # SHIRG-FIX: 2025-07-30 - Handle LaViDa's custom output format in validation
+        # Extract loss from outputs (handles tuple, dict, and object formats)
+        if isinstance(outputs, tuple):
+            # With return_dict=False, loss is the first element
+            loss = outputs[0]
+        elif isinstance(outputs, dict):
+            loss = outputs.get('loss', outputs.get('lm_loss', None))
+        else:
+            loss = outputs.loss
         
         return {"val_loss": loss.item()}
     
