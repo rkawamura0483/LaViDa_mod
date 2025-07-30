@@ -368,9 +368,20 @@ class SHIRGEvaluationPipeline:
         # Add per-dataset metrics
         for dataset in metrics_df['dataset'].unique():
             dataset_df = metrics_df[metrics_df['dataset'] == dataset]
+            
+            # Extract clean dataset name (e.g., "lmms-lab/DocVQA" -> "DocVQA")
+            if '/' in dataset:
+                clean_dataset_name = dataset.split('/')[-1]
+            else:
+                clean_dataset_name = dataset
+            
+            # Handle variations
+            if clean_dataset_name == "InfographicVQA":
+                clean_dataset_name = "InfoVQA"
+            
             for metric in metric_columns:
                 if metric in dataset_df.columns:
-                    aggregated[f'{dataset}_{metric}'] = dataset_df[metric].mean()
+                    aggregated[f'{clean_dataset_name}_{metric}'] = dataset_df[metric].mean()
         
         # Save detailed results
         self._save_detailed_results(config_name, results, aggregated)
@@ -446,58 +457,68 @@ class SHIRGEvaluationPipeline:
         # Find all dataset-specific metric columns
         dataset_metrics = defaultdict(lambda: defaultdict(list))
         
+        # Debug: print all columns to see what we have
+        print(f"DEBUG: Available columns: {list(summary_df.columns)}")
+        
         for col in summary_df.columns:
             # Look for columns with pattern: dataset_name_metric
             parts = col.split('_')
             if len(parts) >= 2:
                 # Check if this is a dataset-specific metric
-                for dataset_name in ['DocVQA', 'InfoVQA', 'ChartQA', 'TextVQA', 'OCRVQA']:
+                for dataset_name in ['DocVQA', 'InfoVQA', 'ChartQA', 'TextVQA', 'OCRVQA', 'AI2D', 'ScienceQA']:
                     if col.startswith(dataset_name + '_'):
                         metric_name = col.replace(dataset_name + '_', '')
                         dataset_metrics[dataset_name][metric_name] = col
                         break
         
-        # Print metrics for each dataset
-        for dataset_name in sorted(dataset_metrics.keys()):
-            print(f"\n{dataset_name}:")
-            print("-" * 40)
-            
-            # Create a table for this dataset
-            dataset_data = []
-            for _, row in summary_df.iterrows():
-                row_data = {'Configuration': row['config_name']}
+        # Check if we found any dataset-specific metrics
+        if not dataset_metrics:
+            print("\nNo per-dataset metrics found. This might be because:")
+            print("- Only aggregate metrics were calculated")
+            print("- Dataset names in the data don't match expected patterns")
+            print("- Consider checking the dataset names in your evaluation data")
+        else:
+            # Print metrics for each dataset
+            for dataset_name in sorted(dataset_metrics.keys()):
+                print(f"\n{dataset_name}:")
+                print("-" * 40)
                 
-                # Add each metric for this dataset
-                for metric_name, col_name in dataset_metrics[dataset_name].items():
-                    if col_name in row and pd.notna(row[col_name]):
-                        row_data[metric_name] = f"{row[col_name]:.3f}"
-                    else:
-                        row_data[metric_name] = "N/A"
+                # Create a table for this dataset
+                dataset_data = []
+                for _, row in summary_df.iterrows():
+                    row_data = {'Configuration': row['config_name']}
+                    
+                    # Add each metric for this dataset
+                    for metric_name, col_name in dataset_metrics[dataset_name].items():
+                        if col_name in row and pd.notna(row[col_name]):
+                            row_data[metric_name] = f"{row[col_name]:.3f}"
+                        else:
+                            row_data[metric_name] = "N/A"
+                    
+                    dataset_data.append(row_data)
                 
-                dataset_data.append(row_data)
-            
-            if dataset_data:
-                dataset_df = pd.DataFrame(dataset_data)
-                print(dataset_df.to_string(index=False))
-                
-                # Find best configuration for this dataset (if anls exists)
-                anls_col = dataset_metrics[dataset_name].get('anls')
-                if anls_col and anls_col in summary_df.columns:
-                    valid_rows = summary_df[summary_df[anls_col].notna()]
-                    if not valid_rows.empty:
-                        best_idx = valid_rows[anls_col].idxmax()
-                        best_config = summary_df.loc[best_idx]
-                        print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
-                        
-                        # Calculate improvement over baseline for this dataset
-                        baseline_df = summary_df[summary_df['config_name'] == 'baseline']
-                        if not baseline_df.empty and anls_col in baseline_df.columns:
-                            baseline_val = baseline_df.iloc[0][anls_col]
-                            if pd.notna(baseline_val) and baseline_val > 0:
-                                for _, row in valid_rows.iterrows():
-                                    if row['config_name'] != 'baseline':
-                                        improvement = (row[anls_col] - baseline_val) / baseline_val * 100
-                                        print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
+                if dataset_data:
+                    dataset_df = pd.DataFrame(dataset_data)
+                    print(dataset_df.to_string(index=False))
+                    
+                    # Find best configuration for this dataset (if anls exists)
+                    anls_col = dataset_metrics[dataset_name].get('anls')
+                    if anls_col and anls_col in summary_df.columns:
+                        valid_rows = summary_df[summary_df[anls_col].notna()]
+                        if not valid_rows.empty:
+                            best_idx = valid_rows[anls_col].idxmax()
+                            best_config = summary_df.loc[best_idx]
+                            print(f"\n  Best {dataset_name} ANLS: {best_config['config_name']} ({best_config[anls_col]:.3f})")
+                            
+                            # Calculate improvement over baseline for this dataset
+                            baseline_df = summary_df[summary_df['config_name'] == 'baseline']
+                            if not baseline_df.empty and anls_col in baseline_df.columns:
+                                baseline_val = baseline_df.iloc[0][anls_col]
+                                if pd.notna(baseline_val) and baseline_val > 0:
+                                    for _, row in valid_rows.iterrows():
+                                        if row['config_name'] != 'baseline':
+                                            improvement = (row[anls_col] - baseline_val) / baseline_val * 100
+                                            print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
         
         print("\n" + "=" * 80)
 
