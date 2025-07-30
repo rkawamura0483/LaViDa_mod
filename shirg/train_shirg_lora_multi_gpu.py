@@ -20,6 +20,21 @@ sys.path.append('./')
 sys.path.append('./shirg')
 
 from shirg.train_shirg_lora import ShirgLoraTrainer
+
+# SHIRG-FIX: 2025-07-30 - Import rank0_print locally
+# ISSUE: Need rank0_print for distributed logging
+# SOLUTION: Define it here to avoid import issues
+# LAVIDA IMPACT: None - just utility function
+# SHIRG IMPACT: Allows proper distributed logging
+def rank0_print(msg):
+    """Print only on rank 0 for distributed training"""
+    try:
+        from torch.distributed import get_rank, is_initialized
+        if is_initialized() and get_rank() != 0:
+            return
+    except:
+        pass
+    print(msg)
 from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 
 
@@ -55,6 +70,15 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             torch.cuda.set_device(local_rank)
             
             print(f"🌐 Distributed training: Rank {rank}/{world_size}, Local rank: {local_rank}")
+            
+            # SHIRG-FIX: 2025-07-30 - Enable NO_DEVICE_MAP for distributed LoRA training
+            # ISSUE: device_map breaks gradient flow in distributed LoRA training
+            # SOLUTION: Automatically set SHIRG_NO_DEVICE_MAP=1 for distributed training
+            # LAVIDA IMPACT: Each GPU loads full model for proper gradient flow
+            # SHIRG IMPACT: Fixes zero gradient issue in multi-GPU training
+            os.environ['SHIRG_NO_DEVICE_MAP'] = '1'
+            if rank == 0:
+                print("📍 Setting SHIRG_NO_DEVICE_MAP=1 for distributed LoRA training")
         else:
             print("📍 Single GPU training mode")
     
@@ -125,15 +149,34 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             # Find local rank
             local_rank = int(os.environ.get('LOCAL_RANK', 0))
             
+            # SHIRG-FIX: 2025-07-30 - Force DDP for LoRA training
+            # ISSUE: device_map model parallelism breaks LoRA gradient flow
+            # SOLUTION: Always use DDP for LoRA training, never device_map
+            # LAVIDA IMPACT: Each GPU loads full model for proper gradient flow
+            # SHIRG IMPACT: Ensures all LoRA parameters receive gradients
+            
             # Check if model has device_map (model parallelism)
             if hasattr(self.model, 'hf_device_map') and self.model.hf_device_map is not None:
-                # Model is already distributed across devices
-                print(f"✅ Model already distributed with device_map, skipping DDP wrapper")
-                print(f"   Device map preview: {list(self.model.hf_device_map.keys())[:5]}...")
-            else:
-                # Standard DDP setup for data parallelism
-                # Move model to local GPU
-                self.model = self.model.cuda(local_rank)
+                # This shouldn't happen if SHIRG_NO_DEVICE_MAP=1 is set correctly
+                rank0_print(f"⚠️ WARNING: Model has device_map but we need DDP for LoRA!")
+                rank0_print(f"   Device map detected: {list(self.model.hf_device_map.keys())[:5]}...")
+                rank0_print(f"   This will likely cause gradient flow issues!")
+                rank0_print(f"   Please ensure SHIRG_NO_DEVICE_MAP=1 is set before model loading.")
+                
+                # Try to move model to single device anyway
+                try:
+                    # Move entire model to local GPU
+                    self.model = self.model.cuda(local_rank)
+                    rank0_print(f"   Attempted to move model to GPU {local_rank}")
+                except Exception as e:
+                    rank0_print(f"   ❌ Failed to move model: {e}")
+                    rank0_print(f"   LoRA training will likely fail with zero gradients!")
+            
+            # Standard DDP setup for data parallelism
+            if not hasattr(self.model, 'module'):  # Not already wrapped
+                # Ensure model is on local GPU
+                if not next(self.model.parameters()).is_cuda:
+                    self.model = self.model.cuda(local_rank)
                 
                 # Wrap with DDP
                 self.model = DDP(
@@ -143,7 +186,9 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                     find_unused_parameters=True,  # Required for LoRA
                 )
                 
-                print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")
+                rank0_print(f"✅ Model wrapped with DistributedDataParallel on GPU {local_rank}")
+            else:
+                rank0_print(f"✅ Model already wrapped with DDP")
     
     def save_checkpoint(self, *args, **kwargs):
         """Only save checkpoints from rank 0"""
@@ -216,6 +261,16 @@ def main():
             # Linear LR scaling
             config.learning_rate = config.learning_rate * world_size
             print(f"📈 Scaled learning rate for {world_size} GPUs: {config.learning_rate}")
+    
+    # SHIRG-FIX: 2025-07-30 - Set environment variable before creating trainer
+    # ISSUE: device_map needs to be disabled before model loading
+    # SOLUTION: Set SHIRG_NO_DEVICE_MAP=1 before trainer initialization
+    # LAVIDA IMPACT: Full model loaded per GPU for gradient flow
+    # SHIRG IMPACT: Fixes zero gradient issue in distributed training
+    if 'WORLD_SIZE' in os.environ and int(os.environ['WORLD_SIZE']) > 1:
+        os.environ['SHIRG_NO_DEVICE_MAP'] = '1'
+        if 'RANK' in os.environ and int(os.environ['RANK']) == 0:
+            print("🔧 Set SHIRG_NO_DEVICE_MAP=1 for multi-GPU LoRA training")
     
     # Create trainer
     trainer = MultiGPUShirgTrainer(

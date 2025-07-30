@@ -248,8 +248,20 @@ class LaViDaSHIRGWrapper:
             # LAVIDA IMPACT: Testing can use single GPU, production uses multi-GPU
             # SHIRG IMPACT: Fixes device mismatch errors during testing
             
-            # Use device_map only if not explicitly disabled
-            actual_device_map = self.device_map if self.device_map is not None else "auto"
+            # SHIRG-FIX: 2025-07-30 - Disable device_map for LoRA training
+            # ISSUE: device_map="auto" (model parallelism) breaks LoRA gradient flow
+            # SOLUTION: Check environment variable to disable device_map for DDP training
+            # LAVIDA IMPACT: Requires loading full model per GPU but enables gradient flow
+            # SHIRG IMPACT: Fixes zero gradient issue in 8 GPU LoRA training
+            
+            # Check if we should disable device_map for LoRA training
+            disable_device_map = os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1'
+            if disable_device_map:
+                print("⚠️ SHIRG_NO_DEVICE_MAP=1: Disabling device_map for LoRA training")
+                actual_device_map = None
+            else:
+                # Use device_map only if not explicitly disabled
+                actual_device_map = self.device_map if self.device_map is not None else "auto"
             
             # Load base model with LaViDa-compatible parameters
             self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(

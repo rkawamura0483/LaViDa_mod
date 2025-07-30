@@ -16,6 +16,13 @@ export TOKENIZERS_PARALLELISM=false
 # Set OMP threads to avoid CPU oversubscription
 export OMP_NUM_THREADS=4
 
+# SHIRG-FIX: 2025-07-30 - Disable device_map for LoRA gradient flow
+# ISSUE: device_map="auto" (model parallelism) breaks LoRA gradient flow
+# SOLUTION: Set SHIRG_NO_DEVICE_MAP=1 to use data parallelism (DDP) instead
+# LAVIDA IMPACT: Each GPU loads full model (~16GB) for proper gradient flow
+# SHIRG IMPACT: Fixes zero gradient issue in multi-GPU LoRA training
+export SHIRG_NO_DEVICE_MAP=1
+
 echo "🚀 Starting SHIRG LoRA training on 8 GPUs"
 echo "================================================"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
