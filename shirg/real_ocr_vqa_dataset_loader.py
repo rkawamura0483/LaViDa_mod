@@ -1188,9 +1188,11 @@ class OCRVQAResultAnalyzer:
                 font_normal = ImageFont.load_default()
                 font_small = ImageFont.load_default()
             
-            # Title
-            pattern_type = "Actual SHIRG" if actual_selection_pattern is not None else "Simulated"
-            draw.text((10, 10), f"SHIRG 2-View Token Selection ({pattern_type}): {sample_name}", fill='black', font=font_title)
+            # Initialize actual_selection_pattern variable
+            actual_selection_pattern = None
+            
+            # Title - will be updated later with pattern type
+            draw.text((10, 10), f"SHIRG 2-View Token Selection: {sample_name}", fill='black', font=font_title)
             draw.text((10, 35), f"Q: {question[:100]}{'...' if len(question) > 100 else ''}", fill='black', font=font_normal)
             
             # Global view (384×384 → 256 tokens)
@@ -1354,16 +1356,22 @@ class OCRVQAResultAnalyzer:
             info_y = 100
             
             draw.text((info_x, info_y), "SHIRG 2-View Summary:", fill='black', font=font_normal)
-            draw.text((info_x, info_y + 30), f"Global: 256 tokens", fill='blue', font=font_small)
-            draw.text((info_x, info_y + 50), f"Foveal: 724 tokens", fill='green', font=font_small)
-            draw.text((info_x, info_y + 70), f"Total: 980 tokens", fill='purple', font=font_small)
             
-            draw.text((info_x, info_y + 110), "Performance:", fill='black', font=font_normal)
-            draw.text((info_x, info_y + 140), f"Baseline: {baseline_result.get('inference_time', 0):.3f}s", fill='blue', font=font_small)
-            draw.text((info_x, info_y + 160), f"SHIRG: {shirg_result.get('inference_time', 0):.3f}s", fill='green', font=font_small)
+            # Show pattern type
+            pattern_type = "Actual SHIRG Pattern" if actual_selection_pattern is not None else "Simulated Pattern"
+            pattern_color = 'green' if actual_selection_pattern is not None else 'orange'
+            draw.text((info_x, info_y + 25), f"Selection: {pattern_type}", fill=pattern_color, font=font_small)
+            
+            draw.text((info_x, info_y + 50), f"Global: 256 tokens", fill='blue', font=font_small)
+            draw.text((info_x, info_y + 70), f"Foveal: 724 tokens", fill='green', font=font_small)
+            draw.text((info_x, info_y + 90), f"Total: 980 tokens", fill='purple', font=font_small)
+            
+            draw.text((info_x, info_y + 130), "Performance:", fill='black', font=font_normal)
+            draw.text((info_x, info_y + 160), f"Baseline: {baseline_result.get('inference_time', 0):.3f}s", fill='blue', font=font_small)
+            draw.text((info_x, info_y + 180), f"SHIRG: {shirg_result.get('inference_time', 0):.3f}s", fill='green', font=font_small)
             
             speed_ratio = shirg_result.get('inference_time', 1) / (baseline_result.get('inference_time', 1) + 1e-8)
-            draw.text((info_x, info_y + 180), f"Ratio: {speed_ratio:.2f}x", fill='purple', font=font_small)
+            draw.text((info_x, info_y + 200), f"Ratio: {speed_ratio:.2f}x", fill='purple', font=font_small)
             
             # Save visualization
             viz_filename = f"shirg_2view_{sample_name}.png"
