@@ -13,7 +13,7 @@ import numpy as np
 
 # Add paths for imports
 sys.path.append('./eval/')
-from lmms_eval.api.metrics import anls, exact_match
+from lmms_eval.api.metrics import anls
 from lmms_eval.tasks._task_utils.vqa_eval_metric import EvalAIAnswerProcessor
 
 

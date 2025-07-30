@@ -251,7 +251,7 @@ class SHIRGLMMSEvalRunner:
             ground_truth = json.load(f)
         
         # Import evaluation metrics
-        from lmms_eval.api.metrics import anls, exact_match
+        from lmms_eval.api.metrics import anls
         from lmms_eval.tasks._task_utils.vqa_eval_metric import EvalAIAnswerProcessor
         
         processor = EvalAIAnswerProcessor()
