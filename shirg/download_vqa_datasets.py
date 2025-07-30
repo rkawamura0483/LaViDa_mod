@@ -52,7 +52,7 @@ class VQADatasetDownloader:
                 "use_hf": True
             },
             "docvqa": {
-                "huggingface_dataset": "HuggingFaceM4/DocVQA",
+                "huggingface_dataset": "lmms-lab/DocVQA",
                 "description": "DocVQA - Document visual question answering",
                 "expected_samples": {"train": 39463, "val": 5349, "test": 5188},
                 "data_format": "docvqa",
@@ -90,6 +90,13 @@ class VQADatasetDownloader:
                 "description": "InfoVQA - Infographics visual question answering",
                 "expected_samples": {"train": 23946, "val": 2801},
                 "data_format": "infovqa"
+            },
+            "mathvista": {
+                "huggingface_dataset": "AI4Math/MathVista",
+                "description": "MathVista - Mathematical reasoning with visual understanding",
+                "expected_samples": {"train": 6141, "testmini": 1000, "test": 5000},
+                "data_format": "mathvista",
+                "use_hf": True
             }
         }
     
@@ -192,7 +199,7 @@ class VQADatasetDownloader:
             for local_split, hf_split in split_mapping.items():
                 try:
                     print(f"📥 Downloading DocVQA {local_split} split...")
-                    dataset = load_dataset("HuggingFaceM4/DocVQA", split=hf_split, trust_remote_code=True)
+                    dataset = load_dataset("lmms-lab/DocVQA", "DocVQA", split=hf_split)
                     
                     # Save to local format
                     split_dir = dataset_dir / local_split
@@ -321,50 +328,164 @@ class VQADatasetDownloader:
             print("📥 Downloading OCR-VQA dataset...")
             dataset = load_dataset("howard-hou/OCR-VQA")
             
-            # Get train split
-            train_data = dataset.get("train", dataset.get("dataset", None))
+            counts = {}
             
-            if train_data is None:
-                print("❌ Could not find train split in OCR-VQA dataset")
-                return {}
+            # Process train split
+            if "train" in dataset:
+                train_data = dataset["train"]
+                print(f"   Processing {len(train_data)} training samples...")
+                
+                # Convert to dictionary format
+                train_dict = {}
+                for idx, item in enumerate(train_data):
+                    if idx % 10000 == 0:
+                        print(f"   Processed {idx}/{len(train_data)} samples...")
+                    question_id = item.get("question_id", f"ocrvqa_{idx}")
+                    train_dict[question_id] = {
+                        "question": item.get("question", ""),
+                        "answer": item.get("answer", ""),
+                        "imageURL": item.get("image_url", item.get("imageURL", "")),
+                        "image_id": item.get("image_id", f"img_{idx}")
+                    }
+                
+                # Save train data
+                with open(dataset_dir / "train.json", 'w') as f:
+                    json.dump(train_dict, f, indent=2)
+                counts["train"] = len(train_dict)
+                print(f"✅ OCR-VQA train: {counts['train']} samples")
             
-            # Convert to dictionary format
-            all_data = {}
-            for idx, item in enumerate(train_data):
-                question_id = item.get("question_id", f"ocrvqa_{idx}")
-                all_data[question_id] = {
-                    "question": item.get("question", ""),
-                    "answer": item.get("answer", ""),
-                    "imageURL": item.get("image_url", ""),
-                    "image_id": item.get("image_id", f"img_{idx}")
-                }
+            # Process validation split  
+            if "validation" in dataset:
+                val_data = dataset["validation"]
+                print(f"   Processing {len(val_data)} validation samples...")
+                
+                val_dict = {}
+                for idx, item in enumerate(val_data):
+                    question_id = item.get("question_id", f"ocrvqa_val_{idx}")
+                    val_dict[question_id] = {
+                        "question": item.get("question", ""),
+                        "answer": item.get("answer", ""),
+                        "imageURL": item.get("image_url", item.get("imageURL", "")),
+                        "image_id": item.get("image_id", f"img_{idx}")
+                    }
+                
+                # Save val data
+                with open(dataset_dir / "val.json", 'w') as f:
+                    json.dump(val_dict, f, indent=2)
+                counts["val"] = len(val_dict)
+                print(f"✅ OCR-VQA val: {counts['val']} samples")
             
-            # Split into train/val (95/5)
-            total_samples = len(all_data)
-            train_size = int(0.95 * total_samples)
-            
-            all_items = list(all_data.items())
-            train_data = dict(all_items[:train_size])
-            val_data = dict(all_items[train_size:])
-            
-            # Save splits
-            with open(dataset_dir / "train.json", 'w') as f:
-                json.dump(train_data, f, indent=2)
-            with open(dataset_dir / "val.json", 'w') as f:
-                json.dump(val_data, f, indent=2)
-            
-            counts = {
-                "train": len(train_data),
-                "val": len(val_data)
-            }
-            
-            print(f"✅ OCR-VQA train: {counts['train']} samples")
-            print(f"✅ OCR-VQA val: {counts['val']} samples")
+            # If no validation split, create one from train
+            if "validation" not in dataset and "train" in dataset:
+                print("   Creating validation split from training data (5%)...")
+                total_samples = counts.get("train", 0)
+                val_size = int(0.05 * total_samples)
+                
+                # Load train data and split
+                with open(dataset_dir / "train.json", 'r') as f:
+                    all_data = json.load(f)
+                
+                all_items = list(all_data.items())
+                val_items = all_items[-val_size:]
+                train_items = all_items[:-val_size]
+                
+                # Save splits
+                train_dict = dict(train_items)
+                val_dict = dict(val_items)
+                
+                with open(dataset_dir / "train.json", 'w') as f:
+                    json.dump(train_dict, f, indent=2)
+                with open(dataset_dir / "val.json", 'w') as f:
+                    json.dump(val_dict, f, indent=2)
+                
+                counts["train"] = len(train_dict)
+                counts["val"] = len(val_dict)
+                print(f"✅ Split into train: {counts['train']}, val: {counts['val']}")
             
             return counts
             
         except Exception as e:
             print(f"❌ Error downloading OCR-VQA from HuggingFace: {e}")
+            print("   Please install datasets: pip install datasets")
+            return {}
+    
+    def download_infovqa(self) -> Dict[str, int]:
+        """Download InfoVQA dataset"""
+        print("\n📊 Downloading InfoVQA dataset...")
+        dataset_dir = self.base_dir / "infovqa"
+        dataset_dir.mkdir(exist_ok=True)
+        
+        counts = {}
+        
+        # Download JSON files
+        for split in ["train", "val"]:
+            json_path = dataset_dir / f"infographicsVQA_{split}_v1.0.json"
+            if not json_path.exists():
+                if not self.download_file(
+                    self.datasets["infovqa"][f"{split}_url"],
+                    json_path,
+                    f"InfoVQA {split}"
+                ):
+                    continue
+            
+            # Count samples
+            if json_path.exists():
+                with open(json_path, 'r') as f:
+                    data = json.load(f)
+                    counts[split] = len(data['data']) if 'data' in data else len(data)
+                    print(f"✅ InfoVQA {split}: {counts[split]} samples")
+        
+        return counts
+    
+    def download_mathvista(self) -> Dict[str, int]:
+        """Download MathVista dataset"""
+        print("\n📐 Downloading MathVista dataset from HuggingFace...")
+        dataset_dir = self.base_dir / "mathvista"
+        dataset_dir.mkdir(exist_ok=True)
+        
+        try:
+            from datasets import load_dataset
+            
+            counts = {}
+            
+            # Download each split
+            splits = ["train", "testmini", "test"]
+            for split in splits:
+                try:
+                    print(f"📥 Downloading MathVista {split} split...")
+                    dataset = load_dataset("AI4Math/MathVista", split=split)
+                    
+                    # Save to local format
+                    split_data = []
+                    for idx, item in enumerate(dataset):
+                        split_data.append({
+                            "question": item.get("question", ""),
+                            "answer": str(item.get("answer", "")),
+                            "image": f"mathvista_{split}_{idx}.png",
+                            "question_id": f"mathvista_{split}_{idx}",
+                            "question_type": item.get("question_type", "unknown"),
+                            "answer_type": item.get("answer_type", "unknown"),
+                            "precision": item.get("precision", 1.0),
+                            "metadata": item.get("metadata", {})
+                        })
+                    
+                    # Save JSON
+                    json_path = dataset_dir / f"{split}.json"
+                    with open(json_path, 'w') as f:
+                        json.dump(split_data, f, indent=2)
+                    
+                    # Map split names for counting
+                    count_key = "val" if split == "testmini" else split
+                    counts[count_key] = len(split_data)
+                    print(f"✅ MathVista {split}: {counts[count_key]} samples")
+                    
+                except Exception as e:
+                    print(f"⚠️ Could not download MathVista {split}: {e}")
+            
+            return counts
+            
+        except Exception as e:
+            print(f"❌ Error downloading MathVista from HuggingFace: {e}")
             print("   Please install datasets: pip install datasets")
             return {}
     
@@ -379,7 +500,8 @@ class VQADatasetDownloader:
                 "vqa_v2": str(self.base_dir / "vqa_v2"),
                 "textvqa": str(self.base_dir / "textvqa"),
                 "ocrvqa": str(self.base_dir / "ocrvqa"),
-                "infovqa": str(self.base_dir / "infovqa")
+                "infovqa": str(self.base_dir / "infovqa"),
+                "mathvista": str(self.base_dir / "mathvista")
             },
             "dataset_counts": dataset_counts,
             "total_train_samples": sum(
@@ -396,7 +518,8 @@ class VQADatasetDownloader:
                 "vqa_v2": 0.40,
                 "textvqa": 0.15,
                 "ocrvqa": 0.10,
-                "infovqa": 0.05
+                "infovqa": 0.05,
+                "mathvista": 0.20
             }
         }
         
@@ -430,6 +553,10 @@ class VQADatasetDownloader:
         dataset_counts["textvqa"] = self.download_textvqa()
         print("\n" + "="*60)
         dataset_counts["ocrvqa"] = self.download_ocrvqa()
+        print("\n" + "="*60)
+        dataset_counts["infovqa"] = self.download_infovqa()
+        print("\n" + "="*60)
+        dataset_counts["mathvista"] = self.download_mathvista()
         
         # Create configuration
         self.create_dataset_config(dataset_counts)
@@ -458,7 +585,7 @@ def main():
     parser.add_argument("--data-dir", type=str, default="./data/vqa_datasets",
                        help="Base directory for datasets")
     parser.add_argument("--datasets", nargs="+", 
-                       choices=["chartqa", "docvqa", "vqa_v2", "textvqa", "ocrvqa", "all"],
+                       choices=["chartqa", "docvqa", "vqa_v2", "textvqa", "ocrvqa", "infovqa", "mathvista", "all"],
                        default=["all"],
                        help="Datasets to download")
     
@@ -481,6 +608,10 @@ def main():
                 dataset_counts[dataset] = downloader.download_textvqa()
             elif dataset == "ocrvqa":
                 dataset_counts[dataset] = downloader.download_ocrvqa()
+            elif dataset == "infovqa":
+                dataset_counts[dataset] = downloader.download_infovqa()
+            elif dataset == "mathvista":
+                dataset_counts[dataset] = downloader.download_mathvista()
         
         downloader.create_dataset_config(dataset_counts)
 

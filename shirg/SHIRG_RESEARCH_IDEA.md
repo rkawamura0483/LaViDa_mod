@@ -14,29 +14,8 @@ We keep a single 384² global view (256 tokens) to give scene context, and add *
 
 **Critical Constraint**: The prefix cache requires **token immutability** - any change to visual tokens after step 0 invalidates the entire cache, destroying the speed advantage.
 
-### 1.2 Resolution Limitation Impact
-
-**Global context is already well modelled at 384²**, so the real loss is in peripheral detail. LaViDa's current processing loses fine-grained information for:
-- **High-resolution spatial reasoning**: Charts, dense diagrams, satellite crops  
-- **Fine-grained visual details**: Thin chart features, small legends, dense data points
-- **Document analysis**: Fine-grained table structures, small annotations
-- **Single-scale global Top-K over-selects centre tokens and starves corners** —observed in AdaptPrune ablations ([arXiv](https://arxiv.org/abs/2503.08019))
-
-**Note**: We frame this as general high-resolution spatial reasoning rather than OCR, since SigLIP patches are still too large for 6pt glyphs.
-
-### 1.3 High-Resolution Scaling Challenge
-
-The challenge is scaling to higher resolution while maintaining cache compatibility:
-- **Information loss**: Current pooling retains only 27% of available tokens
-- **Cache compatibility**: Any token selection must maintain static sequences
-- **Latency budget**: Token selection must complete in <30ms to preserve speed benefits
-- **High-resolution detail preservation**: Need to preserve ≥ 50% of tokens in the single foveal crop
-
-**Feasibility Confirmation**:
-
-| # views | crop size | raw M | κ        | kept / view | peripheral total |
-| ------- | --------- | ----- | -------- | ----------- | ---------------- |
-| **1**   | **448²**  | 1024  | **0.707** | **724**     | **724**          |
+**2x2 pooling**
+LaViDa pools the image tokens, losing fine details and resulting in lower accuracy on OCR tasks.
 
 ---
 
