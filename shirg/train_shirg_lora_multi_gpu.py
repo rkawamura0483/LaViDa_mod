@@ -53,12 +53,15 @@ from shirg.shirg_lora_config import ShirgLoraConfig, create_lora_training_config
 class MultiGPUShirgTrainer(ShirgLoraTrainer):
     """Extended trainer for multi-GPU training on Lambda Cloud"""
     
-    def __init__(self, *args, data_dir=None, **kwargs):
+    def __init__(self, *args, data_dir=None, skip_validation=False, **kwargs):
         # Store data directory
         self.data_dir = data_dir
         
         # Initialize distributed training
         self.setup_distributed()
+        
+        # Pass skip_validation to parent
+        kwargs['skip_validation'] = skip_validation
         
         # Call parent init
         super().__init__(*args, **kwargs)
@@ -113,14 +116,15 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 drop_last=True,
             )
             
-            # Validation sampler
-            val_sampler = DistributedSampler(
-                self.val_dataset,
-                num_replicas=dist.get_world_size(),
-                rank=dist.get_rank(),
-                shuffle=False,
-                drop_last=False,
-            )
+            # Validation sampler (only if validation is enabled)
+            if not self.skip_validation:
+                val_sampler = DistributedSampler(
+                    self.val_dataset,
+                    num_replicas=dist.get_world_size(),
+                    rank=dist.get_rank(),
+                    shuffle=False,
+                    drop_last=False,
+                )
             
             # Recreate dataloaders with distributed samplers
             from torch.utils.data import DataLoader
@@ -144,16 +148,17 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 persistent_workers=(self.config.dataloader_num_workers > 0),
             )
             
-            self.val_dataloader = DataLoader(
-                self.val_dataset,
-                batch_size=self.config.per_device_train_batch_size,
-                sampler=val_sampler,
-                num_workers=self.config.dataloader_num_workers,
-                pin_memory=self.config.dataloader_pin_memory,
-                collate_fn=self.collate_fn,
-                multiprocessing_context=mp_context,
-                persistent_workers=(self.config.dataloader_num_workers > 0),
-            )
+            if not self.skip_validation:
+                self.val_dataloader = DataLoader(
+                    self.val_dataset,
+                    batch_size=self.config.per_device_train_batch_size,
+                    sampler=val_sampler,
+                    num_workers=self.config.dataloader_num_workers,
+                    pin_memory=self.config.dataloader_pin_memory,
+                    collate_fn=self.collate_fn,
+                    multiprocessing_context=mp_context,
+                    persistent_workers=(self.config.dataloader_num_workers > 0),
+                )
             
             print(f"✅ Distributed samplers configured")
         
@@ -342,6 +347,8 @@ def main():
                        help="Number of dataloader workers per GPU")
     parser.add_argument("--data-dir", type=str, default="./data/vqa_datasets",
                        help="Directory containing downloaded VQA datasets")
+    parser.add_argument("--skip-validation", action="store_true",
+                       help="Skip validation to save memory and prevent OOM")
     
     args = parser.parse_args()
     
@@ -382,6 +389,7 @@ def main():
         output_dir=args.output_dir,
         use_wandb=not args.no_wandb,
         data_dir=args.data_dir,
+        skip_validation=args.skip_validation,
     )
     
     try:

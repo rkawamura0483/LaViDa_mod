@@ -88,7 +88,12 @@ echo "================================================"
 echo "GPUs: $CUDA_VISIBLE_DEVICES"
 echo "World size: $WORLD_SIZE"
 echo "Master: $MASTER_ADDR:$MASTER_PORT"
+echo "📊 Validation: DISABLED (to prevent OOM)"
 echo "================================================"
+echo ""
+echo "⚠️  Note: Validation is disabled by default to prevent OOM errors."
+echo "   Remove --skip-validation flag if you have enough memory."
+echo ""
 
 # Training configuration
 MODEL_PATH="KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
@@ -129,7 +134,8 @@ torchrun \
     --num-epochs $NUM_EPOCHS \
     --gradient-accumulation-steps $GRADIENT_ACCUMULATION \
     --num-workers $NUM_WORKERS \
-    --data-dir $DATA_DIR
+    --data-dir $DATA_DIR \
+    --skip-validation  # Skip validation to prevent OOM
 
 # Check exit code
 EXIT_CODE=$?

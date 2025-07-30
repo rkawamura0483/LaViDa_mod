@@ -92,6 +92,7 @@ class ShirgLoraTrainer:
         output_dir: str = "./shirg_lora_checkpoints",
         use_wandb: bool = True,
         data_dir: Optional[str] = None,
+        skip_validation: bool = False,
     ):
         """
         Initialize trainer
@@ -107,6 +108,7 @@ class ShirgLoraTrainer:
         self.output_dir = output_dir
         self.use_wandb = use_wandb
         self.data_dir = data_dir
+        self.skip_validation = skip_validation
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -521,18 +523,21 @@ class ShirgLoraTrainer:
         )
         
         # Validation dataset with fewer samples
-        val_configs = {k: {"weight": v["weight"], "max_samples": 1000} 
-                      for k, v in dataset_configs.items()}
-        # Add DocVQA for validation only (it has no train split)
-        val_configs["docvqa"] = {"weight": 0.20, "max_samples": 1000}
-        
-        self.val_dataset = MixedVQADataset(
-            split="validation",
-            dataset_configs=val_configs,
-            image_size=self.config.image_size,
-            cache_dir=os.path.join(self.output_dir, "hf_cache"),  # HuggingFace cache
-            data_dir=self.data_dir,  # Local data directory
-        )
+        if not self.skip_validation:
+            val_configs = {k: {"weight": v["weight"], "max_samples": 1000} 
+                          for k, v in dataset_configs.items()}
+            # Add DocVQA for validation only (it has no train split)
+            val_configs["docvqa"] = {"weight": 0.20, "max_samples": 1000}
+            
+            self.val_dataset = MixedVQADataset(
+                split="validation",
+                dataset_configs=val_configs,
+                image_size=self.config.image_size,
+                cache_dir=os.path.join(self.output_dir, "hf_cache"),  # HuggingFace cache
+                data_dir=self.data_dir,  # Local data directory
+            )
+        else:
+            self.val_dataset = None  # No validation dataset when skipping validation
         
         if len(self.train_dataset) == 0:
             # SHIRG-FIX: [2025-07-30] - Remove synthetic data fallback completely
@@ -561,7 +566,10 @@ class ShirgLoraTrainer:
             )
         
         print(f"✅ Training samples: {len(self.train_dataset)}")
-        print(f"✅ Validation samples: {len(self.val_dataset)}")
+        if not self.skip_validation:
+            print(f"✅ Validation samples: {len(self.val_dataset)}")
+        else:
+            print(f"📊 Validation disabled to save memory")
         
         # SHIRG-FIX: 2025-07-30 - Configure DataLoader for CUDA multiprocessing compatibility
         # ISSUE: Default DataLoader settings cause CUDA re-initialization errors
@@ -590,16 +598,19 @@ class ShirgLoraTrainer:
             persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
         )
         
-        self.val_dataloader = DataLoader(
-            self.val_dataset,
-            batch_size=self.config.per_device_train_batch_size,
-            shuffle=False,
-            num_workers=self.config.dataloader_num_workers,
-            pin_memory=self.config.dataloader_pin_memory,
-            collate_fn=self.collate_fn,
-            multiprocessing_context=mp_context if use_multiprocessing else None,
-            persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
-        )
+        if not self.skip_validation:
+            self.val_dataloader = DataLoader(
+                self.val_dataset,
+                batch_size=self.config.per_device_train_batch_size,
+                shuffle=False,
+                num_workers=self.config.dataloader_num_workers,
+                pin_memory=self.config.dataloader_pin_memory,
+                collate_fn=self.collate_fn,
+                multiprocessing_context=mp_context if use_multiprocessing else None,
+                persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
+            )
+        else:
+            self.val_dataloader = None  # No validation dataloader when skipping validation
         
         return len(self.train_dataloader)
     
@@ -890,16 +901,25 @@ class ShirgLoraTrainer:
         if os.environ.get('SHIRG_NO_DEVICE_MAP', '0') == '1':
             # Don't let accelerator handle model when device_map is disabled
             # This prevents conflicts with our manual device placement
-            self.train_dataloader, self.val_dataloader = \
-                self.accelerator.prepare(self.train_dataloader, self.val_dataloader)
+            if not self.skip_validation:
+                self.train_dataloader, self.val_dataloader = \
+                    self.accelerator.prepare(self.train_dataloader, self.val_dataloader)
+            else:
+                self.train_dataloader = self.accelerator.prepare(self.train_dataloader)
             # Model and optimizer are already set up correctly
             print("📍 Using manual device placement (SHIRG_NO_DEVICE_MAP=1)")
         else:
             # Standard accelerator preparation
-            self.model, self.optimizer, self.train_dataloader, self.val_dataloader = \
-                self.accelerator.prepare(
-                    self.model, self.optimizer, self.train_dataloader, self.val_dataloader
-                )
+            if not self.skip_validation:
+                self.model, self.optimizer, self.train_dataloader, self.val_dataloader = \
+                    self.accelerator.prepare(
+                        self.model, self.optimizer, self.train_dataloader, self.val_dataloader
+                    )
+            else:
+                self.model, self.optimizer, self.train_dataloader = \
+                    self.accelerator.prepare(
+                        self.model, self.optimizer, self.train_dataloader
+                    )
         
         # Training loop
         for epoch in range(self.config.num_train_epochs):
@@ -936,11 +956,12 @@ class ShirgLoraTrainer:
                     self.save_checkpoint()
                 
                 # Evaluate
-                if self.global_step % self.config.eval_steps == 0:
+                if not self.skip_validation and self.global_step % self.config.eval_steps == 0:
                     self.evaluate()
             
             # End of epoch evaluation
-            self.evaluate()
+            if not self.skip_validation:
+                self.evaluate()
             
             # Save epoch checkpoint
             self.save_checkpoint(is_epoch_end=True)
