@@ -203,8 +203,8 @@ class ShirgLoraTrainer:
             self.model.config.enable_shirg = True
             self.model.config.shirg_3view_mode = True  # Enable 2-view mode
             rank0_print("SHIRG-TRAINING: Enabled SHIRG 2-view mode in model config")
-            else:
-                vision_tower.vision_tower_cfg.enable_shirg = True
+        else:
+            vision_tower.vision_tower_cfg.enable_shirg = True
         
         # SHIRG-FIX: 2025-07-30 - Dynamic module discovery with fallback
         # ISSUE: Module paths vary depending on model loading method
