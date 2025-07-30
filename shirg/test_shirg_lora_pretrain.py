@@ -390,7 +390,7 @@ class ShirgLoraPreTrainTest:
             # Test loading vision tower directly
             from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
             
-            # Create config
+            # Create config object with required attributes
             class VisionConfig:
                 mm_vision_tower = "google/siglip-so400m-patch14-384"
                 enable_shirg = True
@@ -401,7 +401,12 @@ class ShirgLoraPreTrainTest:
             config = VisionConfig()
             
             print(f"   Loading SigLIP vision tower with SHIRG...")
-            vision_tower = SigLipVisionTower(config.mm_vision_tower, config=config, delay_load=False)
+            # SigLipVisionTower expects: (vision_tower, vision_tower_cfg, delay_load)
+            vision_tower = SigLipVisionTower(
+                vision_tower=config.mm_vision_tower,
+                vision_tower_cfg=config,
+                delay_load=False
+            )
             
             if torch.cuda.is_available():
                 vision_tower = vision_tower.cuda()
@@ -480,8 +485,98 @@ class ShirgLoraPreTrainTest:
                 result["details"]["skipped"] = True
                 return result
                 
-            # Setup model exactly as in training
-            print(f"   Loading LaViDa-SHIRG model...")
+            # Test vision tower directly without full LaViDa model
+            # This matches how the evaluation pipeline uses the vision tower
+            print(f"   Testing SigLIP vision tower with SHIRG...")
+            
+            # First test the vision tower component directly
+            from llava.model.multimodal_encoder.siglip_encoder import SigLipVisionTower
+            
+            # Create config for vision tower
+            class VisionTowerConfig:
+                mm_vision_tower = "google/siglip-so400m-patch14-384"
+                enable_shirg = True
+                mm_vision_select_layer = -2
+                mm_vision_select_feature = "patch"
+                image_aspect_ratio = "pad"
+                
+            vision_config = VisionTowerConfig()
+            
+            # Load vision tower
+            vision_tower = SigLipVisionTower(
+                vision_tower=vision_config.mm_vision_tower,
+                vision_tower_cfg=vision_config,
+                delay_load=False
+            )
+            
+            if torch.cuda.is_available():
+                vision_tower = vision_tower.cuda()
+                if self.config.bf16:
+                    vision_tower = vision_tower.to(dtype=torch.bfloat16)
+                elif self.config.fp16:
+                    vision_tower = vision_tower.to(dtype=torch.float16)
+                    
+            vision_tower.eval()
+            
+            # Test standard mode (384x384)
+            batch_size = 2
+            print(f"\n   Testing standard LaViDa mode (384×384):")
+            standard_images = torch.randn(batch_size, 3, 384, 384)
+            if torch.cuda.is_available():
+                standard_images = standard_images.cuda()
+                if self.config.bf16:
+                    standard_images = standard_images.to(dtype=torch.bfloat16)
+                elif self.config.fp16:
+                    standard_images = standard_images.to(dtype=torch.float16)
+                    
+            with torch.no_grad():
+                standard_features = vision_tower(standard_images, use_shirg=False)
+                
+            print(f"   Output shape: {standard_features.shape}")
+            print(f"   Expected: [{batch_size}, 729, 1152]")
+            
+            if standard_features.shape != (batch_size, 729, 1152):
+                result["passed"] = False
+                result["error"] = f"Standard mode shape mismatch: {standard_features.shape}"
+                return result
+                
+            # Test SHIRG mode (672x672)
+            print(f"\n   Testing SHIRG mode (672×672):")
+            shirg_images = torch.randn(batch_size, 3, 672, 672)
+            if torch.cuda.is_available():
+                shirg_images = shirg_images.cuda()
+                if self.config.bf16:
+                    shirg_images = shirg_images.to(dtype=torch.bfloat16)
+                elif self.config.fp16:
+                    shirg_images = shirg_images.to(dtype=torch.float16)
+                    
+            with torch.no_grad():
+                shirg_features = vision_tower(shirg_images, use_shirg=True)
+                
+            print(f"   Output shape: {shirg_features.shape}")
+            print(f"   Expected: [{batch_size}, 1216, 1152]")
+            
+            if shirg_features.shape != (batch_size, 1216, 1152):
+                result["passed"] = False
+                result["error"] = f"SHIRG mode shape mismatch: {shirg_features.shape}"
+                return result
+                
+            # Test gradient flow through vision tower
+            print(f"\n   Testing gradient computation:")
+            shirg_images.requires_grad = True
+            features = vision_tower(shirg_images, use_shirg=True)
+            loss = features.mean()
+            loss.backward()
+            
+            if shirg_images.grad is not None:
+                print(f"   ✅ Gradients flow through vision tower")
+                result["details"]["gradients_computed"] = True
+            else:
+                print(f"   ❌ No gradients computed")
+                result["passed"] = False
+                
+            # Now test with full LaViDa model if available
+            print(f"\n   Testing with full LaViDa-SHIRG model...")
             wrapper = LaViDaSHIRGWrapper(
                 model_path="KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers",
                 shirg_config={
@@ -586,8 +681,12 @@ class ShirgLoraPreTrainTest:
             print(f"   Loss: {outputs.loss.item():.4f}")
             
             # Test with gradient computation
-            print(f"\n   Testing backward pass...")
+            print(f"\n   Testing backward pass with LoRA gradients...")
             model.train()
+            
+            # Clear any existing gradients
+            model.zero_grad()
+            
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
@@ -595,23 +694,97 @@ class ShirgLoraPreTrainTest:
                 labels=batch["labels"],
             )
             loss = outputs.loss
+            
+            print(f"   Loss computed: {loss.item():.4f}")
+            
+            # Backward pass
             loss.backward()
             
-            # Check if LoRA parameters have gradients
-            lora_grads = []
+            # Check gradient flow in detail
+            print(f"\n   Checking gradient flow through model components:")
+            
+            # Check vision tower gradients
+            vision_grads = []
+            vision_lora_grads = []
+            for name, param in model.named_parameters():
+                if "vision_tower" in name:
+                    if param.requires_grad and param.grad is not None:
+                        if "lora" in name:
+                            vision_lora_grads.append(name)
+                        else:
+                            vision_grads.append(name)
+                            
+            print(f"   Vision tower LoRA gradients: {len(vision_lora_grads)}")
+            if vision_lora_grads:
+                for name in vision_lora_grads[:3]:  # Show first 3
+                    print(f"      - {name}")
+                    
+            # Check projector gradients
+            projector_grads = []
+            projector_lora_grads = []
+            for name, param in model.named_parameters():
+                if "mm_projector" in name:
+                    if param.requires_grad and param.grad is not None:
+                        if "lora" in name:
+                            projector_lora_grads.append(name)
+                        else:
+                            projector_grads.append(name)
+                            
+            print(f"   Projector LoRA gradients: {len(projector_lora_grads)}")
+            if projector_lora_grads:
+                for name in projector_lora_grads[:3]:  # Show first 3
+                    print(f"      - {name}")
+                    
+            # Check LLM gradients
+            llm_grads = []
+            llm_lora_grads = []
+            for name, param in model.named_parameters():
+                if "model.layers" in name:  # LLaMA layers
+                    if param.requires_grad and param.grad is not None:
+                        if "lora" in name:
+                            llm_lora_grads.append(name)
+                        else:
+                            llm_grads.append(name)
+                            
+            print(f"   LLM LoRA gradients: {len(llm_lora_grads)}")
+            if llm_lora_grads:
+                for name in llm_lora_grads[:3]:  # Show first 3
+                    print(f"      - {name}")
+                    
+            # Total LoRA parameters with gradients
+            all_lora_grads = vision_lora_grads + projector_lora_grads + llm_lora_grads
+            print(f"\n   Total LoRA parameters with gradients: {len(all_lora_grads)}")
+            
+            # Verify gradient magnitudes
+            grad_norms = []
             for name, param in model.named_parameters():
                 if "lora" in name and param.requires_grad and param.grad is not None:
-                    lora_grads.append(name)
+                    grad_norm = param.grad.norm().item()
+                    grad_norms.append(grad_norm)
                     
-            print(f"   ✅ Backward pass successful")
-            print(f"   LoRA parameters with gradients: {len(lora_grads)}")
-            
+            if grad_norms:
+                print(f"   Gradient norm statistics:")
+                print(f"      - Mean: {np.mean(grad_norms):.6f}")
+                print(f"      - Max: {np.max(grad_norms):.6f}")
+                print(f"      - Min: {np.min(grad_norms):.6f}")
+                
+            # Check if gradients are flowing properly
+            if len(all_lora_grads) == 0:
+                result["passed"] = False
+                result["error"] = "No LoRA parameters received gradients"
+                print(f"   ❌ No gradients detected in LoRA parameters!")
+            else:
+                print(f"   ✅ Backward pass successful with gradient flow")
+                
             if torch.cuda.is_available():
                 mem_allocated = torch.cuda.memory_allocated() / 1e9
                 print(f"\n   GPU memory allocated: {mem_allocated:.2f}GB")
                 
-            result["details"]["loss"] = outputs.loss.item()
-            result["details"]["lora_params_with_grad"] = len(lora_grads)
+            result["details"]["loss"] = loss.item()
+            result["details"]["vision_lora_grads"] = len(vision_lora_grads)
+            result["details"]["projector_lora_grads"] = len(projector_lora_grads)
+            result["details"]["llm_lora_grads"] = len(llm_lora_grads)
+            result["details"]["total_lora_grads"] = len(all_lora_grads)
             result["details"]["memory_gb"] = mem_allocated if torch.cuda.is_available() else 0
             
         except Exception as e:
