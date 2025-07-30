@@ -12,9 +12,11 @@ This document summarizes all changes made to refactor the SHIRG implementation f
 - Total: 196 + 784 = 980 tokens
 
 ### After (1 foveal view):
-- Global: 384² → 196 tokens (pooled)
-- Foveal: 1×448² crop → 1024 raw tokens
-- Selection: Keep 76.6% from single crop = 784 tokens
+- Global: 384² → 196 tokens (pooled) - entire image resized to 384×384
+- Foveal: 1×448² view → 1024 raw tokens
+  - For images > 448×448: center crop of 448×448 pixels
+  - For images < 448×448: entire image resized to 448×448
+- Selection: Keep 76.6% from single view = 784 tokens
 - Total: 196 + 784 = 980 tokens
 
 ## Files Modified

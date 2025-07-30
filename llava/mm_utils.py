@@ -372,13 +372,13 @@ def process_shirg_2view_image(image, image_processor):
     processed_global = image_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_global)
     
-    # Process foveal view with 448x448 size
+    # Process foveal view with 448x448 size to get 1024 tokens (32x32 patches)
     # Create a temporary processor with 448x448 size but identical preprocessing
     from llava.model.multimodal_encoder.siglip_base import SigLipImageProcessor
     foveal_processor = SigLipImageProcessor(
         image_mean=image_processor.image_mean,
         image_std=image_processor.image_std,
-        size=(448, 448),  # Only change: use 448x448 instead of 384x384
+        size=(448, 448),  # Different resolution for foveal view
         crop_size={"height": 448, "width": 448},
         resample=image_processor.resample,
         rescale_factor=image_processor.rescale_factor,
@@ -387,8 +387,18 @@ def process_shirg_2view_image(image, image_processor):
     processed_foveal = foveal_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_foveal)
     
-    # Stack into single tensor [2, C, H, W]
-    return torch.stack(processed_views, dim=0)
+    # SHIRG-FIX: 2025-07-30 - Handle different resolution views correctly
+    # ISSUE: Cannot stack tensors with different spatial dimensions [3,384,384] vs [3,448,448]
+    # SOLUTION: Check if views have same shape, only stack if they do (following LaViDa pattern)
+    # RESEARCH IMPACT: Preserves SHIRG's different resolution processing (384² global, 448² foveal)
+    # LAVIDA IMPACT: Follows standard LaViDa pattern for handling multi-resolution inputs
+    
+    # Only stack if all views have the same shape (following LaViDa's anyres pattern)
+    if all(x.shape == processed_views[0].shape for x in processed_views):
+        return torch.stack(processed_views, dim=0)
+    else:
+        # Return as list when shapes differ - let downstream processing handle it
+        return processed_views
 
 
 def process_images(images, image_processor, model_cfg):

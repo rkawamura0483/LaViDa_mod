@@ -2,7 +2,7 @@
 
 ## Abstract
 
-We keep a single 384² global view (≈196 pooled tokens) to give scene context, and add **one 448² foveal crop**, pruned to 784 tokens (≈ 23% prune) for the same 784-token peripheral budget. **SHIRG-Fovea** achieves **≤1.20× baseline latency** with exactly 980 tokens (baseline-identical) through biologically-inspired foveated processing that respects the empirical accuracy cliff at >50% static pruning found in prior work ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)). Our method preserves LaViDa's cache compatibility through per-view static selection with minimal LoRA adaptation.
+We keep a single 384² global view (≈196 pooled tokens) to give scene context, and add **one 448² foveal view** (center region for large images, full image resized for smaller ones), with tokens pruned to 784 (≈ 23% reduction) for the same 784-token peripheral budget. **SHIRG-Fovea** achieves **≤1.20× baseline latency** with exactly 980 tokens (baseline-identical) through biologically-inspired foveated processing that respects the empirical accuracy cliff at >50% static pruning found in prior work ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf)). Our method preserves LaViDa's cache compatibility through per-view static selection with minimal LoRA adaptation.
 
 ---
 
@@ -83,7 +83,7 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 
 ### 3.1 Core Design Principles
 
-1. **Two-scale foveation**: one global 392² context + one 448² foveal crop
+1. **Two-scale foveation**: one global 384² context + one 448² foveal view
 2. **Per-view static Top-K** rather than stitched global ranking
 3. **≤25% prune ratio** per prior empirical upper bound ([CVF Open Access](https://openaccess.thecvf.com/content/ICCV2023W/NIVT/papers/Haurum_Which_Tokens_to_Use_Investigating_Token_Reduction_in_Vision_Transformers_ICCVW_2023_paper.pdf))
 4. **Cache & LoRA constraints**: Same cache compatibility and training requirements
@@ -92,7 +92,7 @@ The challenge is scaling to higher resolution while maintaining cache compatibil
 
 ```
 G = 196                           # global tokens (fixed)
-M = (448 / 14)² = 32² = 1024      # raw tokens per 448² crop (14-patch SigLIP)
+M = (448 / 14)² = 32² = 1024      # raw tokens per 448² foveal view (14-patch SigLIP)
 N = 1                              # number of foveal views
 κ = 0.766                          # keep ratio ≈ 76.6%
 R = N · M · κ = 1 · 1024 · 0.766 ≈ 784
@@ -107,8 +107,8 @@ B = G + R = 196 + 784 = 980        # ← final budget (requirement met)
 
 ```
 ╭── any-res splitter ──╮
-│ Global 384² crop │──SigLIP──▶ [196,D] (no drop)
-│ 1 × 448² crop    │──SigLIP──▶ [1024,D]
+│ Global 384² view  │──SigLIP──▶ [196,D] (no drop)
+│ 1 × 448² view     │──SigLIP──▶ [1024,D]
 │                   │          ↓ Top-784 (76.6%)
 │                   │          [784,D]
 │ Concatenate ─────────────────▶ [196+784 = 980,D]
@@ -129,7 +129,7 @@ B = G + R = 196 + 784 = 980        # ← final budget (requirement met)
 | 2 | **Per-view ranking**            | Compute composite score `0.7 · attn + 0.3 · sim` within the single foveal view              |
 | 3 | **Static Top-K keep-rate**      | `K = ⌈0.766·1024⌉ = 784`                                    |
 | 4 | ~~**Light dedup across overlaps**~~ | ~~Not needed with single view~~ |
-| 5 | **Concat**                      | `[global196 ∥ crop784]`                                                                       |
+| 5 | **Concat**                      | `[global196 ∥ foveal784]`                                                                       |
 | 6 | **Project & cache**             | Same LoRA projector; LM sees fixed 980 tokens                                                        |
 
 *Justification*:
@@ -227,12 +227,12 @@ def extract_multiview_tokens(self, pixel_values):
     global_features = self.vision_model(pixel_values[0])  # [B, 729, D]
     global_pooled = F.avg_pool2d(global_features.view(B, 27, 27, D), 2, 2)  # [B, 196, D]
     
-    # 1 peripheral view: 448² → 1024 tokens
-    peripheral_features = []
+    # 1 foveal view: 448² → 1024 tokens
+    foveal_features = []
     features = self.vision_model(pixel_values[1])  # [B, 1024, D] from 448²
-    peripheral_features.append(features)
+    foveal_features.append(features)
     
-    return global_pooled, peripheral_features
+    return global_pooled, foveal_features
 ```
 
 Create **`topk_per_view()`** helper:
@@ -243,9 +243,9 @@ def topk_per_view(tokens, k):
     idx = torch.topk(score, k, dim=1).indices
     return tokens.gather(1, idx[..., None].expand(-1,-1,tokens.size(-1)))
 
-# For 448² crop:
+# For 448² foveal view:
 K = 784        # 76.6% of 1024
-selected_crop = self.topk_per_view(view_tokens, K)
+selected_foveal = self.topk_per_view(view_tokens, K)
 ```
 
 (attn2cls available from SigLIP last layer.)
@@ -253,7 +253,7 @@ selected_crop = self.topk_per_view(view_tokens, K)
 After selection, concatenate:
 
 ```python
-selected = torch.cat([global_tokens, selected_crop], dim=1)
+selected = torch.cat([global_tokens, selected_foveal], dim=1)
 ```
 
 Assert `selected.shape[1] = 980`.
@@ -264,18 +264,18 @@ Delete **lift_to_global_coords()** and **scaffold** code paths.
 ```python
 def forward_with_shirg(self, images, text_features):
     # Extract global + 1 foveal view
-    global_tokens, peripheral_tokens = self.vision_tower.extract_multiview_tokens(images)
+    global_tokens, foveal_tokens = self.vision_tower.extract_multiview_tokens(images)
     
     # Top-K selection (keep 784 tokens)
     keep_ratio = 0.766  # ≈ 76.6%
     K = int(keep_ratio * 1024)  # 784 tokens
     
     # Single view selection
-    view_tokens = peripheral_tokens[0]
-    selected_peripheral = self.topk_per_view(view_tokens, K)
+    view_tokens = foveal_tokens[0]
+    selected_foveal = self.topk_per_view(view_tokens, K)
     
-    # Concatenate: [global196 || crop784]
-    final_tokens = torch.cat([global_tokens, selected_peripheral], dim=1)
+    # Concatenate: [global196 || foveal784]
+    final_tokens = torch.cat([global_tokens, selected_foveal], dim=1)
     # Shape: [B, 196 + 784, D] = [B, 980, D]
     
     # Project through LoRA-adapted mm_projector
@@ -401,27 +401,25 @@ def forward_with_shirg(self, images, text_features):
 
 ### Practical Implementation Tips & Heuristics
 
-1. **Inter-view offsets for global coordinate mapping**:
-   ```python
-   # Centre-biased foveal crop layout for any-res splitter
-   offsets = {0:(0,0), 1:(10,10), 2:(20,20)}  # example centre-biased fovea
-   ```
-   These numbers assume a 48×48 global grid; adjust if LaViDa's any-res splitter uses different overlap.
+1. **Foveal view processing**:
+   - For images larger than 448×448: Extract center 448×448 region
+   - For images smaller than 448×448: Resize entire image to 448×448
+   - This ensures consistent 1024 token output from SigLIP
 
-2. **Scaffold bandwidth optimization**: If 64 scaffold tokens feel heavy, downsample to 6 × 6 = 36 – but keep ≥1 token per 8×8 region so the LM never sees a totally blank area.
+2. **Token selection efficiency**: The 76.6% keep rate (784/1024) maintains high information retention while achieving the target 980 total tokens
 
 3. **LoRA scheduling**: Freeze SigLIP except blocks 0–3 *query/key* matrices (helps convergence); leave value matrices frozen to stay cache-safe.
 
-4. **Mixed-resolution curriculum**: Alternate 448² and 672² crops during LoRA to prevent SigLIP from overfitting to the 28×28 grid sparsity pattern.
+4. **Mixed-resolution curriculum**: Train with varied image sizes to prevent overfitting to specific resolution patterns.
 
-5. **Latency audit**: With fused kernels the end-to-end SHIRG block adds 6–7 ms; overall inference stays within baseline ±2 ms once the 64-token scaffold process completes.
+5. **Latency audit**: With fused kernels the end-to-end SHIRG selection adds ~3ms; overall inference stays within baseline ±2ms.
 
 ### Implementation Checklist Before Freeze
 
-1. **Unit-test global-grid mapping** to ensure no two tokens share (x, y) accidentally after dedup.
-2. **Shape & dtype asserts** right after step 7; run a single diffusion step and compare logits to baseline for sanity check.
+1. **Test foveal view extraction** for both large images (center crop) and small images (resize).
+2. **Shape & dtype asserts** after token selection; verify exactly 980 tokens output.
 3. **Gradient flow check**: verify LoRA receives gradients *only* from projector; any unintended SigLIP grad means cache might become dynamic.
-4. **Ablate scaffold size** (64 → 36 → 16) to confirm the 8×8 choice is indeed Pareto-optimal.
+4. **Ablate keep ratios** (70%, 76.6%, 80%) to confirm the chosen ratio is optimal.
 
 ### Expected Conservative Outcomes
 - **Performance**: +2.5 CIDEr ChartQA, +1.7 EM DocVQA (meaningful quality gains)
@@ -502,7 +500,7 @@ def forward_with_shirg(self, images, text_features):
 1. **Motivation** – LaViDa speed advantage vs low-resolution limitation
 2. **Upper-bound wins/costs** – Full 672² numbers showing the trade-off
 3. **Pruning landscape** – SAINT, TopV, PrefixKV positioning, why diffusion matters
-4. **"Foveated SHIRG: 384 + 4 × 512 with 50% Keep"** – Two-scale diagram showing foveated approach
+4. **"Foveated SHIRG: 384² + 448² with 76.6% Keep"** – Two-scale diagram showing foveated approach
 5. **Results table** – Show progression B0→B1→SAINT→TopV→SHIRG
 6. **Efficiency comparison** – VRAM & latency bar charts
 7. **Ablations** – No scaffold, no coord, fixed-K variations
