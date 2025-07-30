@@ -371,6 +371,7 @@ def process_shirg_2view_image(image, image_processor):
     # Process global view with standard 384x384 processor
     processed_global = image_processor.preprocess(global_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_global)
+    print(f"SHIRG-DEBUG: Global view shape: {processed_global.shape}")
     
     # Process foveal view with 448x448 size to get 1024 tokens (32x32 patches)
     # Create a temporary processor with 448x448 size but identical preprocessing
@@ -386,6 +387,8 @@ def process_shirg_2view_image(image, image_processor):
     )
     processed_foveal = foveal_processor.preprocess(foveal_view, return_tensors="pt")["pixel_values"][0]
     processed_views.append(processed_foveal)
+    print(f"SHIRG-DEBUG: Foveal view shape: {processed_foveal.shape}")
+    print(f"SHIRG-DEBUG: Shapes equal? {processed_global.shape == processed_foveal.shape}")
     
     # SHIRG-FIX: 2025-07-30 - Handle different resolution views correctly
     # ISSUE: Cannot stack tensors with different spatial dimensions [3,384,384] vs [3,448,448]
@@ -395,9 +398,12 @@ def process_shirg_2view_image(image, image_processor):
     
     # Only stack if all views have the same shape (following LaViDa's anyres pattern)
     if all(x.shape == processed_views[0].shape for x in processed_views):
-        return torch.stack(processed_views, dim=0)
+        stacked = torch.stack(processed_views, dim=0)
+        print(f"SHIRG-DEBUG: Stacked views shape: {stacked.shape}")
+        return stacked
     else:
         # Return as list when shapes differ - let downstream processing handle it
+        print(f"SHIRG-DEBUG: Returning list of {len(processed_views)} views with shapes: {[x.shape for x in processed_views]}")
         return processed_views
 
 
@@ -453,15 +459,20 @@ def process_images(images, image_processor, model_cfg):
     flattened_images = []
     for item in new_images:
         if isinstance(item, list):
+            print(f"SHIRG-DEBUG: Flattening list item with {len(item)} elements")
             flattened_images.extend(item)
         else:
             flattened_images.append(item)
     
+    print(f"SHIRG-DEBUG: After flattening: {len(flattened_images)} images with shapes: {[x.shape if hasattr(x, 'shape') else type(x) for x in flattened_images]}")
+    
     # Check if all flattened tensors have the same shape and stack if they do
     if len(flattened_images) > 0 and all(hasattr(x, 'shape') and x.shape == flattened_images[0].shape for x in flattened_images):
         new_images = torch.stack(flattened_images, dim=0)
+        print(f"SHIRG-DEBUG: Final stacked shape: {new_images.shape}")
     else:
         new_images = flattened_images
+        print(f"SHIRG-DEBUG: Final list with {len(new_images)} elements")
     
     return new_images
 
