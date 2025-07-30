@@ -494,9 +494,6 @@ class SHIRGEvaluationPipeline:
             
             # Print metrics for each dataset
             for dataset_name in sorted(dataset_metrics.keys()):
-                print(f"\n{dataset_name}:")
-                print("-" * 40)
-                
                 # Create a table for this dataset
                 dataset_data = []
                 for _, row in summary_df.iterrows():
@@ -528,6 +525,8 @@ class SHIRGEvaluationPipeline:
                     
                     # Only print if there's valid data
                     if has_valid_data:
+                        print(f"\n{dataset_name}:")
+                        print("-" * 40)
                         datasets_with_data.append(dataset_name)
                         print(dataset_df.to_string(index=False))
                         
@@ -551,6 +550,16 @@ class SHIRGEvaluationPipeline:
                                                 if row['config_name'] != 'baseline' and row[anls_col] > 0:
                                                     improvement = (row[anls_col] - baseline_val) / baseline_val * 100
                                                     print(f"    {row['config_name']}: {improvement:+.1f}% over baseline")
+            
+            # Print summary of datasets
+            if datasets_with_data:
+                print(f"\n📊 Evaluated {len(datasets_with_data)} datasets with valid data: {', '.join(datasets_with_data)}")
+            
+            # List datasets that had no valid data (all zeros or N/A)
+            all_datasets = list(dataset_metrics.keys())
+            datasets_without_data = [d for d in all_datasets if d not in datasets_with_data]
+            if datasets_without_data:
+                print(f"⚠️  {len(datasets_without_data)} datasets had no valid data (all zeros or N/A): {', '.join(datasets_without_data)}")
         
         print("\n" + "=" * 80)
 
