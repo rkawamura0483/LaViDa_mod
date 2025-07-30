@@ -85,11 +85,11 @@ class VQADatasetDownloader:
                 "use_hf": True
             },
             "infovqa": {
-                "train_url": "https://github.com/doc-analysis/InfographicsVQA/releases/download/v1.0/infographicsVQA_train_v1.0.json",
-                "val_url": "https://github.com/doc-analysis/InfographicsVQA/releases/download/v1.0/infographicsVQA_val_v1.0.json",
+                "huggingface_dataset": "lmms-lab/InfographicsVQA",
                 "description": "InfoVQA - Infographics visual question answering",
                 "expected_samples": {"train": 23946, "val": 2801},
-                "data_format": "infovqa"
+                "data_format": "infovqa",
+                "use_hf": True
             },
             "mathvista": {
                 "huggingface_dataset": "AI4Math/MathVista",
@@ -548,12 +548,12 @@ class VQADatasetDownloader:
         counts = {}
         all_exist = True
         for split in ["train", "val"]:
-            json_path = dataset_dir / f"infographicsVQA_{split}_v1.0.json"
+            json_path = dataset_dir / f"{split}.json"
             if json_path.exists():
                 try:
                     with open(json_path, 'r') as f:
                         data = json.load(f)
-                    counts[split] = len(data['data']) if 'data' in data else len(data)
+                    counts[split] = len(data)
                     print(f"✅ InfoVQA {split} already exists: {counts[split]} samples")
                 except:
                     all_exist = False
@@ -564,27 +564,52 @@ class VQADatasetDownloader:
             print("   Skipping download - all splits already exist")
             return counts
         
-        print("   Downloading missing files...")
+        print("   Downloading from HuggingFace...")
         
-        # Download JSON files
-        for split in ["train", "val"]:
-            json_path = dataset_dir / f"infographicsVQA_{split}_v1.0.json"
-            if not json_path.exists():
-                if not self.download_file(
-                    self.datasets["infovqa"][f"{split}_url"],
-                    json_path,
-                    f"InfoVQA {split}"
-                ):
-                    continue
+        try:
+            from datasets import load_dataset
             
-            # Count samples
-            if json_path.exists():
-                with open(json_path, 'r') as f:
-                    data = json.load(f)
-                    counts[split] = len(data['data']) if 'data' in data else len(data)
-                    print(f"✅ InfoVQA {split}: {counts[split]} samples")
-        
-        return counts
+            # Map split names
+            split_mapping = {"train": "train", "val": "validation"}
+            
+            for local_split, hf_split in split_mapping.items():
+                json_path = dataset_dir / f"{local_split}.json"
+                
+                # Skip if already exists
+                if json_path.exists():
+                    continue
+                
+                try:
+                    print(f"📥 Downloading InfoVQA {local_split} split...")
+                    dataset = load_dataset("lmms-lab/InfographicsVQA", split=hf_split)
+                    
+                    # Save to local format
+                    split_data = []
+                    for idx, item in enumerate(dataset):
+                        split_data.append({
+                            "question_id": f"infovqa_{local_split}_{idx}",
+                            "question": item.get("question", item.get("query", "")),
+                            "answer": item.get("answer", ""),
+                            "image": f"infovqa_{local_split}_{idx}.png",
+                            "image_url": item.get("image", None)
+                        })
+                    
+                    # Save JSON
+                    with open(json_path, 'w') as f:
+                        json.dump(split_data, f, indent=2)
+                    
+                    counts[local_split] = len(split_data)
+                    print(f"✅ InfoVQA {local_split}: {counts[local_split]} samples")
+                    
+                except Exception as e:
+                    print(f"⚠️ Could not download InfoVQA {local_split}: {e}")
+            
+            return counts
+            
+        except Exception as e:
+            print(f"❌ Error downloading InfoVQA from HuggingFace: {e}")
+            print("   Please install datasets: pip install datasets")
+            return {}
     
     def download_mathvista(self) -> Dict[str, int]:
         """Download MathVista dataset"""
@@ -595,7 +620,8 @@ class VQADatasetDownloader:
         # Check if already downloaded
         counts = {}
         all_exist = True
-        splits = ["train", "testmini", "test"]
+        # MathVista only has testmini and test splits
+        splits = ["testmini", "test"]
         
         for split in splits:
             json_path = dataset_dir / f"{split}.json"
@@ -611,6 +637,9 @@ class VQADatasetDownloader:
             else:
                 all_exist = False
         
+        # MathVista doesn't have a train split
+        counts["train"] = 0
+        
         if all_exist:
             print("   Skipping download - all splits already exist")
             return counts
@@ -620,7 +649,7 @@ class VQADatasetDownloader:
         try:
             from datasets import load_dataset
             
-            # Download each split
+            # Download each split (no train split for MathVista)
             for split in splits:
                 json_path = dataset_dir / f"{split}.json"
                 
@@ -657,6 +686,10 @@ class VQADatasetDownloader:
                     
                 except Exception as e:
                     print(f"⚠️ Could not download MathVista {split}: {e}")
+            
+            # Note about missing train split
+            if not any("train" in str(p) for p in dataset_dir.glob("*.json")):
+                print("ℹ️ Note: MathVista doesn't have a train split. Use testmini for validation.")
             
             return counts
             
