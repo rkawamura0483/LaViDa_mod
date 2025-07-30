@@ -443,8 +443,26 @@ def process_images(images, image_processor, model_cfg):
             new_images.append(image)
     else:
         return image_processor.preprocess(images, return_tensors="pt")["pixel_values"]
-    if all(x.shape == new_images[0].shape for x in new_images):
-        new_images = torch.stack(new_images, dim=0)
+    # SHIRG-FIX: 2025-07-30 - Handle mixed tensor and list types in new_images
+    # ISSUE: process_shirg_2view_image returns list when shapes differ, causing AttributeError
+    # SOLUTION: Flatten any nested lists and check tensor shapes properly
+    # RESEARCH IMPACT: Preserves SHIRG's multi-res processing capability
+    # LAVIDA IMPACT: Maintains LaViDa's existing stacking logic for uniform shapes
+    
+    # Flatten any nested lists (e.g., from process_shirg_2view_image)
+    flattened_images = []
+    for item in new_images:
+        if isinstance(item, list):
+            flattened_images.extend(item)
+        else:
+            flattened_images.append(item)
+    
+    # Check if all flattened tensors have the same shape and stack if they do
+    if len(flattened_images) > 0 and all(hasattr(x, 'shape') and x.shape == flattened_images[0].shape for x in flattened_images):
+        new_images = torch.stack(flattened_images, dim=0)
+    else:
+        new_images = flattened_images
+    
     return new_images
 
 
