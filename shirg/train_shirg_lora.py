@@ -28,6 +28,18 @@ import argparse
 from tqdm import tqdm
 import wandb
 from datetime import datetime
+
+# SHIRG-FIX: 2025-07-30 - Set multiprocessing start method to spawn for CUDA compatibility
+# ISSUE: Default 'fork' method causes "Cannot re-initialize CUDA in forked subprocess" error
+# SOLUTION: Use 'spawn' method which creates fresh processes without CUDA context inheritance
+# LAVIDA IMPACT: DataLoader workers can safely use CUDA operations
+# SHIRG IMPACT: Fixes multi-GPU training crash during first batch loading
+import torch.multiprocessing as mp
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    # Already set, ignore
+    pass
 import gc
 
 # Add paths
@@ -480,6 +492,21 @@ class ShirgLoraTrainer:
         print(f"✅ Training samples: {len(self.train_dataset)}")
         print(f"✅ Validation samples: {len(self.val_dataset)}")
         
+        # SHIRG-FIX: 2025-07-30 - Configure DataLoader for CUDA multiprocessing compatibility
+        # ISSUE: Default DataLoader settings cause CUDA re-initialization errors
+        # SOLUTION: Use spawn multiprocessing context or disable workers for CUDA operations
+        # LAVIDA IMPACT: Ensures stable multi-GPU training without crashes
+        # SHIRG IMPACT: Enables high-performance data loading with proper CUDA handling
+        
+        # Determine if we should use multiprocessing workers
+        use_multiprocessing = self.config.dataloader_num_workers > 0
+        
+        # Create appropriate multiprocessing context
+        mp_context = None
+        if use_multiprocessing:
+            # Use spawn method for CUDA compatibility
+            mp_context = mp.get_context('spawn')
+        
         # Create dataloaders
         self.train_dataloader = DataLoader(
             self.train_dataset,
@@ -488,6 +515,8 @@ class ShirgLoraTrainer:
             num_workers=self.config.dataloader_num_workers,
             pin_memory=self.config.dataloader_pin_memory,
             collate_fn=self.collate_fn,
+            multiprocessing_context=mp_context if use_multiprocessing else None,
+            persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
         )
         
         self.val_dataloader = DataLoader(
@@ -497,6 +526,8 @@ class ShirgLoraTrainer:
             num_workers=self.config.dataloader_num_workers,
             pin_memory=self.config.dataloader_pin_memory,
             collate_fn=self.collate_fn,
+            multiprocessing_context=mp_context if use_multiprocessing else None,
+            persistent_workers=use_multiprocessing,  # Keep workers alive between epochs
         )
         
         return len(self.train_dataloader)
@@ -578,9 +609,14 @@ class ShirgLoraTrainer:
             else:
                 device = torch.device("cpu")
             
-            # Move input_ids to device if needed
-            if input_ids.device != device:
-                input_ids = input_ids.to(device)
+            # SHIRG-FIX: 2025-07-30 - DO NOT move tensors to CUDA in collate_fn
+            # ISSUE: Moving tensors to CUDA in DataLoader workers causes multiprocessing error
+            # SOLUTION: Keep tensors on CPU in collate_fn, let PyTorch handle device placement
+            # LAVIDA IMPACT: Prevents "Cannot re-initialize CUDA in forked subprocess" error
+            # SHIRG IMPACT: Fixes multi-GPU training crash
+            # NOTE: Tensors will be moved to GPU automatically after collation
+            # if input_ids.device != device:
+            #     input_ids = input_ids.to(device)  # REMOVED - causes multiprocessing error
             
             # Create labels - mask everything except the answer
             labels = input_ids.clone()

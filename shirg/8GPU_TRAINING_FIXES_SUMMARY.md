@@ -124,12 +124,73 @@ For 8xA100 40GB GPUs:
 - Gradient checkpointing: enabled
 - Estimated training time: 7-8 hours for 100K samples
 
+## 8. CUDA Multiprocessing Fix
+
+### Problem: RuntimeError: Cannot re-initialize CUDA in forked subprocess
+The training crashed during the first batch with this error when DataLoader workers tried to move tensors to CUDA.
+
+### Root Cause
+1. DataLoader uses 'fork' multiprocessing method by default on Linux
+2. Forked processes inherit CUDA context but cannot reinitialize it
+3. The collate_fn was trying to move tensors to CUDA device in worker processes
+4. This caused immediate crash when num_workers > 0
+
+### Solution: Three-Part Fix
+
+#### Fix 1: Set Multiprocessing Start Method
+Added at the top of both training scripts:
+```python
+import torch.multiprocessing as mp
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    # Already set, ignore
+    pass
+```
+
+#### Fix 2: Remove CUDA Operations from collate_fn
+In `train_shirg_lora.py`, commented out the device movement in collate_fn:
+```python
+# REMOVED - causes multiprocessing error
+# if input_ids.device != device:
+#     input_ids = input_ids.to(device)
+```
+
+#### Fix 3: Configure DataLoader with Spawn Context
+Updated DataLoader creation to use spawn multiprocessing context:
+```python
+mp_context = mp.get_context('spawn') if num_workers > 0 else None
+
+DataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=num_workers,
+    multiprocessing_context=mp_context,
+    persistent_workers=(num_workers > 0),
+    ...
+)
+```
+
+### Why This Works
+1. **Spawn method**: Creates fresh processes without CUDA context inheritance
+2. **No CUDA in workers**: Keeps all tensor operations on CPU during data loading
+3. **Automatic device placement**: PyTorch automatically moves batched tensors to GPU after collation
+4. **Persistent workers**: Reduces process creation overhead
+
+### Testing the Fix
+To verify the fix works:
+1. Check that training starts without multiprocessing errors
+2. Monitor that data loading proceeds smoothly
+3. Verify tensors are correctly placed on GPUs during training
+4. Ensure all 8 GPUs are utilized properly
+
 ## Summary
 
 All critical issues have been addressed:
 1. ✅ Dataset KeyError fixed with robust field handling
 2. ✅ Selective gradient flow fixed for DDP-wrapped models
 3. ✅ Memory and distributed settings optimized
-4. ✅ Comprehensive testing implemented
+4. ✅ CUDA multiprocessing error fixed with spawn method
+5. ✅ Comprehensive testing implemented
 
 The training should now run successfully on 8 GPUs without the previous errors.

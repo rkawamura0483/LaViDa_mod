@@ -16,6 +16,14 @@ export TOKENIZERS_PARALLELISM=false
 # Set OMP threads to avoid CPU oversubscription
 export OMP_NUM_THREADS=4
 
+# SHIRG-FIX: 2025-07-30 - Ensure spawn method for CUDA multiprocessing
+# ISSUE: Fork method causes "Cannot re-initialize CUDA" errors in DataLoader
+# SOLUTION: Python will use spawn method (set in training scripts)
+# LAVIDA IMPACT: Prevents worker process crashes during data loading
+# SHIRG IMPACT: Enables stable multi-worker data loading on all GPUs
+# NOTE: If crashes persist, reduce NUM_WORKERS or set to 0
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
 # SHIRG-FIX: 2025-07-30 - Disable device_map for LoRA gradient flow
 # ISSUE: device_map="auto" (model parallelism) breaks LoRA gradient flow
 # SOLUTION: Set SHIRG_NO_DEVICE_MAP=1 to use data parallelism (DDP) instead
@@ -38,7 +46,7 @@ TOTAL_BATCH_SIZE=256     # Total batch size across all GPUs
 LEARNING_RATE=1.8e-5
 NUM_EPOCHS=3
 GRADIENT_ACCUMULATION=1
-NUM_WORKERS=4
+NUM_WORKERS=4  # Reduce to 0 if multiprocessing errors persist
 
 # Calculate per-device batch size
 PER_DEVICE_BATCH_SIZE=$((TOTAL_BATCH_SIZE / WORLD_SIZE))
@@ -68,4 +76,12 @@ if [ $? -eq 0 ]; then
     echo "Checkpoints saved to: $OUTPUT_DIR"
 else
     echo "❌ Training failed with exit code $?"
+    echo ""
+    echo "Troubleshooting tips:"
+    echo "1. If you see 'Cannot re-initialize CUDA in forked subprocess':"
+    echo "   - The multiprocessing fix should handle this automatically"
+    echo "   - If it persists, set NUM_WORKERS=0 in this script"
+    echo "2. Run 'python shirg/test_multiprocessing_fix.py' to verify setup"
+    echo "3. Check that all GPUs are visible: nvidia-smi"
+    echo "4. Ensure sufficient GPU memory is available"
 fi

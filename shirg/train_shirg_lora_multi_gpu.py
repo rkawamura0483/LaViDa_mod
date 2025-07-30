@@ -15,6 +15,18 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 import argparse
 
+# SHIRG-FIX: 2025-07-30 - Set multiprocessing start method early for CUDA compatibility
+# ISSUE: Default 'fork' method causes "Cannot re-initialize CUDA in forked subprocess" error
+# SOLUTION: Use 'spawn' method before any CUDA operations or imports
+# LAVIDA IMPACT: Prevents DataLoader worker crashes in multi-GPU training
+# SHIRG IMPACT: Fixes the fatal multiprocessing error during first training step
+import torch.multiprocessing as mp
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    # Already set, ignore
+    pass
+
 # Add paths
 sys.path.append('./')
 sys.path.append('./shirg')
@@ -110,6 +122,13 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
             # Recreate dataloaders with distributed samplers
             from torch.utils.data import DataLoader
             
+            # SHIRG-FIX: 2025-07-30 - Configure multiprocessing context for distributed training
+            # ISSUE: Distributed training needs spawn context for CUDA operations in workers
+            # SOLUTION: Explicitly set multiprocessing context to spawn
+            # LAVIDA IMPACT: Prevents worker process crashes in 8-GPU training
+            # SHIRG IMPACT: Enables stable data loading across all GPU ranks
+            mp_context = mp.get_context('spawn') if self.config.dataloader_num_workers > 0 else None
+            
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.config.per_device_train_batch_size,
@@ -118,6 +137,8 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 pin_memory=self.config.dataloader_pin_memory,
                 collate_fn=self.collate_fn,
                 drop_last=True,
+                multiprocessing_context=mp_context,
+                persistent_workers=(self.config.dataloader_num_workers > 0),
             )
             
             self.val_dataloader = DataLoader(
@@ -127,6 +148,8 @@ class MultiGPUShirgTrainer(ShirgLoraTrainer):
                 num_workers=self.config.dataloader_num_workers,
                 pin_memory=self.config.dataloader_pin_memory,
                 collate_fn=self.collate_fn,
+                multiprocessing_context=mp_context,
+                persistent_workers=(self.config.dataloader_num_workers > 0),
             )
             
             print(f"✅ Distributed samplers configured")
