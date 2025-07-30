@@ -74,35 +74,40 @@ class ShirgLoraConfig:
     eval_steps: int = 500
     
     # Target modules following Extra-LoRA footprint
+    # SHIRG-FIX: 2025-07-30 - Use correct module paths from LaViDa model structure
+    # ISSUE: Module names need double vision_tower in path
+    # SOLUTION: Use exact paths: model.vision_tower.vision_tower.vision_model...
+    # LAVIDA IMPACT: Ensures LoRA targets correct modules
+    # SHIRG IMPACT: Fixes zero gradient issue by targeting existing modules
     target_modules: List[str] = field(default_factory=lambda: [
-        # MM Projector layers (both fc1 and fc2)
-        "model.mm_projector.fc1",
-        "model.mm_projector.fc2",  # NEW: fc2 as per Extra-LoRA
+        # MM Projector layers (using actual module names)
+        "model.mm_projector.0",  # First linear layer
+        "model.mm_projector.2",  # Second linear layer (after GELU)
         
         # SigLIP blocks 0-3 with q, k, v (Extra-LoRA enhancement)
-        # Note: LaViDa uses nested model structure, so we need model. prefix
-        "model.vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
-        "model.vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",  # NEW: v_proj
+        # Note: LaViDa has double vision_tower in path
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",  # NEW: v_proj
         
-        "model.vision_tower.vision_model.encoder.layers.1.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.1.self_attn.k_proj",
-        "model.vision_tower.vision_model.encoder.layers.1.self_attn.v_proj",  # NEW: v_proj
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.1.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.1.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.1.self_attn.v_proj",  # NEW: v_proj
         
-        "model.vision_tower.vision_model.encoder.layers.2.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.2.self_attn.k_proj",
-        "model.vision_tower.vision_model.encoder.layers.2.self_attn.v_proj",  # NEW: v_proj
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.2.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.2.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.2.self_attn.v_proj",  # NEW: v_proj
         
-        "model.vision_tower.vision_model.encoder.layers.3.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.3.self_attn.k_proj",
-        "model.vision_tower.vision_model.encoder.layers.3.self_attn.v_proj",  # NEW: v_proj
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.3.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.3.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.3.self_attn.v_proj",  # NEW: v_proj
         
         # SigLIP blocks 4-5 with q, k only (NEW mid-layer adaptation)
-        "model.vision_tower.vision_model.encoder.layers.4.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.4.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.4.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.4.self_attn.k_proj",
         
-        "model.vision_tower.vision_model.encoder.layers.5.self_attn.q_proj",
-        "model.vision_tower.vision_model.encoder.layers.5.self_attn.k_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.5.self_attn.q_proj",
+        "model.vision_tower.vision_tower.vision_model.encoder.layers.5.self_attn.k_proj",
     ])
     
     # Dataset configuration for 672² training

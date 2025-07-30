@@ -184,45 +184,67 @@ class ShirgLoraTrainer:
             else:
                 vision_tower.vision_tower_cfg.enable_shirg = True
         
+        # SHIRG-FIX: 2025-07-30 - Dynamic module discovery with fallback
+        # ISSUE: Module paths vary depending on model loading method
+        # SOLUTION: Discover actual module paths and update config
+        # LAVIDA IMPACT: Ensures LoRA works regardless of loading method
+        # SHIRG IMPACT: Fixes module not found errors
+        
         # Debug: Find actual module paths in the model
         print("🔍 Discovering model structure for LoRA targeting...")
         base_model = self.model.get_model() if hasattr(self.model, 'get_model') else self.model
         
-        # Find projector and vision modules
-        projector_modules = []
-        vision_modules = []
-        
+        # Find all linear modules
+        all_modules = {}
         for name, module in base_model.named_modules():
-            if 'mm_projector' in name and isinstance(module, nn.Linear):
-                projector_modules.append(name)
-                print(f"   Found projector: {name}")
-            elif 'vision_tower' in name and 'self_attn' in name and any(suffix in name for suffix in ['q_proj', 'k_proj', 'v_proj']):
-                vision_modules.append(name)
+            if isinstance(module, nn.Linear):
+                all_modules[name] = module
         
-        # Create corrected target modules
-        corrected_target_modules = []
+        # Check if our config modules exist
+        modules_exist = all([any(target in name for name in all_modules.keys()) 
+                           for target in self.config.target_modules])
         
-        # Add projector modules
-        for module_name in projector_modules:
-            if 'fc1' in module_name or 'fc2' in module_name:
-                corrected_target_modules.append(module_name)
-        
-        # Add vision tower modules (blocks 0-5)
-        for i in range(6):
-            for proj in ['q_proj', 'k_proj', 'v_proj'] if i < 4 else ['q_proj', 'k_proj']:
-                pattern = f"layers.{i}.self_attn.{proj}"
-                matching = [m for m in vision_modules if pattern in m]
-                if matching:
-                    corrected_target_modules.extend(matching)
-        
-        # Update config if we found modules
-        if corrected_target_modules:
-            print(f"✅ Found {len(corrected_target_modules)} target modules")
-            self.config.target_modules = corrected_target_modules
-        else:
-            # Try without model prefix
-            print("⚠️ Trying alternative module paths without 'model.' prefix...")
-            self.config.target_modules = [m.replace('model.', '') for m in self.config.target_modules]
+        if not modules_exist:
+            # Need to discover correct paths
+            print("   Module paths need adjustment, discovering...")
+            
+            # Find projector modules
+            projector_modules = []
+            for name in all_modules.keys():
+                if 'mm_projector' in name and any(x in name for x in ['0', '2']):
+                    projector_modules.append(name)
+                    print(f"   Found projector: {name}")
+            
+            # Find vision modules
+            vision_modules = []
+            for name in all_modules.keys():
+                if 'vision_tower' in name and 'self_attn' in name:
+                    for i in range(6):
+                        if f"layers.{i}.self_attn" in name:
+                            if any(suffix in name for suffix in ['q_proj', 'k_proj', 'v_proj']):
+                                vision_modules.append(name)
+            
+            # Build corrected module list
+            corrected_target_modules = []
+            
+            # Add projector modules
+            corrected_target_modules.extend(projector_modules)
+            
+            # Add vision modules in order
+            for i in range(6):
+                for proj in ['q_proj', 'k_proj', 'v_proj'] if i < 4 else ['q_proj', 'k_proj']:
+                    pattern = f"layers.{i}.self_attn.{proj}"
+                    matching = [m for m in vision_modules if pattern in m]
+                    if matching:
+                        corrected_target_modules.extend(matching[:1])  # Take first match
+            
+            if corrected_target_modules:
+                print(f"✅ Found {len(corrected_target_modules)} target modules")
+                self.config.target_modules = corrected_target_modules
+            else:
+                # Try removing model. prefix as last resort
+                print("⚠️ Trying without 'model.' prefix...")
+                self.config.target_modules = [m.replace('model.', '') for m in self.config.target_modules]
         
         # SHIRG-FIX: 2025-07-30 - Ensure model is on GPU before applying LoRA
         # ISSUE: Model components on different devices cause device mismatch
@@ -241,17 +263,30 @@ class ShirgLoraTrainer:
             self.model = get_peft_model(self.model, lora_config)
         except ValueError as e:
             print(f"❌ LoRA application failed: {e}")
-            # Last resort: try with most common patterns
-            fallback_modules = [
-                "mm_projector.fc1",
-                "mm_projector.fc2",
-                "vision_tower.vision_model.encoder.layers.0.self_attn.q_proj",
-                "vision_tower.vision_model.encoder.layers.0.self_attn.k_proj",
-                "vision_tower.vision_model.encoder.layers.0.self_attn.v_proj",
-            ]
-            print(f"   Trying fallback modules: {fallback_modules[:3]}...")
-            lora_config.target_modules = fallback_modules
-            self.model = get_peft_model(self.model, lora_config)
+            # SHIRG-FIX: 2025-07-30 - Use discovered modules for fallback
+            # ISSUE: Hardcoded fallback modules may not match actual structure
+            # SOLUTION: Use dynamically discovered module names
+            # LAVIDA IMPACT: Ensures LoRA can be applied
+            # SHIRG IMPACT: Fixes LoRA application failures
+            
+            # Try to find at least some modules to target
+            fallback_modules = []
+            for name, module in self.model.named_modules():
+                if isinstance(module, nn.Linear):
+                    if 'mm_projector' in name and any(x in name for x in ['0', '2']):
+                        fallback_modules.append(name)
+                    elif 'vision_tower' in name and 'layers.0' in name and 'q_proj' in name:
+                        fallback_modules.append(name)
+                        
+                    if len(fallback_modules) >= 5:
+                        break
+            
+            if fallback_modules:
+                print(f"   Trying discovered modules: {fallback_modules[:3]}...")
+                lora_config.target_modules = fallback_modules
+                self.model = get_peft_model(self.model, lora_config)
+            else:
+                raise ValueError("Could not find any suitable modules for LoRA")
         
         # Print trainable parameters
         self.model.print_trainable_parameters()
