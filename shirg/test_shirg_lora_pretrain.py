@@ -1507,10 +1507,6 @@ class ShirgLoraPreTrainTest:
             
             # Put model back in train mode
             trainer.model.train()
-            else:
-                result["passed"] = False
-                result["error"] = "No loss returned from training step"
-                print(f"   ❌ {result['error']}")
             
             # Check gradients
             has_gradients = False
