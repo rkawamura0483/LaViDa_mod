@@ -1129,14 +1129,14 @@ class MixedVQADataset(Dataset):
             # Max batch size = 2 per GPU (35GB available / 17GB per sample)
             # Throughput: ~2.5 samples/sec across 8 GPUs = ~72K samples in 8 hours
             
-            # Conservative 120K samples for reliable 8-hour completion
-            # Note: Excluding DocVQA (no train) and MathVista (no train)
+            # Balanced configuration without VQA v2 (requires separate image download)
+            # Total: 150K samples for reliable 8-hour completion
+            # Note: Excluding DocVQA (no train), MathVista (no train), and VQA v2 (no images)
             dataset_configs = {
-                "chartqa": {"weight": 0.20, "max_samples": 24000},    # Charts (high priority)
-                "textvqa": {"weight": 0.20, "max_samples": 24000},    # Natural scene text
-                "ocrvqa": {"weight": 0.20, "max_samples": 24000},     # OCR-focused
-                "infovqa": {"weight": 0.20, "max_samples": 24000},    # Full InfoVQA dataset
-                "vqa_v2": {"weight": 0.20, "max_samples": 24000},     # General VQA
+                "chartqa": {"weight": 0.20, "max_samples": 18000},    # ~18k available - Charts
+                "textvqa": {"weight": 0.25, "max_samples": 35000},    # ~35k available - Scene text
+                "ocrvqa": {"weight": 0.35, "max_samples": 70000},     # ~207k available - OCR
+                "infovqa": {"weight": 0.20, "max_samples": 24000},    # ~24k available - Infographics
             }
             
             total_samples = sum(cfg["max_samples"] for cfg in dataset_configs.values())
@@ -1158,13 +1158,12 @@ class MixedVQADataset(Dataset):
             print(f"     --fp16 --gradient-checkpointing")
             
         elif dataset_configs is None:
-            # For validation/test, include all datasets
+            # For validation/test, include datasets with validation splits
             dataset_configs = {
-                "chartqa": {"weight": 0.2, "max_samples": 1000},
-                "docvqa": {"weight": 0.2, "max_samples": 1000},
-                "mathvista": {"weight": 0.2, "max_samples": 1000},
-                "textvqa": {"weight": 0.2, "max_samples": 1000},
-                "vqa_v2": {"weight": 0.2, "max_samples": 1000},
+                "chartqa": {"weight": 0.25, "max_samples": 1000},
+                "docvqa": {"weight": 0.25, "max_samples": 1000},
+                "mathvista": {"weight": 0.25, "max_samples": 1000},
+                "textvqa": {"weight": 0.25, "max_samples": 1000},
             }
     
         self.datasets = {}
@@ -1254,11 +1253,10 @@ def create_data_loaders(
     except ImportError:
         # Fallback to standard config if module not available
         dataset_configs = {
-            "chartqa": {"weight": 0.2, "max_samples": 20000},
-            "textvqa": {"weight": 0.2, "max_samples": 20000},
-            "ocrvqa": {"weight": 0.2, "max_samples": 20000},
-            "infovqa": {"weight": 0.2, "max_samples": 10000},
-            "vqa_v2": {"weight": 0.2, "max_samples": 30000},
+            "chartqa": {"weight": 0.20, "max_samples": 18000},
+            "textvqa": {"weight": 0.25, "max_samples": 35000},
+            "ocrvqa": {"weight": 0.35, "max_samples": 70000},
+            "infovqa": {"weight": 0.20, "max_samples": 24000},
         }
     
     # Create train dataset

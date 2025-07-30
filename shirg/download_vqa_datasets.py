@@ -722,13 +722,14 @@ class VQADatasetDownloader:
                 for counts in dataset_counts.values()
             ),
             "dataset_weights": {
-                "chartqa": 0.15,
-                "docvqa": 0.15,
-                "vqa_v2": 0.40,
-                "textvqa": 0.15,
-                "ocrvqa": 0.10,
-                "infovqa": 0.05,
-                "mathvista": 0.20
+                "chartqa": 0.20,   # Chart understanding (train available)
+                "textvqa": 0.25,   # Scene text reading (train available)
+                "ocrvqa": 0.35,    # OCR-focused, largest dataset (train available)
+                "infovqa": 0.20,   # Infographic understanding (train available)
+                # Excluded from training:
+                "docvqa": 0.0,     # No train split
+                "mathvista": 0.0,  # No train split
+                "vqa_v2": 0.0,     # Requires separate COCO image download
             }
         }
         
