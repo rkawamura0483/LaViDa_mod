@@ -468,21 +468,41 @@ class VQAv2Dataset(Dataset):
         
         # VQA v2 format from JSON
         # Note: VQA v2 doesn't include images in the JSON, only image_id
-        # Images need to be downloaded separately from COCO dataset
+        # Images need to be loaded from COCO dataset
         image_id = item['image_id']
         
-        # For now, create a placeholder image
-        # In production, you would load from COCO dataset
-        image = Image.new('RGB', (self.image_size, self.image_size), (200, 200, 200))
+        # SHIRG-FIX: [2025-07-30] - Load COCO images for VQA v2
+        # ISSUE: VQA v2 requires COCO images which may be in zip files
+        # SOLUTION: Check for extracted COCO images, use placeholder if not found
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Enables VQA v2 training with real images if available
         
-        # Draw image ID on the placeholder for debugging
-        try:
-            from PIL import ImageDraw, ImageFont
-            draw = ImageDraw.Draw(image)
-            text = f"Image ID: {image_id}"
-            draw.text((10, 10), text, fill=(0, 0, 0))
-        except:
-            pass
+        # Construct COCO image filename (zero-padded to 12 digits)
+        image_filename = f"COCO_{'train' if self.split == 'train' else 'val'}2014_{str(image_id).zfill(12)}.jpg"
+        
+        # Check multiple possible locations for COCO images
+        possible_paths = [
+            self.data_dir / f"{'train' if self.split == 'train' else 'val'}2014" / image_filename,
+            self.data_dir / "images" / image_filename,
+            self.data_dir.parent / "coco" / f"{'train' if self.split == 'train' else 'val'}2014" / image_filename,
+        ]
+        
+        image = None
+        for img_path in possible_paths:
+            if img_path.exists():
+                try:
+                    image = Image.open(img_path).convert('RGB')
+                    break
+                except Exception as e:
+                    print(f"Error loading image {img_path}: {e}")
+        
+        if image is None:
+            # Create placeholder if image not found
+            image = Image.new('RGB', (self.image_size, self.image_size), (200, 200, 200))
+            if idx < 5:  # Only print warning for first few samples
+                print(f"⚠️ VQA v2: COCO image not found for ID {image_id}")
+                print(f"   Expected: {image_filename}")
+                print(f"   Searched in: {[str(p.parent) for p in possible_paths[:2]]}")
         
         # Resize to target size
         image.thumbnail((self.image_size, self.image_size), Image.Resampling.LANCZOS)

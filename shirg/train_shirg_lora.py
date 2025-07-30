@@ -496,13 +496,20 @@ class ShirgLoraTrainer:
         # LAVIDA IMPACT: None
         # SHIRG IMPACT: Properly loads datasets from the correct directory
         
-        # Default training configuration without DocVQA (no train split)
+        # SHIRG-FIX: [2025-07-30] - Include VQA v2 with COCO image handling
+        # ISSUE: VQA v2 requires COCO images to be extracted from zip files
+        # SOLUTION: VQA v2 loader now checks for extracted COCO images
+        # LAVIDA IMPACT: None
+        # SHIRG IMPACT: Training can use VQA v2 if COCO images are extracted
+        
+        # Default training configuration optimized for available datasets
+        # Note: DocVQA has no train split, VQA v2 will use placeholders if COCO not extracted
         dataset_configs = {
-            "chartqa": {"weight": 0.20, "max_samples": 18000},
-            "textvqa": {"weight": 0.25, "max_samples": 35000},
-            "ocrvqa": {"weight": 0.35, "max_samples": 70000},
-            "infovqa": {"weight": 0.20, "max_samples": 24000},
-            "vqa_v2": {"weight": 0.40, "max_samples": 50000},
+            "chartqa": {"weight": 0.20, "max_samples": 18000},   # Chart understanding
+            "textvqa": {"weight": 0.25, "max_samples": 35000},   # Scene text reading
+            "ocrvqa": {"weight": 0.25, "max_samples": 70000},    # Book cover OCR
+            "infovqa": {"weight": 0.15, "max_samples": 24000},   # Infographic understanding
+            "vqa_v2": {"weight": 0.15, "max_samples": 50000},    # General VQA (if COCO available)
         }
         
         # Create mixed datasets
@@ -517,7 +524,7 @@ class ShirgLoraTrainer:
         # Validation dataset with fewer samples
         val_configs = {k: {"weight": v["weight"], "max_samples": 1000} 
                       for k, v in dataset_configs.items()}
-        # Add DocVQA for validation only
+        # Add DocVQA for validation only (it has no train split)
         val_configs["docvqa"] = {"weight": 0.20, "max_samples": 1000}
         
         self.val_dataset = MixedVQADataset(
