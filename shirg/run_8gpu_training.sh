@@ -76,6 +76,11 @@ export SHIRG_DEBUG=0
 # NOTE: If crashes persist, reduce NUM_WORKERS or set to 0
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
+# Additional memory and debugging settings to prevent segfaults
+export CUDA_LAUNCH_BLOCKING=0  # Disable for better performance
+export TORCH_DISTRIBUTED_DEBUG=OFF  # Turn ON for debugging
+export NCCL_DEBUG=WARN  # Set to INFO for more debugging
+
 # SHIRG-FIX: 2025-07-30 - Disable device_map for LoRA gradient flow
 # ISSUE: device_map="auto" (model parallelism) breaks LoRA gradient flow
 # SOLUTION: Set SHIRG_NO_DEVICE_MAP=1 to use data parallelism (DDP) instead
@@ -100,6 +105,8 @@ MODEL_PATH="KonstantinosKK/lavida-llada-v1.0-instruct-hf-transformers"
 OUTPUT_DIR="./shirg_lora_checkpoints_8gpu"
 SELECTION_METHOD="full"  # Options: base, entropy, edge, full
 TOTAL_BATCH_SIZE=8    # Total batch size across all GPUs (increased for real data)
+# IMPORTANT: Reduced batch size might help with memory issues
+# Try TOTAL_BATCH_SIZE=4 if you get segfaults
 LEARNING_RATE=1.8e-5
 NUM_EPOCHS=3
 GRADIENT_ACCUMULATION=1
@@ -121,10 +128,13 @@ if [ ! -d "$DATA_DIR" ]; then
 fi
 
 # Run training with torchrun (PyTorch distributed launcher)
+# Add --rdzv-backend=c10d for more stable process group initialization
 torchrun \
     --nproc_per_node=$WORLD_SIZE \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
+    --rdzv-backend=c10d \
+    --rdzv-endpoint=$MASTER_ADDR:$MASTER_PORT \
     shirg/train_shirg_lora_multi_gpu.py \
     --model-path $MODEL_PATH \
     --output-dir $OUTPUT_DIR \

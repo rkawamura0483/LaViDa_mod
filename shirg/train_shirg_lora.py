@@ -19,6 +19,7 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
@@ -793,6 +794,16 @@ class ShirgLoraTrainer:
     
     def training_step(self, batch: Dict[str, Any]) -> Dict[str, float]:
         """Single training step"""
+        # SHIRG-FIX: 2025-07-30 - Clear GPU cache periodically to prevent memory fragmentation
+        # ISSUE: Memory fragmentation after multiple steps can cause segfaults
+        # SOLUTION: Clear cache every 10 steps to prevent OOM/segfaults
+        # LAVIDA IMPACT: Slight performance overhead but prevents crashes
+        # SHIRG IMPACT: Ensures stable multi-GPU training
+        if self.global_step > 0 and self.global_step % 10 == 0:
+            torch.cuda.empty_cache()
+            if hasattr(torch.cuda, 'synchronize'):
+                torch.cuda.synchronize()
+        
         # Move batch to device
         batch = {k: v.to(self.accelerator.device) if torch.is_tensor(v) else v 
                 for k, v in batch.items()}
@@ -841,6 +852,14 @@ class ShirgLoraTrainer:
         if self.scheduler is not None:
             self.scheduler.step()
         self.optimizer.zero_grad()
+        
+        # SHIRG-FIX: 2025-07-30 - Synchronize after optimizer step in DDP
+        # ISSUE: Async operations can cause race conditions leading to segfaults
+        # SOLUTION: Force synchronization in distributed training
+        # LAVIDA IMPACT: Ensures gradient synchronization across GPUs
+        # SHIRG IMPACT: Prevents segfaults in multi-GPU training
+        if dist.is_initialized():
+            dist.barrier()
         
         # Update global step
         self.global_step += 1
