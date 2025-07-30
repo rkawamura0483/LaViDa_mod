@@ -46,7 +46,7 @@ TOTAL_BATCH_SIZE=256     # Total batch size across all GPUs
 LEARNING_RATE=1.8e-5
 NUM_EPOCHS=3
 GRADIENT_ACCUMULATION=1
-NUM_WORKERS=4  # Reduce to 0 if multiprocessing errors persist
+NUM_WORKERS=0  # Reduce to 0 if multiprocessing errors persist
 
 # Calculate per-device batch size
 PER_DEVICE_BATCH_SIZE=$((TOTAL_BATCH_SIZE / WORLD_SIZE))
