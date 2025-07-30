@@ -751,13 +751,24 @@ class ShirgLoraPreTrainTest:
                 model = get_peft_model(model, lora_config)
                 model.print_trainable_parameters()
             
-            # Move to GPU if available
+            # SHIRG-FIX: 2025-07-30 - Handle multi-GPU device placement
+            # ISSUE: Model distributed across multiple GPUs causing device mismatch
+            # SOLUTION: Move model to single GPU for testing
+            # LAVIDA IMPACT: Temporary single-GPU mode for testing only
+            # SHIRG IMPACT: Ensures consistent device placement during tests
+            # Move to GPU if available (use single GPU for testing)
             if torch.cuda.is_available():
-                model = model.cuda()
+                # Force single GPU mode for testing
+                device = torch.device("cuda:0")
+                # Get base model (unwrap PEFT if needed)
+                base_model = model.get_base_model() if hasattr(model, 'get_base_model') else model
+                # Move entire model to single device
+                model = model.to(device)
                 if self.config.bf16:
                     model = model.to(dtype=torch.bfloat16)
                 elif self.config.fp16:
                     model = model.to(dtype=torch.float16)
+                print(f"   📍 Model moved to single GPU: {device}")
                     
             # Create test batch (matching training data format)
             batch_size = 2
@@ -778,33 +789,26 @@ class ShirgLoraPreTrainTest:
                 return_tensors="pt"
             )
             
-            # Create dummy images (LaViDa expects list of PIL images or tensors)
+            # SHIRG-FIX: 2025-07-30 - Proper image handling for LaViDa
+            # ISSUE: LaViDa expects raw PIL images during forward pass
+            # SOLUTION: Pass PIL images directly, let model handle processing
+            # LAVIDA IMPACT: Matches LaViDa's expected input format
+            # SHIRG IMPACT: Ensures SHIRG processing happens inside model
+            # Create dummy images (LaViDa expects list of PIL images)
             from PIL import Image
             images = [Image.new('RGB', (672, 672)) for _ in range(batch_size)]
-            
-            # Process images through model's processor
-            from llava.mm_utils import process_images
-            image_processor = model.get_model().get_vision_tower().image_processor
-            images_tensor = process_images(images, image_processor, model.config)
-            
-            if torch.cuda.is_available():
-                images_tensor = images_tensor.cuda()
-                if self.config.bf16:
-                    images_tensor = images_tensor.to(dtype=torch.bfloat16)
-                elif self.config.fp16:
-                    images_tensor = images_tensor.to(dtype=torch.float16)
                     
             # Create batch matching training format
             batch = {
-                "input_ids": inputs["input_ids"].cuda() if torch.cuda.is_available() else inputs["input_ids"],
-                "attention_mask": inputs["attention_mask"].cuda() if torch.cuda.is_available() else inputs["attention_mask"],
-                "images": images_tensor,
-                "labels": inputs["input_ids"].cuda() if torch.cuda.is_available() else inputs["input_ids"],  # For loss computation
+                "input_ids": inputs["input_ids"].to(device) if torch.cuda.is_available() else inputs["input_ids"],
+                "attention_mask": inputs["attention_mask"].to(device) if torch.cuda.is_available() else inputs["attention_mask"],
+                "images": images,  # Pass PIL images directly
+                "labels": inputs["input_ids"].to(device) if torch.cuda.is_available() else inputs["input_ids"],  # For loss computation
             }
             
             print(f"   Batch created:")
             print(f"   - Input shape: {batch['input_ids'].shape}")
-            print(f"   - Image shape: {batch['images'].shape}")
+            print(f"   - Image count: {len(batch['images'])} PIL images")
             print(f"   - Device: {batch['input_ids'].device}")
             
             # Test forward pass
@@ -1319,7 +1323,8 @@ class ShirgLoraPreTrainTest:
             dummy_sample = {
                 "image": Image.new('RGB', (672, 672)),
                 "question": "What text is shown in this image?",
-                "answer": "Test answer"
+                "answer": "Test answer",
+                "id": "test_sample_1"  # Add required id field
             }
             
             # Create minimal dataset
@@ -1333,10 +1338,23 @@ class ShirgLoraPreTrainTest:
                 def __getitem__(self, idx):
                     return self.sample
             
+            # SHIRG-FIX: 2025-07-30 - Custom collate function for LaViDa
+            # ISSUE: DataLoader can't handle PIL images with default collate
+            # SOLUTION: Add custom collate function that keeps PIL images as-is
+            # LAVIDA IMPACT: LaViDa expects PIL images, not tensors
+            # SHIRG IMPACT: Ensures proper data format for training
             # Create dataloader
             from torch.utils.data import DataLoader
+            
+            # Use the trainer's own collate function
+            # This ensures proper format including tokenization
+            
             dummy_dataset = DummyDataset(dummy_sample)
-            dataloader = DataLoader(dummy_dataset, batch_size=1)
+            dataloader = DataLoader(
+                dummy_dataset, 
+                batch_size=1,
+                collate_fn=trainer.collate_fn  # Use trainer's collate function
+            )
             
             # Get one batch
             batch = next(iter(dataloader))
