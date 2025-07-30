@@ -215,16 +215,9 @@ class SHIRGEvaluationPipeline:
                 
                 # Prepare input for model runner's inference methods
                 # Model runner expects (image, input_ids, question, sample_id)
-                # We need to tokenize the question first
-                tokenizer = model_runner.shirg_tokenizer if config.get('use_shirg', False) else model_runner.baseline_tokenizer
-                if tokenizer:
-                    # Format question for LaViDa
-                    formatted_question = f"USER: <image>\n{question}\nASSISTANT:"
-                    input_ids = tokenizer(formatted_question, return_tensors="pt")["input_ids"]
-                    # Note: input_ids will be moved to correct device in the inference methods
-                else:
-                    print(f"⚠️ No tokenizer available for sample {idx}")
-                    continue
+                # For LaViDa, let the model runner handle the proper tokenization
+                # as it needs to use tokenizer_image_token for proper image token handling
+                input_ids = None  # Let model runner handle tokenization
                 
                 # Run inference based on configuration
                 if config.get('use_shirg', False):
@@ -242,22 +235,31 @@ class SHIRGEvaluationPipeline:
                         sample_id=f"{config_name}_sample_{idx}"
                     )
                 
-                # Extract prediction text
-                prediction = output.get('text', '') if isinstance(output, dict) else str(output)
+                # Extract prediction text (key is 'response' not 'text')
+                prediction = output.get('response', '') if isinstance(output, dict) else str(output)
+                
+                # Get ground truth answers
+                ground_truth = sample.get('answers', [sample.get('answer', '')])
+                if isinstance(ground_truth, str):
+                    ground_truth = [ground_truth]
+                
+                # Print question, response, and ground truth for debugging
+                print(f"\n   📝 Sample {idx+1}/{len(dataset_samples)}:")
+                print(f"      Question: {question[:100]}...")
+                print(f"      Response: {prediction[:100]}...")
+                print(f"      Ground Truth: {ground_truth[0] if ground_truth else 'N/A'}")
                 
                 # Evaluate
-                eval_scores = self.evaluate_single_sample(
-                    prediction,
-                    sample.get('answers', [sample.get('answer', '')])
-                )
+                eval_scores = self.evaluate_single_sample(prediction, ground_truth)
                 
                 # Store result
                 result = {
                     'config': config_name,
                     'sample_id': sample.get('question_id', idx),
                     'dataset': sample.get('dataset_name', 'unknown'),
+                    'question': question,
                     'prediction': prediction,
-                    'ground_truth': sample.get('answers', [sample.get('answer', '')]),
+                    'ground_truth': ground_truth,
                     **eval_scores
                 }
                 results.append(result)

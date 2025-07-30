@@ -937,6 +937,10 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
+            # If input_ids is None, prepare it using the proper LaViDa method
+            if input_ids is None:
+                input_ids = self._prepare_input_ids(question, self.baseline_tokenizer, is_baseline=True)
+            
             # Ensure input_ids is on the correct device
             if input_ids is not None:
                 input_ids = input_ids.to(self.device)
@@ -1020,7 +1024,17 @@ class LaViDaModelRunner:
             # LAVIDA IMPACT: Maintains LaViDa's response formatting and cleanup
             
             # Decode response using LaViDa method (following original predict.py)
+            # Debug: Show raw output_ids before decoding
+            print(f"   🔍 Raw output_ids shape: {output_ids.shape}")
+            print(f"   🔍 Raw output_ids sample: {output_ids[0][:20].tolist() if output_ids.shape[0] > 0 else 'empty'}")
+            
+            # Try decoding with and without special tokens for debugging
+            text_outputs_with_special = self.baseline_tokenizer.batch_decode(output_ids, skip_special_tokens=False)
             text_outputs = self.baseline_tokenizer.batch_decode(output_ids, skip_special_tokens=True)
+            
+            print(f"   🔍 Decoded with special tokens: {text_outputs_with_special[0][:100] if text_outputs_with_special else 'empty'}")
+            print(f"   🔍 Decoded without special tokens: {text_outputs[0][:100] if text_outputs else 'empty'}")
+            
             # Clean up LaViDa-specific artifacts (from original predict.py)
             text_outputs = [text_output.lstrip('!') for text_output in text_outputs]
             response = text_outputs[0] if text_outputs else ""
@@ -1097,6 +1111,10 @@ class LaViDaModelRunner:
         start_time = time.time()
         
         try:
+            # If input_ids is None, prepare it using the proper LaViDa method
+            if input_ids is None:
+                input_ids = self._prepare_input_ids(question, self.shirg_tokenizer, is_baseline=False)
+            
             # Ensure input_ids is on the correct device
             if input_ids is not None:
                 input_ids = input_ids.to(self.device)
